@@ -737,6 +737,14 @@ def swiss_army_knife(
 ) -> dict:
     """`custom:swiss-army-knife-card` (AmoebeLabs).
 
+    ⚠️  **Dashboard prerequisite.** SAK v2.5+ requires
+    ``sak_sys_templates`` (and usually ``sak_user_templates``) to be
+    defined at the dashboard root, even for cards that don't use
+    templates. Without them, **every** SAK card on the dashboard fails
+    to render with ``i.setConfig is not a function``. Call
+    :func:`ensure_sak_templates_on_dashboard` once before placing the
+    first SAK card.
+
     `entities` — list of entity_ids (auto-wrapped to ``{entity: ...}``) OR
                  dicts with ``entity``, ``name``, ``attribute``, etc.
     `toolsets` — list of toolset dicts. Each toolset has:
@@ -783,6 +791,39 @@ def swiss_army_knife(
         "entities": norm_entities,
         "layout": layout,
     }
+
+
+def ensure_sak_templates_on_dashboard(client, url_path: str | None,
+                                          *, sys_templates: dict | None = None,
+                                          user_templates: dict | None = None) -> bool:
+    """Add `sak_sys_templates` + `sak_user_templates` to a dashboard root.
+
+    SAK v2.5+ refuses to instantiate any tool if these keys are missing.
+    Pass real templates if you have them; pass `None` to get empty dicts
+    (enough to satisfy SAK's reference check for cards that don't use
+    templates internally).
+
+    Returns True if the dashboard was modified, False if both keys
+    already existed.
+    """
+    from cli_anything.homeassistant.core import lovelace as ll
+    cfg = ll.get_dashboard_config(client, url_path)
+    changed = False
+    if "sak_sys_templates" not in cfg:
+        cfg["sak_sys_templates"] = sys_templates if sys_templates is not None else {}
+        changed = True
+    elif sys_templates is not None:
+        cfg["sak_sys_templates"] = sys_templates
+        changed = True
+    if "sak_user_templates" not in cfg:
+        cfg["sak_user_templates"] = user_templates if user_templates is not None else {}
+        changed = True
+    elif user_templates is not None:
+        cfg["sak_user_templates"] = user_templates
+        changed = True
+    if changed:
+        ll.save_dashboard_config(client, url_path, cfg)
+    return changed
 
 
 # Toolset helper — keeps the SAK config readable when authoring cards.
