@@ -211,6 +211,17 @@ def picture_elements(image: str, elements: list[dict], *,
 
 def iframe(url: str, *, title: str | None = None,
             aspect_ratio: str | None = None) -> dict:
+    """Built-in HA `iframe` card.
+
+    ⚠️  Many sites refuse to be embedded by setting an `X-Frame-Options:
+        DENY/SAMEORIGIN` header or a CSP `frame-ancestors` directive
+        (e.g. bbc.co.uk, google.com). Such URLs will fail to load with
+        `net::ERR_BLOCKED_BY_RESPONSE` in the browser. Known-embeddable
+        targets include: Grafana panels, Windy embeds, your own
+        /local/* assets, in-network admin UIs you control, and most
+        radar/weather widget providers (e.g. embed.windy.com,
+        rainviewer.com).
+    """
     if not url:
         raise ValueError("url required")
     card: dict[str, Any] = {"type": "iframe", "url": url}
