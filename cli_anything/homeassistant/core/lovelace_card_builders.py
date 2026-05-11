@@ -737,13 +737,31 @@ def swiss_army_knife(
 ) -> dict:
     """`custom:swiss-army-knife-card` (AmoebeLabs).
 
-    ⚠️  **Dashboard prerequisite.** SAK v2.5+ requires
-    ``sak_sys_templates`` (and usually ``sak_user_templates``) to be
-    defined at the dashboard root, even for cards that don't use
-    templates. Without them, **every** SAK card on the dashboard fails
-    to render with ``i.setConfig is not a function``. Call
-    :func:`ensure_sak_templates_on_dashboard` once before placing the
-    first SAK card.
+    ⚠️  **NOT ready for storage-mode auto-setup.** SAK v2.5+ requires a
+    full upstream HA-config tree (sak_templates/ with CSS definitions,
+    colorstops, derived JS functions, layouts, material3 themes,
+    statemaps, tools, toolsets — plus user-css-definitions). The
+    upstream YAML uses ``!include_dir_merge_named`` and ``!include``
+    directives which **only work in YAML-mode lovelace**.
+
+    For storage-mode dashboards (the kind this harness reads/writes via
+    the WebSocket API), every SAK card on the dashboard will fail with
+    ``i.setConfig is not a function`` until the user manually copies the
+    upstream `ha-config/lovelace/sak_templates/` directory into their
+    HA config + reformats the YAML tree into JSON-compatible inline
+    structures.
+
+    Recommended path: use SAK on a YAML-mode dashboard (or skip it).
+    The builder + tool helpers are kept here so authors who do invest
+    in the upstream config can still compose SAK cards programmatically.
+
+    Args (same as before):
+        entities: list of entity_ids (auto-wrapped to ``{entity: ...}``)
+            or dicts with ``entity``, ``name``, ``attribute``, etc.
+        toolsets: list of toolset dicts with
+            ``{toolset: <name>, position: {cx, cy}, tools: [...]}``.
+        aspectratio: canvas aspect (e.g. "1/1", "2/1"). Default 1/1.
+        layout_extra: extra keys merged into ``layout:`` (e.g. ``template:``).
 
     `entities` — list of entity_ids (auto-wrapped to ``{entity: ...}``) OR
                  dicts with ``entity``, ``name``, ``attribute``, etc.
