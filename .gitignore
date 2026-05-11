@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+.tox/
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local connection profile — NEVER commit a token
+.config/cli-anything-homeassistant.json
+~/.config/cli-anything-homeassistant.json
