@@ -2732,6 +2732,186 @@ class TestSAKTools:
         assert t["type"] == "area"
 
 
+class TestBuildersExtraCustom:
+    # ─── modern-circular-gauge ─────────────────────────────────────────
+    def test_modern_circular_gauge_minimal(self):
+        c = builders.modern_circular_gauge("sensor.power", max=1000)
+        assert c["type"] == "custom:modern-circular-gauge"
+        assert c["max"] == 1000
+        assert c["gauge_type"] == "standard"
+
+    def test_modern_circular_gauge_full(self):
+        c = builders.modern_circular_gauge(
+            "sensor.t", min=10, max=30, name="Temp",
+            icon="mdi:thermometer", needle=True,
+            secondary={"entity": "sensor.h", "show_gauge": "inner"},
+            segments=[{"from": 10, "color": [11, 182, 239]},
+                       {"from": 22, "color": [11, 239, 100]}],
+        )
+        assert c["secondary"]["show_gauge"] == "inner"
+        assert len(c["segments"]) == 2
+
+    def test_modern_circular_gauge_rejects_bad_type(self):
+        with pytest.raises(ValueError, match="gauge_type"):
+            builders.modern_circular_gauge("sensor.x", gauge_type="other")
+
+    def test_modern_circular_gauge_rejects_empty_entity(self):
+        with pytest.raises(ValueError):
+            builders.modern_circular_gauge("")
+
+    # ─── horizon ──────────────────────────────────────────────────────
+    def test_horizon_minimal(self):
+        c = builders.horizon_card()
+        assert c == {"type": "custom:horizon-card"}
+
+    def test_horizon_fields(self):
+        c = builders.horizon_card(title="Sun & Moon", moon=False,
+                                     refresh_period=120,
+                                     southern_flip=True,
+                                     fields={"sunrise": True, "sunset": True,
+                                              "moon_phase": True},
+                                     language="en", time_format="24h",
+                                     no_card=True)
+        assert c["moon"] is False
+        assert c["refresh_period"] == 120
+        assert c["southern_flip"] is True
+        assert c["fields"]["moon_phase"] is True
+        assert c["no_card"] is True
+
+    # ─── calendar-card-pro ────────────────────────────────────────────
+    def test_calendar_card_pro(self):
+        c = builders.calendar_card_pro(
+            ["calendar.family",
+              {"entity": "calendar.work", "color": "#1e90ff"}],
+            days_to_show=7, show_location=True,
+        )
+        assert c["type"] == "custom:calendar-card-pro"
+        assert c["days_to_show"] == 7
+        # mixed list preserved
+        assert c["entities"][0] == "calendar.family"
+        assert c["entities"][1]["color"] == "#1e90ff"
+
+    def test_calendar_card_pro_validates_dict_entity(self):
+        with pytest.raises(ValueError, match="'entity' key"):
+            builders.calendar_card_pro([{"name": "no-entity"}])
+
+    def test_calendar_card_pro_rejects_empty(self):
+        with pytest.raises(ValueError):
+            builders.calendar_card_pro([])
+
+    # ─── weather-chart ────────────────────────────────────────────────
+    def test_weather_chart_minimal(self):
+        c = builders.weather_chart_card("weather.home")
+        assert c["type"] == "custom:weather-chart-card"
+        assert c["entity"] == "weather.home"
+
+    def test_weather_chart_validates_entity(self):
+        with pytest.raises(ValueError):
+            builders.weather_chart_card("sensor.foo")
+
+    def test_weather_chart_full(self):
+        c = builders.weather_chart_card(
+            "weather.home", title="Today", show_time=True,
+            forecast={"type": "hourly", "style": "style2", "chart_height": 220},
+            units={"pressure": "hPa", "speed": "mph"},
+            locale="en", temp="sensor.outside_t",
+        )
+        assert c["forecast"]["type"] == "hourly"
+        assert c["units"]["pressure"] == "hPa"
+        assert c["temp"] == "sensor.outside_t"
+
+    # ─── room-summary ─────────────────────────────────────────────────
+    def test_room_summary_minimal(self):
+        c = builders.room_summary_card("living_room")
+        assert c["type"] == "custom:room-summary-card"
+        assert c["area"] == "living_room"
+
+    def test_room_summary_rejects_empty(self):
+        with pytest.raises(ValueError):
+            builders.room_summary_card("")
+
+    def test_room_summary_extras(self):
+        c = builders.room_summary_card(
+            "kitchen", entity="light.kitchen",
+            entities=[{"entity": "sensor.kitchen_temp"}],
+            features={"hide_climate_label": True},
+        )
+        assert c["features"]["hide_climate_label"] is True
+        assert c["entity"] == "light.kitchen"
+
+    # ─── expander ─────────────────────────────────────────────────────
+    def test_expander_minimal(self):
+        c = builders.expander_card(
+            [{"type": "tile", "entity": "light.x"}], title="Lights",
+        )
+        assert c["type"] == "custom:expander-card"
+        assert c["title"] == "Lights"
+        assert len(c["cards"]) == 1
+        # default icon
+        assert c["icon"] == "mdi:chevron-down"
+        assert c["expanded"] is False
+
+    def test_expander_rejects_empty(self):
+        with pytest.raises(ValueError):
+            builders.expander_card([])
+
+    def test_expander_rejects_bad_haptic(self):
+        with pytest.raises(ValueError, match="haptic"):
+            builders.expander_card(
+                [{"type": "tile", "entity": "x"}], haptic="bouncy",
+            )
+
+    def test_expander_full(self):
+        c = builders.expander_card(
+            [{"type": "tile", "entity": "light.a"}],
+            title="Devices", icon="mdi:home", expanded=True,
+            clear=True, clear_children=True, gap="0.5em",
+            title_card={"type": "markdown", "content": "**My title**"},
+            title_card_clickable=True,
+            storage_id="my-expander",
+        )
+        assert c["clear"] is True
+        # dashed keys preserved
+        assert c["clear-children"] is True
+        assert c["title-card"]["type"] == "markdown"
+        assert c["title-card-clickable"] is True
+        assert c["storage-id"] == "my-expander"
+
+    # ─── simple-swipe ─────────────────────────────────────────────────
+    def test_simple_swipe_minimal(self):
+        c = builders.simple_swipe_card(
+            [{"type": "markdown", "content": "A"},
+              {"type": "markdown", "content": "B"}],
+        )
+        assert c["type"] == "custom:simple-swipe-card"
+        assert c["view_mode"] == "single"
+        assert c["swipe_direction"] == "horizontal"
+        assert c["loop_mode"] == "none"
+
+    def test_simple_swipe_rejects_bad_options(self):
+        cards = [{"type": "markdown", "content": "x"}]
+        with pytest.raises(ValueError, match="view_mode"):
+            builders.simple_swipe_card(cards, view_mode="wrong")
+        with pytest.raises(ValueError, match="swipe_direction"):
+            builders.simple_swipe_card(cards, swipe_direction="diagonal")
+        with pytest.raises(ValueError, match="swipe_behavior"):
+            builders.simple_swipe_card(cards, swipe_behavior="weird")
+        with pytest.raises(ValueError, match="loop_mode"):
+            builders.simple_swipe_card(cards, loop_mode="forever")
+
+    def test_simple_swipe_carousel_auto(self):
+        c = builders.simple_swipe_card(
+            [{"type": "markdown", "content": "a"}],
+            view_mode="carousel", show_pagination=True,
+            card_spacing=24,
+            loop_mode="infinite",
+            enable_auto_swipe=True, auto_swipe_interval=5000,
+        )
+        assert c["view_mode"] == "carousel"
+        assert c["enable_auto_swipe"] is True
+        assert c["auto_swipe_interval"] == 5000
+
+
 class TestBuildersRegistry:
     def test_list_builders_includes_mushroom_and_apex(self):
         names = builders.list_builders()

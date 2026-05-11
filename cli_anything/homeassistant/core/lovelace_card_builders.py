@@ -970,6 +970,273 @@ def sak_area(*, cx: float, cy: float, entity_index: int = 0,
                       entity_index=entity_index, styles=styles, **kw)
 
 
+# ─────────────────────────────────────────────────── Modern Circular Gauge
+
+def modern_circular_gauge(entity: str, *,
+                            min: float | str = 0,
+                            max: float | str = 100,
+                            gauge_type: str = "standard",
+                            attribute: str | None = None,
+                            unit: str | None = None,
+                            decimals: int | None = None,
+                            name: str | None = None,
+                            icon: str | None = None,
+                            label: str | None = None,
+                            needle: bool | None = None,
+                            show_graph: bool | None = None,
+                            adaptive_icon_color: bool | None = None,
+                            secondary: dict | None = None,
+                            tertiary: dict | None = None,
+                            segments: list[dict] | None = None) -> dict:
+    """`custom:modern-circular-gauge` (selvalt7).
+
+    `gauge_type` is one of: standard / half / full. `segments` lets you
+    set colour bands like `[{from: 13, color: [11, 182, 239]}, ...]`.
+    """
+    if not entity:
+        raise ValueError("entity required")
+    if gauge_type not in ("standard", "half", "full"):
+        raise ValueError(f"gauge_type must be standard/half/full, got {gauge_type!r}")
+    card: dict[str, Any] = {
+        "type": "custom:modern-circular-gauge",
+        "entity": entity, "min": min, "max": max,
+        "gauge_type": gauge_type,
+    }
+    if attribute is not None: card["attribute"] = attribute
+    if unit is not None: card["unit"] = unit
+    if decimals is not None: card["decimals"] = decimals
+    if name is not None: card["name"] = name
+    if icon is not None: card["icon"] = icon
+    if label is not None: card["label"] = label
+    if needle is not None: card["needle"] = needle
+    if show_graph is not None: card["show_graph"] = show_graph
+    if adaptive_icon_color is not None: card["adaptive_icon_color"] = adaptive_icon_color
+    if secondary is not None: card["secondary"] = secondary
+    if tertiary is not None: card["tertiary"] = tertiary
+    if segments is not None: card["segments"] = segments
+    return card
+
+
+# ─────────────────────────────────────────────────── Horizon Card
+
+def horizon_card(*, title: str | None = None,
+                   moon: bool = True,
+                   refresh_period: int | None = None,
+                   southern_flip: bool = False,
+                   fields: dict[str, bool] | None = None,
+                   language: str | None = None,
+                   time_format: str | None = None,
+                   no_card: bool = False) -> dict:
+    """`custom:horizon-card` (rejuvenate). Sun + moon visualization.
+
+    `fields` is an optional dict of visibility toggles, e.g.
+    ``{sunrise: true, sunset: true, dawn: true, noon: true, dusk: true,
+       azimuth: false, elevation: false, moonrise: false, moonset: false,
+       moon_phase: false}``. Pass into the `fields:` key of the card.
+    """
+    card: dict[str, Any] = {"type": "custom:horizon-card"}
+    if title is not None: card["title"] = title
+    if not moon: card["moon"] = False
+    if refresh_period is not None: card["refresh_period"] = refresh_period
+    if southern_flip: card["southern_flip"] = True
+    if fields is not None: card["fields"] = fields
+    if language is not None: card["language"] = language
+    if time_format is not None: card["time_format"] = time_format
+    if no_card: card["no_card"] = True
+    return card
+
+
+# ─────────────────────────────────────────────────── Calendar Card Pro
+
+def calendar_card_pro(entities: list[str | dict], *,
+                        days_to_show: int = 3,
+                        show_location: bool | None = None,
+                        title: str | None = None,
+                        max_events: int | None = None,
+                        compact_mode: bool | None = None,
+                        time_format: str | None = None) -> dict:
+    """`custom:calendar-card-pro` (alexpfau).
+
+    Entity entries can be bare strings (auto-wrapped) or dicts with
+    ``entity``, ``label``, ``color``, ``accent_color``, ``allowlist``,
+    ``blocklist``.
+    """
+    if not entities:
+        raise ValueError("at least one calendar entity required")
+    norm: list = []
+    for e in entities:
+        if isinstance(e, str):
+            norm.append(e)
+        elif isinstance(e, dict):
+            if not e.get("entity"):
+                raise ValueError("entity dict must have an 'entity' key")
+            norm.append(e)
+        else:
+            raise ValueError(
+                f"calendar entity must be str or dict, got {type(e).__name__}"
+            )
+    card: dict[str, Any] = {
+        "type": "custom:calendar-card-pro",
+        "entities": norm,
+        "days_to_show": days_to_show,
+    }
+    if show_location is not None: card["show_location"] = show_location
+    if title is not None: card["title"] = title
+    if max_events is not None: card["max_events"] = max_events
+    if compact_mode is not None: card["compact_mode"] = compact_mode
+    if time_format is not None: card["time_format"] = time_format
+    return card
+
+
+# ─────────────────────────────────────────────────── Weather Chart Card
+# (mlamberts78/weather-chart-card — repo archived 2024 but still installable
+# and widely used; not flagged as deprecated by HACS itself yet.)
+
+def weather_chart_card(entity: str, *,
+                          title: str | None = None,
+                          show_main: bool | None = None,
+                          show_attributes: bool | None = None,
+                          show_time: bool | None = None,
+                          show_date: bool | None = None,
+                          animated_icons: bool | None = None,
+                          forecast: dict | None = None,
+                          units: dict | None = None,
+                          locale: str | None = None,
+                          # Custom-sensor overrides
+                          temp: str | None = None,
+                          press: str | None = None,
+                          humid: str | None = None,
+                          uv: str | None = None,
+                          winddir: str | None = None,
+                          windspeed: str | None = None) -> dict:
+    """`custom:weather-chart-card` (mlamberts78). Forecast charts + tiles."""
+    if not entity.startswith("weather."):
+        raise ValueError("entity must be a weather.* entity")
+    card: dict[str, Any] = {
+        "type": "custom:weather-chart-card",
+        "entity": entity,
+    }
+    for k, v in (("title", title), ("show_main", show_main),
+                  ("show_attributes", show_attributes),
+                  ("show_time", show_time), ("show_date", show_date),
+                  ("animated_icons", animated_icons), ("forecast", forecast),
+                  ("units", units), ("locale", locale),
+                  ("temp", temp), ("press", press), ("humid", humid),
+                  ("uv", uv), ("winddir", winddir), ("windspeed", windspeed)):
+        if v is not None:
+            card[k] = v
+    return card
+
+
+# ─────────────────────────────────────────────────── Room Summary Card
+
+def room_summary_card(area: str, *,
+                         entity: str | None = None,
+                         entities: list[str | dict] | None = None,
+                         features: dict | None = None,
+                         background: dict | None = None,
+                         occupancy: dict | None = None,
+                         thresholds: dict | None = None) -> dict:
+    """`custom:room-summary-card` (homeassistant-extras).
+
+    `area` is the area_id (required). `entities` lets you override the
+    auto-discovered entity list. `features`, `background`, `occupancy`,
+    `thresholds` carry advanced presentation options.
+    """
+    if not area:
+        raise ValueError("area required")
+    card: dict[str, Any] = {
+        "type": "custom:room-summary-card",
+        "area": area,
+    }
+    if entity is not None: card["entity"] = entity
+    if entities is not None: card["entities"] = entities
+    if features is not None: card["features"] = features
+    if background is not None: card["background"] = background
+    if occupancy is not None: card["occupancy"] = occupancy
+    if thresholds is not None: card["thresholds"] = thresholds
+    return card
+
+
+# ─────────────────────────────────────────────────── Expander Card
+
+def expander_card(cards: list[dict], *,
+                     title: str | None = None,
+                     icon: str = "mdi:chevron-down",
+                     expanded: bool = False,
+                     animation: bool = True,
+                     haptic: str = "light",
+                     clear: bool = False,
+                     clear_children: bool = False,
+                     gap: str | None = None,
+                     padding: str | None = None,
+                     title_card: dict | None = None,
+                     title_card_clickable: bool = False,
+                     storage_id: str | None = None,
+                     expander_card_id: str | None = None) -> dict:
+    """`custom:expander-card` (MelleD). Collapsible group of child cards."""
+    if not cards:
+        raise ValueError("at least one child card required")
+    if haptic not in ("light", "medium", "heavy", "success",
+                       "warning", "failure", "selection", "none"):
+        raise ValueError(f"invalid haptic: {haptic!r}")
+    card: dict[str, Any] = {
+        "type": "custom:expander-card",
+        "icon": icon, "expanded": expanded,
+        "animation": animation, "haptic": haptic,
+        "cards": list(cards),
+    }
+    if title is not None: card["title"] = title
+    if clear: card["clear"] = True
+    if clear_children: card["clear-children"] = True
+    if gap is not None: card["gap"] = gap
+    if padding is not None: card["padding"] = padding
+    if title_card is not None: card["title-card"] = title_card
+    if title_card_clickable: card["title-card-clickable"] = True
+    if storage_id is not None: card["storage-id"] = storage_id
+    if expander_card_id is not None: card["expander-card-id"] = expander_card_id
+    return card
+
+
+# ─────────────────────────────────────────────────── Simple Swipe Card
+
+def simple_swipe_card(cards: list[dict], *,
+                        view_mode: str = "single",
+                        show_pagination: bool | None = None,
+                        card_spacing: int | None = None,
+                        swipe_direction: str = "horizontal",
+                        swipe_behavior: str = "single",
+                        loop_mode: str = "none",
+                        enable_auto_swipe: bool = False,
+                        auto_swipe_interval: int | None = None,
+                        state_entity: str | None = None) -> dict:
+    """`custom:simple-swipe-card` (nutteloost). Swipe-through carousel."""
+    if not cards:
+        raise ValueError("at least one card required")
+    if view_mode not in ("single", "carousel"):
+        raise ValueError(f"view_mode must be single/carousel, got {view_mode!r}")
+    if swipe_direction not in ("horizontal", "vertical"):
+        raise ValueError(f"swipe_direction must be horizontal/vertical, got {swipe_direction!r}")
+    if swipe_behavior not in ("single", "free"):
+        raise ValueError(f"swipe_behavior must be single/free, got {swipe_behavior!r}")
+    if loop_mode not in ("none", "loopback", "infinite"):
+        raise ValueError(f"loop_mode must be none/loopback/infinite, got {loop_mode!r}")
+    card: dict[str, Any] = {
+        "type": "custom:simple-swipe-card",
+        "cards": list(cards),
+        "view_mode": view_mode,
+        "swipe_direction": swipe_direction,
+        "swipe_behavior": swipe_behavior,
+        "loop_mode": loop_mode,
+    }
+    if show_pagination is not None: card["show_pagination"] = show_pagination
+    if card_spacing is not None: card["card_spacing"] = card_spacing
+    if enable_auto_swipe: card["enable_auto_swipe"] = True
+    if auto_swipe_interval is not None: card["auto_swipe_interval"] = auto_swipe_interval
+    if state_entity is not None: card["state_entity"] = state_entity
+    return card
+
+
 # ─────────────────────────────────────────────────── registry of builders
 
 BUILDERS: dict[str, callable] = {
@@ -1004,9 +1271,16 @@ BUILDERS: dict[str, callable] = {
     "mini-media-player": mini_media_player,
     "auto-entities": auto_entities,
     "layout-card": layout_card,
+    "calendar-card-pro": calendar_card_pro,
     "decluttering": decluttering,
+    "expander": expander_card,
+    "horizon": horizon_card,
+    "modern-circular-gauge": modern_circular_gauge,
+    "room-summary": room_summary_card,
+    "simple-swipe": simple_swipe_card,
     "stack-in-card": stack_in_card,
     "swiss-army-knife": swiss_army_knife,
+    "weather-chart": weather_chart_card,
     "simple-weather": simple_weather,
     "atomic-calendar": atomic_calendar,
     "digital-clock": digital_clock,
