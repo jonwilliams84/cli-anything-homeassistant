@@ -2313,3 +2313,544 @@ class TestLint:
         unknown = [u["card_type"] for u in result["unknown_card_types"]]
         assert "vertical-stack" in unknown
         assert "custom:bar-card" in unknown
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# v1.14 — Lovelace card builders, ops, sections, badges, types
+# ════════════════════════════════════════════════════════════════════════════
+
+from cli_anything.homeassistant.core import lovelace_card_builders as builders
+from cli_anything.homeassistant.core import lovelace_card_ops as card_ops
+from cli_anything.homeassistant.core import lovelace_card_types as card_types
+from cli_anything.homeassistant.core import lovelace_badges as badges_core
+from cli_anything.homeassistant.core import lovelace_sections as sections_core
+
+
+class TestBuildersBuiltins:
+    def test_entities_basic(self):
+        card = builders.entities(["light.kitchen", "light.lounge"], title="Lights")
+        assert card["type"] == "entities"
+        assert card["entities"] == ["light.kitchen", "light.lounge"]
+        assert card["title"] == "Lights"
+
+    def test_entities_rejects_empty(self):
+        with pytest.raises(ValueError):
+            builders.entities([])
+
+    def test_vertical_stack(self):
+        c = builders.vertical_stack([{"type": "tile", "entity": "light.a"}])
+        assert c["type"] == "vertical-stack"
+        assert len(c["cards"]) == 1
+
+    def test_horizontal_stack_validates(self):
+        with pytest.raises(ValueError):
+            builders.horizontal_stack([])
+
+    def test_grid(self):
+        c = builders.grid([{"type": "tile", "entity": "x"}], columns=4, square=True)
+        assert c["columns"] == 4
+        assert c["square"] is True
+
+    def test_grid_rejects_zero_columns(self):
+        with pytest.raises(ValueError):
+            builders.grid([{}], columns=0)
+
+    def test_glance(self):
+        c = builders.glance(["light.kitchen"], show_state=False)
+        assert c["type"] == "glance"
+        assert c["show_state"] is False
+
+    def test_gauge(self):
+        c = builders.gauge("sensor.temp", min=0, max=40, needle=True, unit="°C")
+        assert c["needle"] is True
+        assert c["unit"] == "°C"
+
+    def test_gauge_validates_entity(self):
+        with pytest.raises(ValueError):
+            builders.gauge("")
+
+    def test_tile(self):
+        c = builders.tile("light.lounge", color="amber", vertical=True)
+        assert c["vertical"] is True
+        assert c["color"] == "amber"
+
+    def test_button(self):
+        c = builders.button("light.x", show_state=True,
+                              tap_action={"action": "toggle"})
+        assert c["tap_action"] == {"action": "toggle"}
+
+    def test_markdown(self):
+        c = builders.markdown("# hi", title="Header")
+        assert c["content"] == "# hi"
+        assert c["title"] == "Header"
+
+    def test_markdown_validates(self):
+        with pytest.raises(ValueError):
+            builders.markdown("")
+
+    def test_history_graph(self):
+        c = builders.history_graph(["sensor.t"], hours_to_show=12)
+        assert c["hours_to_show"] == 12
+
+    def test_statistics_graph(self):
+        c = builders.statistics_graph(["sensor.t"], stat_types=["mean"],
+                                        chart_type="bar")
+        assert c["stat_types"] == ["mean"]
+        assert c["chart_type"] == "bar"
+
+    def test_conditional_validates(self):
+        with pytest.raises(ValueError):
+            builders.conditional({}, [])
+
+    def test_conditional_wraps(self):
+        inner = {"type": "tile", "entity": "light.x"}
+        conds = [{"entity": "light.x", "state": "on"}]
+        c = builders.conditional(inner, conds)
+        assert c["card"] is inner
+        assert c["conditions"] == conds
+
+    def test_picture_elements(self):
+        c = builders.picture_elements("/local/floorplan.png", [
+            {"type": "state-icon", "entity": "light.x",
+              "style": {"top": "50%", "left": "50%"}},
+        ])
+        assert c["image"] == "/local/floorplan.png"
+        assert len(c["elements"]) == 1
+
+    def test_iframe(self):
+        c = builders.iframe("https://grafana.local/d/abc",
+                              aspect_ratio="16:9")
+        assert c["aspect_ratio"] == "16:9"
+
+    def test_weather_forecast_validates(self):
+        with pytest.raises(ValueError):
+            builders.weather_forecast("sensor.foo")  # not weather.*
+
+    def test_weather_forecast(self):
+        c = builders.weather_forecast("weather.home", forecast_type="hourly")
+        assert c["forecast_type"] == "hourly"
+
+
+class TestBuildersMushroom:
+    def test_mushroom_template(self):
+        c = builders.mushroom_template("Hello", secondary="World",
+                                         icon="mdi:home",
+                                         icon_color="amber")
+        assert c["type"] == "custom:mushroom-template-card"
+        assert c["icon_color"] == "amber"
+
+    def test_mushroom_light(self):
+        c = builders.mushroom_light("light.kitchen",
+                                      show_brightness_control=True,
+                                      use_light_color=False)
+        assert c["show_brightness_control"] is True
+        assert c["use_light_color"] is False
+
+    def test_mushroom_light_validates(self):
+        with pytest.raises(ValueError):
+            builders.mushroom_light("switch.foo")
+
+    def test_mushroom_person(self):
+        c = builders.mushroom_person("person.jon", hide_name=True)
+        assert c["hide_name"] is True
+
+    def test_mushroom_climate(self):
+        c = builders.mushroom_climate("climate.bedroom",
+                                        hvac_modes=["heat", "off"])
+        assert c["hvac_modes"] == ["heat", "off"]
+
+    def test_mushroom_chips(self):
+        c = builders.mushroom_chips([
+            {"type": "entity", "entity": "sensor.t"},
+            {"type": "weather", "entity": "weather.home"},
+        ])
+        assert len(c["chips"]) == 2
+
+    def test_mushroom_chips_validates(self):
+        with pytest.raises(ValueError):
+            builders.mushroom_chips([])
+
+    def test_mushroom_title(self):
+        c = builders.mushroom_title(title="Living", alignment="center")
+        assert c["title"] == "Living"
+        assert c["alignment"] == "center"
+
+
+class TestBuildersCustomCharts:
+    def test_apexcharts(self):
+        c = builders.apexcharts(
+            [{"entity": "sensor.power", "name": "Power"}],
+            graph_span="24h", chart_type="line",
+        )
+        assert c["type"] == "custom:apexcharts-card"
+        assert c["graph_span"] == "24h"
+
+    def test_apexcharts_validates(self):
+        with pytest.raises(ValueError):
+            builders.apexcharts([])
+
+    def test_mini_graph(self):
+        c = builders.mini_graph(["sensor.t"], hours_to_show=12,
+                                  line_width=3, smoothing=True)
+        assert c["line_width"] == 3
+        assert c["smoothing"] is True
+
+    def test_button_card(self):
+        c = builders.button_card(entity="light.x", template="dimmer",
+                                   styles={"card": [{"height": "60px"}]})
+        assert c["template"] == "dimmer"
+        assert c["styles"]["card"][0]["height"] == "60px"
+
+    def test_button_card_requires_entity_or_template(self):
+        with pytest.raises(ValueError):
+            builders.button_card(name="just a name")
+
+    def test_bubble(self):
+        c = builders.bubble(card_type="cover", entity="cover.garage")
+        assert c["card_type"] == "cover"
+
+    def test_mini_media_player_validates(self):
+        with pytest.raises(ValueError):
+            builders.mini_media_player("light.foo")
+
+    def test_mini_media_player(self):
+        c = builders.mini_media_player("media_player.lounge",
+                                          artwork="cover")
+        assert c["artwork"] == "cover"
+
+    def test_auto_entities(self):
+        c = builders.auto_entities(
+            filter={"include": [{"domain": "light"}]},
+            card={"type": "entities", "title": "Lights"},
+        )
+        assert c["filter"]["include"][0]["domain"] == "light"
+        assert c["card"]["title"] == "Lights"
+
+    def test_auto_entities_validates(self):
+        with pytest.raises(ValueError):
+            builders.auto_entities(filter=None)  # type: ignore
+
+    def test_layout_card(self):
+        c = builders.layout_card([{"type": "tile", "entity": "x"}],
+                                    layout_type="masonry")
+        assert c["layout_type"] == "masonry"
+
+    def test_decluttering(self):
+        c = builders.decluttering("my_tpl",
+                                   variables=[{"name": "entity",
+                                               "default": "light.x"}])
+        assert c["template"] == "my_tpl"
+
+    def test_decluttering_validates(self):
+        with pytest.raises(ValueError):
+            builders.decluttering("")
+
+    def test_stack_in_card(self):
+        c = builders.stack_in_card([{"type": "tile", "entity": "x"}],
+                                      mode="horizontal")
+        assert c["mode"] == "horizontal"
+
+    def test_bar_card(self):
+        c = builders.bar_card(["sensor.battery"], min=0, max=100,
+                                direction="up")
+        assert c["direction"] == "up"
+
+    def test_simple_weather_validates(self):
+        with pytest.raises(ValueError):
+            builders.simple_weather("sensor.foo")
+
+    def test_atomic_calendar(self):
+        c = builders.atomic_calendar(["calendar.work"], mode="Calendar",
+                                       max_days_to_show=14)
+        assert c["mode"] == "Calendar"
+        assert c["maxDaysToShow"] == 14
+
+    def test_digital_clock(self):
+        c = builders.digital_clock(time_format={"hour": "2-digit"},
+                                     locale="en-GB")
+        assert c["locale"] == "en-GB"
+
+    def test_flex_table(self):
+        c = builders.flex_table(entities={"include": [{"domain": "sensor"}]},
+                                   columns=[{"name": "Sensor",
+                                              "data": "entity_id"}])
+        assert len(c["columns"]) == 1
+
+
+class TestBuildersRegistry:
+    def test_list_builders_includes_mushroom_and_apex(self):
+        names = builders.list_builders()
+        assert "mushroom-template" in names
+        assert "apexcharts" in names
+        assert "entities" in names
+
+    def test_build_dispatcher(self):
+        c = builders.build("entities", entities=["light.x"])
+        assert c["type"] == "entities"
+
+    def test_build_unknown(self):
+        with pytest.raises(ValueError, match="unknown card type"):
+            builders.build("not-a-card")
+
+    def test_build_passes_kwargs(self):
+        c = builders.build("mushroom-light", entity="light.foo",
+                            show_brightness_control=True)
+        assert c["entity"] == "light.foo"
+
+
+# ─────────────────────────────────────────────── card_ops
+
+@pytest.fixture
+def stack_dashboard():
+    return {
+        "views": [
+            {"path": "home", "title": "Home", "type": "masonry",
+             "cards": [
+                 {"type": "tile", "entity": "light.a"},     # cards[0]
+                 {"type": "tile", "entity": "light.b"},     # cards[1]
+                 {"type": "tile", "entity": "light.c"},     # cards[2]
+             ]},
+            {"path": "second", "title": "Second", "type": "masonry",
+             "cards": [
+                 {"type": "tile", "entity": "sensor.x"},
+             ]},
+        ],
+    }
+
+
+class TestCardOps:
+    def test_move_within_same_view(self, stack_dashboard):
+        # move views[0]/cards[0] to views[1]/cards[]
+        card_ops.move_card(stack_dashboard, "views[0]/cards[0]",
+                              "views[1]")
+        # views[0] should now have 2 cards (b, c)
+        v0 = stack_dashboard["views"][0]
+        v1 = stack_dashboard["views"][1]
+        assert len(v0["cards"]) == 2
+        assert v0["cards"][0]["entity"] == "light.b"
+        assert len(v1["cards"]) == 2
+        # destination appended
+        assert v1["cards"][1]["entity"] == "light.a"
+
+    def test_reorder(self, stack_dashboard):
+        card_ops.reorder_card(stack_dashboard, "views[0]/cards[2]", 0)
+        assert stack_dashboard["views"][0]["cards"][0]["entity"] == "light.c"
+
+    def test_reorder_out_of_range(self, stack_dashboard):
+        with pytest.raises(IndexError):
+            card_ops.reorder_card(stack_dashboard, "views[0]/cards[0]", 99)
+
+    def test_wrap_vertical(self, stack_dashboard):
+        new_ptr = card_ops.wrap_in_stack(stack_dashboard,
+            ["views[0]/cards[0]", "views[0]/cards[1]"],
+            stack_type="vertical-stack",
+        )
+        assert new_ptr == "views[0]/cards[0]"
+        # views[0] now has 2 cards: a stack of 2 + the original c
+        cards = stack_dashboard["views"][0]["cards"]
+        assert len(cards) == 2
+        stack = cards[0]
+        assert stack["type"] == "vertical-stack"
+        assert len(stack["cards"]) == 2
+        assert stack["cards"][0]["entity"] == "light.a"
+        assert stack["cards"][1]["entity"] == "light.b"
+        assert cards[1]["entity"] == "light.c"
+
+    def test_wrap_grid_columns(self, stack_dashboard):
+        card_ops.wrap_in_stack(stack_dashboard,
+            ["views[0]/cards[0]", "views[0]/cards[1]"],
+            stack_type="grid", columns=3,
+        )
+        stack = stack_dashboard["views"][0]["cards"][0]
+        assert stack["type"] == "grid"
+        assert stack["columns"] == 3
+
+    def test_wrap_validates_same_parent(self, stack_dashboard):
+        with pytest.raises(ValueError, match="same parent"):
+            card_ops.wrap_in_stack(stack_dashboard,
+                ["views[0]/cards[0]", "views[1]/cards[0]"],
+            )
+
+    def test_wrap_invalid_stack_type(self, stack_dashboard):
+        with pytest.raises(ValueError):
+            card_ops.wrap_in_stack(stack_dashboard,
+                ["views[0]/cards[0]"], stack_type="madness",
+            )
+
+    def test_wrap_conditional(self, stack_dashboard):
+        card_ops.wrap_in_conditional(stack_dashboard, "views[0]/cards[1]",
+            [{"entity": "light.b", "state": "on"}])
+        wrapped = stack_dashboard["views"][0]["cards"][1]
+        assert wrapped["type"] == "conditional"
+        assert wrapped["card"]["entity"] == "light.b"
+        assert wrapped["conditions"][0]["state"] == "on"
+
+    def test_duplicate(self, stack_dashboard):
+        new_ptr = card_ops.duplicate_card(stack_dashboard, "views[0]/cards[0]")
+        assert new_ptr == "views[0]/cards[1]"
+        # views[0] now has 4 cards
+        cards = stack_dashboard["views"][0]["cards"]
+        assert len(cards) == 4
+        assert cards[1]["entity"] == "light.a"
+
+    def test_duplicate_with_substitution(self, stack_dashboard):
+        card_ops.duplicate_card(stack_dashboard, "views[0]/cards[0]",
+                                  substitutions={"light\\.a": "light.z"})
+        cards = stack_dashboard["views"][0]["cards"]
+        assert cards[1]["entity"] == "light.z"
+
+    def test_inject_card_mod(self, stack_dashboard):
+        card_ops.inject_card_mod(stack_dashboard, "views[0]/cards[0]",
+            "ha-card { border-radius: 20px; }")
+        card = stack_dashboard["views"][0]["cards"][0]
+        assert "card_mod" in card
+        assert "border-radius" in card["card_mod"]["style"]["root"]
+
+    def test_inject_card_mod_appends(self, stack_dashboard):
+        card_ops.inject_card_mod(stack_dashboard, "views[0]/cards[0]",
+            "ha-card { color: red; }")
+        card_ops.inject_card_mod(stack_dashboard, "views[0]/cards[0]",
+            "ha-card { background: blue; }")
+        css = stack_dashboard["views"][0]["cards"][0]["card_mod"]["style"]["root"]
+        assert "red" in css and "blue" in css
+
+    def test_inject_card_mod_validates(self, stack_dashboard):
+        with pytest.raises(ValueError):
+            card_ops.inject_card_mod(stack_dashboard, "views[0]/cards[0]", "")
+
+    def test_clear_card_mod(self, stack_dashboard):
+        card_ops.inject_card_mod(stack_dashboard, "views[0]/cards[0]",
+            "ha-card { color: red; }")
+        card_ops.clear_card_mod(stack_dashboard, "views[0]/cards[0]")
+        assert "card_mod" not in stack_dashboard["views"][0]["cards"][0]
+
+
+# ─────────────────────────────────────────────── sections
+
+class TestSections:
+    def _config(self):
+        return {
+            "views": [
+                {"path": "home", "title": "Home", "type": "sections",
+                 "sections": [
+                     {"type": "grid", "cards": [{"type": "heading",
+                                                   "heading": "Existing"}]},
+                 ]},
+                {"path": "old", "title": "Old", "type": "masonry",
+                 "cards": []},
+            ],
+        }
+
+    def test_list_sections(self):
+        cfg = self._config()
+        items = sections_core.list_sections(cfg, "home")
+        assert len(items) == 1
+
+    def test_add_section(self):
+        cfg = self._config()
+        s = sections_core.add_section(cfg, "home", title="New")
+        assert s["type"] == "grid"
+        assert len(cfg["views"][0]["sections"]) == 2
+        assert s["cards"][0]["heading"] == "New"
+
+    def test_add_section_validates_view_type(self):
+        cfg = self._config()
+        with pytest.raises(ValueError, match="sections view"):
+            sections_core.add_section(cfg, "old", title="X")
+
+    def test_delete_section(self):
+        cfg = self._config()
+        sections_core.delete_section(cfg, "home", 0)
+        assert cfg["views"][0]["sections"] == []
+
+    def test_delete_section_out_of_range(self):
+        cfg = self._config()
+        with pytest.raises(IndexError):
+            sections_core.delete_section(cfg, "home", 99)
+
+    def test_move_section(self):
+        cfg = self._config()
+        sections_core.add_section(cfg, "home", title="Second")
+        sections_core.add_section(cfg, "home", title="Third")
+        sections_core.move_section(cfg, "home", 2, 0)
+        first = cfg["views"][0]["sections"][0]
+        assert first["cards"][0]["heading"] == "Third"
+
+
+# ─────────────────────────────────────────────── badges
+
+class TestBadges:
+    def _config(self):
+        return {
+            "views": [
+                {"path": "home", "title": "Home",
+                 "badges": ["sensor.temp"],
+                 "cards": []},
+            ],
+        }
+
+    def test_list_badges(self):
+        cfg = self._config()
+        assert badges_core.list_badges(cfg, "home") == ["sensor.temp"]
+
+    def test_add_entity_badge(self):
+        cfg = self._config()
+        badges_core.add_badge(cfg, "home", "person.jon")
+        assert cfg["views"][0]["badges"][-1] == "person.jon"
+
+    def test_add_dict_badge(self):
+        cfg = self._config()
+        badges_core.add_badge(cfg, "home",
+            {"type": "entity-filter", "entity": "sensor.t"})
+        assert cfg["views"][0]["badges"][-1]["type"] == "entity-filter"
+
+    def test_add_validates_empty(self):
+        cfg = self._config()
+        with pytest.raises(ValueError):
+            badges_core.add_badge(cfg, "home", "")
+
+    def test_delete_badge(self):
+        cfg = self._config()
+        badges_core.delete_badge(cfg, "home", 0)
+        assert cfg["views"][0]["badges"] == []
+
+    def test_delete_out_of_range(self):
+        cfg = self._config()
+        with pytest.raises(IndexError):
+            badges_core.delete_badge(cfg, "home", 5)
+
+    def test_move_badge(self):
+        cfg = self._config()
+        badges_core.add_badge(cfg, "home", "sensor.b")
+        badges_core.add_badge(cfg, "home", "sensor.c")
+        badges_core.move_badge(cfg, "home", 2, 0)
+        assert cfg["views"][0]["badges"][0] == "sensor.c"
+
+
+# ─────────────────────────────────────────────── card_types
+
+class TestCardTypes:
+    def _config(self):
+        return {
+            "views": [
+                {"path": "home", "cards": [
+                    {"type": "tile", "entity": "light.a"},
+                    {"type": "vertical-stack", "cards": [
+                        {"type": "custom:mushroom-light-card",
+                          "entity": "light.b"},
+                        {"type": "custom:apexcharts-card", "series": []},
+                    ]},
+                ]},
+            ],
+        }
+
+    def test_types_in_use(self):
+        types = card_types.card_types_in_use(self._config())
+        assert types["tile"] == 1
+        assert types["custom:mushroom-light-card"] == 1
+        assert types["vertical-stack"] == 1
+
+    def test_custom_types_only(self):
+        custom = card_types.custom_types_only(
+            ["tile", "custom:mushroom-light-card", "vertical-stack"])
+        assert custom == ["custom:mushroom-light-card"]

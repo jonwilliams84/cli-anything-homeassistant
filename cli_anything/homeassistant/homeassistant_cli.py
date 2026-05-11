@@ -34,6 +34,11 @@ from cli_anything.homeassistant.core import inspect as inspect_core
 from cli_anything.homeassistant.core import labels as labels_core
 from cli_anything.homeassistant.core import logger as logger_core
 from cli_anything.homeassistant.core import lovelace_cards as lovelace_cards_core
+from cli_anything.homeassistant.core import lovelace_card_builders as lovelace_builders_core
+from cli_anything.homeassistant.core import lovelace_card_ops as lovelace_card_ops_core
+from cli_anything.homeassistant.core import lovelace_card_types as lovelace_card_types_core
+from cli_anything.homeassistant.core import lovelace_badges as lovelace_badges_core
+from cli_anything.homeassistant.core import lovelace_sections as lovelace_sections_core
 from cli_anything.homeassistant.core import lovelace_paths as lovelace_paths_core
 from cli_anything.homeassistant.core import mqtt_discovery as mqtt_discovery_core
 from cli_anything.homeassistant.core import notifications as notifications_core
@@ -4031,6 +4036,406 @@ def lovelace_card_patch(ctx, url_path, pointer, set_pairs, data_file, strict, dr
     res = lovelace_core.save_dashboard_config(make_client(ctx), url_path, cfg)
     emit(ctx, {"pointer": pointer, "patched_fields": list(fields),
                 "result": res})
+
+
+# ──────────────────────────────────────────────────────── lovelace v1.14: layout ops
+
+@lovelace_card.command("move")
+@click.argument("url_path")
+@click.argument("src_pointer")
+@click.argument("dest_parent_pointer")
+@click.option("--index", type=int, default=None,
+                help="Position in destination cards[] (default: append)")
+@click.pass_context
+def lovelace_card_move(ctx, url_path, src_pointer, dest_parent_pointer, index):
+    """Move a card from one pointer to another container's cards[]."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        lovelace_card_ops_core.move_card(cfg, src_pointer, dest_parent_pointer,
+                                            index=index)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"moved": src_pointer, "to": dest_parent_pointer,
+                 "at_index": index})
+
+
+@lovelace_card.command("reorder")
+@click.argument("url_path")
+@click.argument("pointer")
+@click.argument("new_index", type=int)
+@click.pass_context
+def lovelace_card_reorder(ctx, url_path, pointer, new_index):
+    """Change a card's index within its current parent list."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        lovelace_card_ops_core.reorder_card(cfg, pointer, new_index)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"reordered": pointer, "to_index": new_index})
+
+
+@lovelace_card.command("wrap")
+@click.argument("url_path")
+@click.argument("pointers", nargs=-1, required=True)
+@click.option("--stack-type",
+                type=click.Choice(["vertical-stack", "horizontal-stack", "grid"]),
+                default="vertical-stack", show_default=True)
+@click.option("--columns", type=int, default=None,
+                help="Grid column count (only with --stack-type grid)")
+@click.option("--title", help="Optional title for the new stack")
+@click.pass_context
+def lovelace_card_wrap(ctx, url_path, pointers, stack_type, columns, title):
+    """Wrap one or more cards (sharing a parent) into a stack card."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        new_ptr = lovelace_card_ops_core.wrap_in_stack(
+            cfg, list(pointers), stack_type=stack_type,
+            columns=columns, title=title,
+        )
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"wrapped": list(pointers), "stack_type": stack_type,
+                 "new_pointer": new_ptr})
+
+
+@lovelace_card.command("wrap-conditional")
+@click.argument("url_path")
+@click.argument("pointer")
+@click.option("--entity", required=True,
+                help="Entity to gate on")
+@click.option("--state", required=True,
+                help="State value the entity must equal")
+@click.pass_context
+def lovelace_card_wrap_conditional(ctx, url_path, pointer, entity, state):
+    """Wrap a card in a `conditional` showing it only when entity == state."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    cond = [{"entity": entity, "state": state}]
+    try:
+        lovelace_card_ops_core.wrap_in_conditional(cfg, pointer, cond)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"wrapped": pointer, "condition": cond[0]})
+
+
+@lovelace_card.command("duplicate")
+@click.argument("url_path")
+@click.argument("pointer")
+@click.option("--substitute", "-s", "subs", multiple=True,
+                help="Regex substitution old=new (repeatable)")
+@click.option("--index-offset", default=1, type=int, show_default=True,
+                help="Insert N positions after the source")
+@click.pass_context
+def lovelace_card_duplicate(ctx, url_path, pointer, subs, index_offset):
+    """Clone a card; optionally apply --substitute regex pairs."""
+    sub_map: dict[str, str] = {}
+    for s in subs:
+        if "=" not in s:
+            _abort(f"--substitute must be 'old=new', got {s!r}")
+        k, v = s.split("=", 1)
+        sub_map[k] = v
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        new_ptr = lovelace_card_ops_core.duplicate_card(
+            cfg, pointer, substitutions=sub_map or None,
+            index_offset=index_offset,
+        )
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"duplicated": pointer, "new_pointer": new_ptr,
+                 "substitutions": sub_map})
+
+
+@lovelace_card.command("style")
+@click.argument("url_path")
+@click.argument("pointer")
+@click.option("--css", help="Raw CSS to inject")
+@click.option("--css-file", type=click.Path(exists=True, dir_okay=False),
+                help="Read CSS from a file instead")
+@click.option("--target", default="root", show_default=True,
+                help="Card-mod target selector (root, ha-card, etc.)")
+@click.option("--clear", is_flag=True,
+                help="Remove all card_mod from this card instead")
+@click.pass_context
+def lovelace_card_style(ctx, url_path, pointer, css, css_file, target, clear):
+    """Inject a card_mod CSS block on a card (or --clear to remove)."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    if clear:
+        try:
+            lovelace_card_ops_core.clear_card_mod(cfg, pointer)
+        except (KeyError, IndexError, ValueError) as e:
+            _abort(str(e))
+        lovelace_core.save_dashboard_config(client, url_path, cfg)
+        emit(ctx, {"cleared_card_mod_on": pointer})
+        return
+    css_text = css
+    if css_file:
+        css_text = (css_text or "") + "\n" + Path(css_file).read_text()
+    if not css_text:
+        _abort("provide --css or --css-file (or --clear)")
+    try:
+        lovelace_card_ops_core.inject_card_mod(cfg, pointer, css_text, target=target)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"styled": pointer, "target": target,
+                 "css_lines": len(css_text.splitlines())})
+
+
+# ──────────────────────────────────────────────────────── lovelace v1.14: card create
+
+@lovelace_card.command("types")
+@click.option("--dashboard", "url_path", default=None,
+                help="Limit to one dashboard (default: scan all)")
+@click.option("--installed", is_flag=True,
+                help="Cross-reference custom types against HACS plugins")
+@click.pass_context
+def lovelace_card_types_cmd(ctx, url_path, installed):
+    """List every card `type:` in use across dashboards."""
+    client = make_client(ctx)
+    if url_path:
+        cfg = lovelace_core.get_dashboard_config(client, url_path)
+        types = lovelace_card_types_core.card_types_in_use(cfg)
+        out: dict = {"dashboard": url_path, "types": types}
+    else:
+        out = {"by_dashboard": lovelace_card_types_core.types_across_dashboards(client)}
+        # also unique aggregate
+        all_types: dict[str, int] = {}
+        for d, ts in out["by_dashboard"].items():
+            for t, n in ts.items():
+                all_types[t] = all_types.get(t, 0) + n
+        out["unique"] = sorted(all_types)
+    if installed:
+        all_types_list = []
+        if "types" in out:
+            all_types_list = list(out["types"])
+        else:
+            all_types_list = out["unique"]
+        custom = lovelace_card_types_core.custom_types_only(all_types_list)
+        if custom:
+            out["hacs_matches"] = lovelace_card_types_core.cross_reference_hacs(
+                client, custom,
+            )
+    emit(ctx, out)
+
+
+@lovelace_card.command("builders")
+@click.pass_context
+def lovelace_card_builders_cmd(ctx):
+    """List every card type that has a built-in builder."""
+    emit(ctx, {"builders": lovelace_builders_core.list_builders()})
+
+
+@lovelace_card.command("create")
+@click.argument("url_path")
+@click.argument("parent_pointer")
+@click.argument("card_type")
+@click.option("--set", "set_pairs", multiple=True,
+                help="Builder kwarg as key=value (JSON-aware, repeatable)")
+@click.option("--data-file", type=click.Path(exists=True, dir_okay=False),
+                help="Read full builder kwargs from a JSON file")
+@click.option("--position", type=int, default=None,
+                help="Insert at this index in parent's cards[]")
+@click.option("--dry-run", is_flag=True, default=False,
+                help="Build and print the card without saving")
+@click.pass_context
+def lovelace_card_create(ctx, url_path, parent_pointer, card_type,
+                            set_pairs, data_file, position, dry_run):
+    """Create a card via a type-aware builder and insert it.
+
+    Run `lovelace card builders` to list every known type. Builder kwargs
+    are passed via --set name=value; values are parsed as JSON when
+    possible (so `--set entities='["light.a","light.b"]'` becomes a list).
+    """
+    kwargs: dict = {}
+    if data_file:
+        kwargs.update(json.loads(Path(data_file).read_text()))
+    if set_pairs:
+        kwargs.update(parse_kv_pairs(set_pairs))
+    try:
+        new_card = lovelace_builders_core.build(card_type, **kwargs)
+    except (TypeError, ValueError) as e:
+        _abort(f"build failed: {e}")
+    if dry_run:
+        emit(ctx, {"would_insert_at": parent_pointer, "card": new_card})
+        return
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        lovelace_cards_core.insert_card(cfg, parent_pointer, new_card,
+                                          position=position)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"created": new_card.get("type"),
+                 "into": parent_pointer, "position": position})
+
+
+# ──────────────────────────────────────────────────────── lovelace v1.14: section CRUD
+
+@lovelace_section.command("list")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.pass_context
+def lovelace_section_list(ctx, url_path, view_path):
+    """List sections in a sections view."""
+    cfg = lovelace_core.get_dashboard_config(make_client(ctx), url_path)
+    try:
+        sections = lovelace_sections_core.list_sections(cfg, view_path)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    emit(ctx, [{"index": i, "type": s.get("type"),
+                  "cards": len(s.get("cards", []))}
+                 for i, s in enumerate(sections)])
+
+
+@lovelace_section.command("add")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.option("--title", help="Section heading title")
+@click.option("--column-span", type=int)
+@click.option("--index", type=int, default=None,
+                help="Insert at this position (default: append)")
+@click.pass_context
+def lovelace_section_add(ctx, url_path, view_path, title, column_span, index):
+    """Add a new section to a sections view."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        section = lovelace_sections_core.add_section(
+            cfg, view_path, title=title,
+            column_span=column_span, index=index,
+        )
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"added": section})
+
+
+@lovelace_section.command("delete")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.argument("section_idx", type=int)
+@click.pass_context
+def lovelace_section_delete(ctx, url_path, view_path, section_idx):
+    """Delete a section by index."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        lovelace_sections_core.delete_section(cfg, view_path, section_idx)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"deleted_section": section_idx})
+
+
+@lovelace_section.command("move")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.argument("section_idx", type=int)
+@click.argument("new_index", type=int)
+@click.pass_context
+def lovelace_section_move(ctx, url_path, view_path, section_idx, new_index):
+    """Move a section to a new index within its view."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        lovelace_sections_core.move_section(cfg, view_path, section_idx, new_index)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"moved_section": section_idx, "to_index": new_index})
+
+
+# ──────────────────────────────────────────────────────── lovelace v1.14: badges
+
+@lovelace.group("badge")
+def lovelace_badge():
+    """Badge (top-of-view chip) operations."""
+
+
+@lovelace_badge.command("list")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.pass_context
+def lovelace_badge_list(ctx, url_path, view_path):
+    """List badges on a view."""
+    cfg = lovelace_core.get_dashboard_config(make_client(ctx), url_path)
+    try:
+        badges = lovelace_badges_core.list_badges(cfg, view_path)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    emit(ctx, badges)
+
+
+@lovelace_badge.command("add")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.argument("entity_or_json")
+@click.option("--index", type=int, default=None,
+                help="Insert at this position (default: append)")
+@click.pass_context
+def lovelace_badge_add(ctx, url_path, view_path, entity_or_json, index):
+    """Add a badge. ENTITY_OR_JSON is an entity_id string OR a JSON dict."""
+    badge: object = entity_or_json
+    if entity_or_json.strip().startswith("{"):
+        try:
+            badge = json.loads(entity_or_json)
+        except json.JSONDecodeError as e:
+            _abort(f"bad JSON: {e}")
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        lovelace_badges_core.add_badge(cfg, view_path, badge, index=index)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"added_badge": badge})
+
+
+@lovelace_badge.command("delete")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.argument("badge_idx", type=int)
+@click.pass_context
+def lovelace_badge_delete(ctx, url_path, view_path, badge_idx):
+    """Delete a badge by index."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        lovelace_badges_core.delete_badge(cfg, view_path, badge_idx)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"deleted_badge": badge_idx})
+
+
+@lovelace_badge.command("move")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.argument("badge_idx", type=int)
+@click.argument("new_index", type=int)
+@click.pass_context
+def lovelace_badge_move(ctx, url_path, view_path, badge_idx, new_index):
+    """Move a badge to a new index."""
+    client = make_client(ctx)
+    cfg = lovelace_core.get_dashboard_config(client, url_path)
+    try:
+        lovelace_badges_core.move_badge(cfg, view_path, badge_idx, new_index)
+    except (KeyError, IndexError, ValueError) as e:
+        _abort(str(e))
+    lovelace_core.save_dashboard_config(client, url_path, cfg)
+    emit(ctx, {"moved_badge": badge_idx, "to_index": new_index})
 
 
 # ──────────────────────────────────────────────────────── small wins
