@@ -799,12 +799,21 @@ def ensure_sak_templates_on_dashboard(client, url_path: str | None,
     """Add `sak_sys_templates` + `sak_user_templates` to a dashboard root.
 
     SAK v2.5+ refuses to instantiate any tool if these keys are missing.
-    Pass real templates if you have them; pass `None` to get empty dicts
-    (enough to satisfy SAK's reference check for cards that don't use
-    templates internally).
+    Pass real templates if you have them; pass `None` to leave existing
+    or set an empty dict.
+
+    ⚠️  An EMPTY `sak_sys_templates: {}` is **not enough** for cards that
+    use template references (`template:` inside a tool). SAK looks up
+    subkeys like ``colorstops``, ``layouts``, ``tools``, ``toolsets``,
+    ``derived``, ``statemaps`` and errors if a referenced one is missing.
+    For tool-only cards that never reference a template, the empty form
+    typically silences the global "system templates NOT defined" error.
+
+    See :func:`fetch_sak_system_templates` to pull the upstream system
+    templates from the AmoebeLabs repo as a starting point.
 
     Returns True if the dashboard was modified, False if both keys
-    already existed.
+    already existed and no overrides were passed.
     """
     from cli_anything.homeassistant.core import lovelace as ll
     cfg = ll.get_dashboard_config(client, url_path)
@@ -824,6 +833,59 @@ def ensure_sak_templates_on_dashboard(client, url_path: str | None,
     if changed:
         ll.save_dashboard_config(client, url_path, cfg)
     return changed
+
+
+def fetch_sak_system_templates(*, branch: str = "master") -> dict:
+    """Fetch the upstream SAK `sak_templates` directory from GitHub and
+    flatten it into a dict suitable for the dashboard root.
+
+    Returns a dict keyed by template name (e.g. ``colorstops``, ``layouts``,
+    ``tools``, etc.) ready to merge into ``sak_sys_templates``. Walks each
+    `templates/<NN-name>/` subdir, parses every `.yaml` file inside,
+    merges them under the directory's short name (everything after the
+    `NN-` prefix).
+
+    Requires PyYAML to be importable. Network access required.
+    """
+    import urllib.request, json as _json
+    try:
+        import yaml  # type: ignore
+    except ImportError as e:
+        raise RuntimeError(
+            "PyYAML required to load SAK templates "
+            "(pip install pyyaml)"
+        ) from e
+
+    base = "https://api.github.com"
+    repo = "AmoebeLabs/swiss-army-knife-card"
+    root_path = f"ha-config/lovelace/sak_templates/templates"
+
+    def _gh(path):
+        url = f"{base}/repos/{repo}/contents/{path}?ref={branch}"
+        with urllib.request.urlopen(url) as r:
+            return _json.loads(r.read())
+
+    out: dict[str, Any] = {}
+    try:
+        dirs = _gh(root_path)
+    except Exception as e:
+        raise RuntimeError(f"failed to list SAK templates: {e}") from e
+
+    for entry in dirs:
+        if entry.get("type") != "dir":
+            continue
+        name = entry["name"]  # e.g. "11-colorstops"
+        short = name.split("-", 1)[1] if "-" in name else name
+        merged: dict[str, Any] = {}
+        for f in _gh(f"{root_path}/{name}"):
+            if f.get("type") != "file" or not f["name"].endswith(".yaml"):
+                continue
+            with urllib.request.urlopen(f["download_url"]) as r:
+                doc = yaml.safe_load(r.read()) or {}
+            if isinstance(doc, dict):
+                merged.update(doc)
+        out[short] = merged
+    return out
 
 
 # Toolset helper — keeps the SAK config readable when authoring cards.
