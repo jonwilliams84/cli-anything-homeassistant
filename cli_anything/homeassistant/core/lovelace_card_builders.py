@@ -585,11 +585,22 @@ def atomic_calendar(entities: list[str | dict], *, name: str | None = None,
                       max_days_to_show: int = 7,
                       show_location: bool | None = None,
                       show_no_event_days: bool | None = None) -> dict:
+    """`custom:atomic-calendar-revive`. Entries may be bare entity_ids
+    (auto-wrapped) or full dicts with `entity`, `name`, `color`."""
     if not entities:
         raise ValueError("at least one calendar entity required")
+    # Atomic-calendar-revive expects [{"entity": ..., ...}] — normalize bare strings
+    norm: list[dict] = []
+    for e in entities:
+        if isinstance(e, str):
+            norm.append({"entity": e})
+        elif isinstance(e, dict):
+            norm.append(e)
+        else:
+            raise ValueError(f"calendar entity must be str or dict, got {type(e).__name__}")
     card: dict[str, Any] = {
         "type": "custom:atomic-calendar-revive",
-        "entities": list(entities),
+        "entities": norm,
         "mode": mode,
         "maxDaysToShow": max_days_to_show,
     }
