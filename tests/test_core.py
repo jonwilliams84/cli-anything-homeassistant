@@ -925,6 +925,150 @@ class TestScriptTraces:
         assert get_call["payload"]["run_id"] == "r2"
 
 
+# ────────────────────────────────────────────────────────── energy / themes / calendars / tts
+
+from cli_anything.homeassistant.core import energy as energy_core
+from cli_anything.homeassistant.core import themes as themes_core
+from cli_anything.homeassistant.core import calendars as calendars_core
+from cli_anything.homeassistant.core import tts as tts_core
+
+
+class TestEnergy:
+    def test_get_prefs(self, fake_client):
+        fake_client.set_ws("energy/get_prefs", {"currency": "GBP"})
+        out = energy_core.get_prefs(fake_client)
+        assert out["currency"] == "GBP"
+
+    def test_save_prefs_validates(self):
+        with pytest.raises(ValueError):
+            energy_core.save_prefs(None, [])  # type: ignore
+
+    def test_fossil_validates_empty_ids(self):
+        with pytest.raises(ValueError):
+            energy_core.fossil_energy_consumption(
+                None, energy_statistic_ids=[],
+                co2_signal_entity="sensor.co2", start_time="2026-01-01",
+            )
+
+    def test_fossil_validates_period(self):
+        with pytest.raises(ValueError):
+            energy_core.fossil_energy_consumption(
+                None, energy_statistic_ids=["sensor.x"],
+                co2_signal_entity="sensor.co2", start_time="2026-01-01",
+                period="picosecond",
+            )
+
+
+class TestThemes:
+    def test_names_sorted(self, fake_client):
+        fake_client.set_ws("frontend/get_themes", {
+            "themes": {"Graphite": {}, "Fluent Blue": {}},
+            "default_theme": "default",
+        })
+        assert themes_core.names(fake_client) == ["Fluent Blue", "Graphite"]
+
+    def test_set_theme_payload(self, fake_client):
+        fake_client.set_service("frontend", "set_theme", {})
+        themes_core.set_theme(fake_client, "Graphite", mode="dark")
+        last = fake_client.service_calls[-1]
+        assert last["service_data"]["name"] == "Graphite"
+        assert last["service_data"]["mode"] == "dark"
+
+    def test_set_theme_validates_mode(self):
+        with pytest.raises(ValueError):
+            themes_core.set_theme(None, "X", mode="weird")
+
+
+class TestCalendars:
+    def test_list_calendars(self, fake_client):
+        fake_client.set("GET", "states",
+                          [{"entity_id": "calendar.x", "state": "on",
+                            "attributes": {"friendly_name": "X"}},
+                           {"entity_id": "sensor.y", "state": "1"}])
+        rows = calendars_core.list_calendars(fake_client)
+        assert len(rows) == 1
+        assert rows[0]["entity_id"] == "calendar.x"
+
+    def test_events_validates_domain(self):
+        with pytest.raises(ValueError):
+            calendars_core.events(None, "sensor.foo")
+
+    def test_create_event_validates(self):
+        with pytest.raises(ValueError):
+            calendars_core.create_event(None, "calendar.x", summary="", start="2026-01-01")
+        with pytest.raises(ValueError):
+            calendars_core.create_event(None, "calendar.x", summary="X", start="")
+
+    def test_create_event_detects_all_day(self, fake_client):
+        fake_client.set_service("calendar", "create_event", {})
+        calendars_core.create_event(
+            fake_client, "calendar.x",
+            summary="Birthday", start="2026-05-15", end="2026-05-16",
+        )
+        last = fake_client.service_calls[-1]
+        # All-day = no T in start; should use start_date / end_date
+        assert "start_date" in last["service_data"]
+        assert "start_date_time" not in last["service_data"]
+
+    def test_create_event_detects_timed(self, fake_client):
+        fake_client.set_service("calendar", "create_event", {})
+        calendars_core.create_event(
+            fake_client, "calendar.x",
+            summary="Meeting", start="2026-05-15T10:00:00",
+            end="2026-05-15T11:00:00",
+        )
+        last = fake_client.service_calls[-1]
+        assert "start_date_time" in last["service_data"]
+        assert "start_date" not in last["service_data"]
+
+    def test_delete_event_requires_uid(self):
+        with pytest.raises(ValueError):
+            calendars_core.delete_event(None, "calendar.x", uid="")
+
+
+class TestTTS:
+    def test_list_engines(self, fake_client):
+        fake_client.set("GET", "states", [
+            {"entity_id": "tts.piper", "state": "ok",
+             "attributes": {"friendly_name": "Piper",
+                            "default_language": "en"}},
+            {"entity_id": "sensor.x", "state": "1"},
+        ])
+        rows = tts_core.list_engines(fake_client)
+        assert len(rows) == 1
+        assert rows[0]["entity_id"] == "tts.piper"
+
+    def test_speak_validates_entities(self):
+        with pytest.raises(ValueError):
+            tts_core.speak(None, tts_entity="sensor.x",
+                            media_player_entity="media_player.y",
+                            message="hi")
+        with pytest.raises(ValueError):
+            tts_core.speak(None, tts_entity="tts.x",
+                            media_player_entity="sensor.y",
+                            message="hi")
+        with pytest.raises(ValueError):
+            tts_core.speak(None, tts_entity="tts.x",
+                            media_player_entity="media_player.y",
+                            message="")
+
+    def test_speak_payload(self, fake_client):
+        fake_client.set_service("tts", "speak", {})
+        tts_core.speak(
+            fake_client,
+            tts_entity="tts.piper",
+            media_player_entity="media_player.lounge",
+            message="hi", language="en-GB", cache=False,
+        )
+        last = fake_client.service_calls[-1]
+        assert last["service_data"]["media_player_entity_id"] == "media_player.lounge"
+        assert last["service_data"]["message"] == "hi"
+        assert last["service_data"]["cache"] is False
+        assert last["service_data"]["language"] == "en-GB"
+        # target carries the tts entity id
+        assert last["service_data"]["entity_id"] == "tts.piper"
+
+
 # ────────────────────────────────────────────────────────── system errors triage
 
 class TestSystemErrorsTriage:

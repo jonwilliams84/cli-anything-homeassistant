@@ -22,6 +22,10 @@ from cli_anything.homeassistant.core import areas as areas_core
 from cli_anything.homeassistant.core import assist as assist_core
 from cli_anything.homeassistant.core import backup as backup_core
 from cli_anything.homeassistant.core import blueprints as blueprints_core
+from cli_anything.homeassistant.core import calendars as calendars_core
+from cli_anything.homeassistant.core import energy as energy_core
+from cli_anything.homeassistant.core import themes as themes_core
+from cli_anything.homeassistant.core import tts as tts_core
 from cli_anything.homeassistant.core import control as control_core
 from cli_anything.homeassistant.core import diagnostics as diagnostics_core
 from cli_anything.homeassistant.core import floors as floors_core
@@ -3520,6 +3524,235 @@ def blueprint_substitute(ctx, domain, path, inputs, input_file):
     emit(ctx, blueprints_core.substitute(
         make_client(ctx), domain=domain, path=path, user_input=user_input,
     ))
+
+
+# ──────────────────────────────────────────────────────── energy
+
+@cli.group()
+def energy():
+    """Energy dashboard preferences + fossil-fuel derivations."""
+
+
+@energy.command("get-prefs")
+@click.pass_context
+def energy_get_prefs(ctx):
+    """Read the full Energy dashboard config."""
+    emit(ctx, energy_core.get_prefs(make_client(ctx)))
+
+
+@energy.command("set-prefs")
+@click.argument("prefs_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--dry-run", is_flag=True, default=False)
+@click.pass_context
+def energy_set_prefs(ctx, prefs_file, dry_run):
+    """Replace the Energy dashboard config from a JSON file.
+
+    Read the current shape with `energy get-prefs` first, edit, and pass back.
+    """
+    prefs = json.loads(Path(prefs_file).read_text())
+    if dry_run:
+        emit(ctx, {"dry_run": True, "would_save_keys": list(prefs.keys())})
+        return
+    emit(ctx, energy_core.save_prefs(make_client(ctx), prefs))
+
+
+@energy.command("info")
+@click.pass_context
+def energy_info(ctx):
+    """Energy integration capability flags."""
+    emit(ctx, energy_core.info(make_client(ctx)))
+
+
+@energy.command("fossil")
+@click.argument("energy_statistic_ids", nargs=-1)
+@click.option("--co2-signal", required=True,
+              help="The sensor.* entity from the co2signal integration")
+@click.option("--start", "start_time", required=True,
+              help="ISO-8601 start time")
+@click.option("--end", "end_time", default=None)
+@click.option("--period", default="hour",
+              type=click.Choice(["5minute", "hour", "day", "week", "month"]))
+@click.pass_context
+def energy_fossil(ctx, energy_statistic_ids, co2_signal, start_time,
+                    end_time, period):
+    """Compute fossil-fuel kWh-equivalent for energy stats over a period."""
+    if not energy_statistic_ids:
+        _abort("provide at least one energy_statistic_id")
+    emit(ctx, energy_core.fossil_energy_consumption(
+        make_client(ctx),
+        energy_statistic_ids=list(energy_statistic_ids),
+        co2_signal_entity=co2_signal,
+        start_time=start_time, end_time=end_time, period=period,
+    ))
+
+
+# ──────────────────────────────────────────────────────── themes
+
+@cli.group()
+def theme():
+    """Frontend themes — list / set / reload."""
+
+
+@theme.command("list")
+@click.option("--names-only", is_flag=True, default=False,
+              help="Print just the sorted theme name list")
+@click.pass_context
+def theme_list(ctx, names_only):
+    """Show installed themes + the configured default(s)."""
+    if names_only:
+        emit(ctx, themes_core.names(make_client(ctx)))
+    else:
+        emit(ctx, themes_core.list_themes(make_client(ctx)))
+
+
+@theme.command("set")
+@click.argument("name")
+@click.option("--mode", default=None,
+              type=click.Choice(["dark", "light"]),
+              help="Apply only for this color scheme (default: both)")
+@click.pass_context
+def theme_set(ctx, name, mode):
+    """Set the active theme. Pass `default` to restore HA's built-in."""
+    emit(ctx, themes_core.set_theme(make_client(ctx), name, mode=mode))
+
+
+@theme.command("reload")
+@click.pass_context
+def theme_reload(ctx):
+    """Reload themes from configuration.yaml."""
+    emit(ctx, themes_core.reload(make_client(ctx)))
+
+
+# ──────────────────────────────────────────────────────── calendars
+
+@cli.group()
+def calendar():
+    """Calendar entities — list / events / create / update / delete."""
+
+
+@calendar.command("list")
+@click.pass_context
+def calendar_list(ctx):
+    emit(ctx, calendars_core.list_calendars(make_client(ctx)))
+
+
+@calendar.command("events")
+@click.argument("entity_id")
+@click.option("--start", default=None, help="ISO-8601 (default: now)")
+@click.option("--end", default=None, help="ISO-8601 (default: +7d)")
+@click.option("--duration", default=None,
+              help="Alt to --end: '01:30:00' or '7 days' etc")
+@click.pass_context
+def calendar_events(ctx, entity_id, start, end, duration):
+    """List events in a date range for one calendar entity."""
+    emit(ctx, calendars_core.events(
+        make_client(ctx), entity_id,
+        start=start, end=end, duration=duration,
+    ))
+
+
+@calendar.command("create-event")
+@click.argument("entity_id")
+@click.option("--summary", required=True)
+@click.option("--start", required=True,
+              help="ISO timestamp (T present) or YYYY-MM-DD (all-day)")
+@click.option("--end", default=None,
+              help="ISO timestamp or YYYY-MM-DD (matches start's format)")
+@click.option("--description", default=None)
+@click.option("--location", default=None)
+@click.option("--rrule", default=None,
+              help="Recurrence rule, e.g. FREQ=WEEKLY;BYDAY=MO,WE,FR")
+@click.pass_context
+def calendar_create(ctx, entity_id, summary, start, end, description,
+                      location, rrule):
+    emit(ctx, calendars_core.create_event(
+        make_client(ctx), entity_id,
+        summary=summary, start=start, end=end,
+        description=description, location=location, rrule=rrule,
+    ))
+
+
+@calendar.command("update-event")
+@click.argument("entity_id")
+@click.option("--uid", required=True, help="Event uid (from `calendar events`)")
+@click.option("--summary", default=None)
+@click.option("--start", default=None)
+@click.option("--end", default=None)
+@click.option("--description", default=None)
+@click.option("--location", default=None)
+@click.option("--rrule", default=None)
+@click.option("--recurrence-id", default=None)
+@click.option("--recurrence-range", default=None)
+@click.pass_context
+def calendar_update(ctx, entity_id, uid, summary, start, end,
+                      description, location, rrule, recurrence_id, recurrence_range):
+    emit(ctx, calendars_core.update_event(
+        make_client(ctx), entity_id,
+        uid=uid, summary=summary, start=start, end=end,
+        description=description, location=location, rrule=rrule,
+        recurrence_id=recurrence_id, recurrence_range=recurrence_range,
+    ))
+
+
+@calendar.command("delete-event")
+@click.argument("entity_id")
+@click.option("--uid", required=True)
+@click.option("--recurrence-id", default=None)
+@click.option("--recurrence-range", default=None,
+              type=click.Choice(["THISANDFUTURE", "THISANDPRIOR"]))
+@click.confirmation_option(prompt="Delete this event?")
+@click.pass_context
+def calendar_delete(ctx, entity_id, uid, recurrence_id, recurrence_range):
+    emit(ctx, calendars_core.delete_event(
+        make_client(ctx), entity_id,
+        uid=uid, recurrence_id=recurrence_id,
+        recurrence_range=recurrence_range,
+    ))
+
+
+# ──────────────────────────────────────────────────────── tts
+
+@cli.group()
+def tts():
+    """Text-to-speech — engines list / speak / clear-cache."""
+
+
+@tts.command("list")
+@click.pass_context
+def tts_list(ctx):
+    """List every tts.* engine + its languages."""
+    emit(ctx, tts_core.list_engines(make_client(ctx)))
+
+
+@tts.command("speak")
+@click.argument("tts_entity")
+@click.argument("message")
+@click.option("--media-player", "media_player_entity", required=True)
+@click.option("--language", default=None)
+@click.option("--no-cache", is_flag=True, default=False,
+              help="Bypass HA's TTS audio cache (re-synth even if cached)")
+@click.option("--option", "options_kv", multiple=True,
+              help="Engine option key=value (repeatable)")
+@click.pass_context
+def tts_speak(ctx, tts_entity, message, media_player_entity, language,
+                no_cache, options_kv):
+    """Synthesise `message` via `tts_entity` and play on `--media-player`."""
+    options = parse_kv_pairs(options_kv) if options_kv else None
+    emit(ctx, tts_core.speak(
+        make_client(ctx),
+        tts_entity=tts_entity,
+        media_player_entity=media_player_entity,
+        message=message, language=language,
+        options=options, cache=not no_cache,
+    ))
+
+
+@tts.command("clear-cache")
+@click.argument("tts_entity", required=False)
+@click.confirmation_option(prompt="Clear TTS audio cache?")
+@click.pass_context
+def tts_clear_cache(ctx, tts_entity):
+    emit(ctx, tts_core.clear_cache(make_client(ctx), tts_entity))
 
 
 if __name__ == "__main__":
