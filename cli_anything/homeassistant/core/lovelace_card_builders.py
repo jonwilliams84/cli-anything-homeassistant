@@ -592,15 +592,23 @@ def simple_weather(entity: str, *, name: str | None = None,
 # ─────────────────────────────────────────────────── Atomic Calendar Revive
 
 def atomic_calendar(entities: list[str | dict], *, name: str | None = None,
-                      mode: str = "Event",
+                      default_mode: str = "Event",
                       max_days_to_show: int = 7,
                       show_location: bool | None = None,
                       show_no_event_days: bool | None = None) -> dict:
-    """`custom:atomic-calendar-revive`. Entries may be bare entity_ids
-    (auto-wrapped) or full dicts with `entity`, `name`, `color`."""
+    """`custom:atomic-calendar-revive` (v10+).
+
+    Entries may be bare entity_ids (auto-wrapped to ``{entity: ...}``) or
+    full dicts with ``entity``, ``name``, ``color``. ``default_mode`` is
+    ``Event`` (default), ``EventList``, or ``Calendar`` — set on the v10
+    field ``defaultMode``.
+    """
     if not entities:
         raise ValueError("at least one calendar entity required")
-    # Atomic-calendar-revive expects [{"entity": ..., ...}] — normalize bare strings
+    if default_mode not in ("Event", "EventList", "Calendar"):
+        raise ValueError(
+            f"default_mode must be Event / EventList / Calendar, got {default_mode!r}"
+        )
     norm: list[dict] = []
     for e in entities:
         if isinstance(e, str):
@@ -612,7 +620,7 @@ def atomic_calendar(entities: list[str | dict], *, name: str | None = None,
     card: dict[str, Any] = {
         "type": "custom:atomic-calendar-revive",
         "entities": norm,
-        "mode": mode,
+        "defaultMode": default_mode,
         "maxDaysToShow": max_days_to_show,
     }
     if name is not None: card["name"] = name
@@ -642,13 +650,35 @@ def digital_clock(*, time_format: dict | None = None,
 
 # ─────────────────────────────────────────────────── Flex Table
 
-def flex_table(*, entities: dict, columns: list[dict],
+def flex_table(*, entities, columns: list[dict],
                  sort_by: str | None = None,
                  strict: bool | None = None) -> dict:
-    """`custom:flex-table-card`. `entities` is a filter spec like
-    `{include: [...]}` or `{entities: [...]}`."""
+    """`custom:flex-table-card`.
+
+    `entities` accepts:
+      - a list of entity_ids (bare strings)
+      - a regex/wildcard pattern string (e.g. ``'sensor.*_energy'``)
+      - a dict ``{include: <pattern_or_list>, exclude: <pattern_or_list>}``
+        where patterns are STRINGS (not auto-entities-style filter dicts).
+    """
     if not columns:
         raise ValueError("at least one column required")
+    # Validate that filter patterns are strings (catch the common
+    # mistake of passing auto-entities-style dict filters).
+    if isinstance(entities, dict):
+        for key in ("include", "exclude"):
+            v = entities.get(key)
+            if v is None:
+                continue
+            items = v if isinstance(v, list) else [v]
+            for it in items:
+                if not isinstance(it, str):
+                    raise ValueError(
+                        f"flex-table entities.{key} expects regex/wildcard "
+                        f"STRINGS, got {type(it).__name__} {it!r}. "
+                        f"(auto-entities-style filter dicts are NOT supported "
+                        f"here — use a string pattern like 'light.*' instead.)"
+                    )
     card: dict[str, Any] = {
         "type": "custom:flex-table-card",
         "entities": entities,

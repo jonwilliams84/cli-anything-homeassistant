@@ -2555,10 +2555,16 @@ class TestBuildersCustomCharts:
             builders.simple_weather("sensor.foo")
 
     def test_atomic_calendar(self):
-        c = builders.atomic_calendar(["calendar.work"], mode="Calendar",
+        c = builders.atomic_calendar(["calendar.work"], default_mode="Calendar",
                                        max_days_to_show=14)
-        assert c["mode"] == "Calendar"
+        assert c["defaultMode"] == "Calendar"
         assert c["maxDaysToShow"] == 14
+        # bare entity_ids auto-wrap to {entity: ...}
+        assert c["entities"] == [{"entity": "calendar.work"}]
+
+    def test_atomic_calendar_rejects_bad_mode(self):
+        with pytest.raises(ValueError, match="default_mode"):
+            builders.atomic_calendar(["calendar.work"], default_mode="Wrong")
 
     def test_digital_clock(self):
         c = builders.digital_clock(time_format={"hour": "2-digit"},
@@ -2566,10 +2572,18 @@ class TestBuildersCustomCharts:
         assert c["locale"] == "en-GB"
 
     def test_flex_table(self):
-        c = builders.flex_table(entities={"include": [{"domain": "sensor"}]},
+        c = builders.flex_table(entities="sensor.*",
                                    columns=[{"name": "Sensor",
                                               "data": "entity_id"}])
         assert len(c["columns"]) == 1
+        assert c["entities"] == "sensor.*"
+
+    def test_flex_table_rejects_dict_filters(self):
+        with pytest.raises(ValueError, match="STRINGS"):
+            builders.flex_table(
+                entities={"include": [{"domain": "light"}]},
+                columns=[{"name": "x", "data": "entity_id"}],
+            )
 
 
 class TestBuildersRegistry:
