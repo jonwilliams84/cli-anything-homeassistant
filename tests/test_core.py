@@ -1069,6 +1069,124 @@ class TestTTS:
         assert last["service_data"]["entity_id"] == "tts.piper"
 
 
+# ────────────────────────────────────────────────────────── subentries
+
+from cli_anything.homeassistant.core import subentries as subentries_core
+
+
+class TestSubentries:
+    SAMPLE_SUBS = [
+        {"subentry_id": "s1", "subentry_type": "conversation",
+         "title": "Google Generative AI"},
+        {"subentry_id": "s2", "subentry_type": "ai_task_data",
+         "title": "Google AI Task"},
+        {"subentry_id": "s3", "subentry_type": "tts",
+         "title": "Google AI TTS"},
+    ]
+    FORM = {
+        "flow_id": "fake-flow",
+        "step_id": "set_options",
+        "data_schema": [
+            {"name": "chat_model", "required": True,
+             "description": {"suggested_value": "models/gemini-3-flash-preview"}},
+            {"name": "temperature", "required": True,
+             "description": {"suggested_value": 1.0}},
+            {"name": "max_tokens", "required": False,
+             "description": {"suggested_value": 3000}},
+        ],
+    }
+
+    def test_list_requires_entry_id(self):
+        with pytest.raises(ValueError):
+            subentries_core.list_subentries(None, "")
+
+    def test_list_uses_correct_ws(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        rows = subentries_core.list_subentries(fake_client, "entry-1")
+        assert len(rows) == 3
+        last = fake_client.ws_calls[-1]
+        assert last["type"] == "config_entries/subentries/list"
+        assert last["payload"] == {"entry_id": "entry-1"}
+
+    def test_find_by_id(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        out = subentries_core.find_subentry(fake_client, "entry-1", "s2")
+        assert out["subentry_type"] == "ai_task_data"
+
+    def test_find_by_title_case_insensitive(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        out = subentries_core.find_subentry(fake_client, "entry-1", "GOOGLE AI TASK")
+        assert out["subentry_id"] == "s2"
+
+    def test_find_missing(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        assert subentries_core.find_subentry(fake_client, "entry-1", "ghost") is None
+
+    def test_read_subentry_returns_suggested_values(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        fake_client.set("POST", "config/config_entries/subentries/flow", self.FORM)
+        out = subentries_core.read_subentry(fake_client, "entry-1", "s2")
+        assert out["subentry_type"] == "ai_task_data"
+        assert out["options"]["chat_model"] == "models/gemini-3-flash-preview"
+        assert out["options"]["temperature"] == 1.0
+        # init payload should include source=reconfigure
+        init_post = [c for c in fake_client.calls
+                      if c["verb"] == "POST"
+                      and c["path"] == "config/config_entries/subentries/flow"][-1]
+        assert init_post["payload"]["source"] == "reconfigure"
+        assert init_post["payload"]["handler"] == ["entry-1", "ai_task_data"]
+        assert init_post["payload"]["subentry_id"] == "s2"
+
+    def test_read_subentry_aborts_flow(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        fake_client.set("POST", "config/config_entries/subentries/flow", self.FORM)
+        subentries_core.read_subentry(fake_client, "entry-1", "s2")
+        deletes = [c for c in fake_client.calls if c["verb"] == "DELETE"]
+        assert any("flow/fake-flow" in c["path"] for c in deletes)
+
+    def test_reconfigure_validates_overrides_type(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        with pytest.raises(ValueError):
+            subentries_core.reconfigure(fake_client, "entry-1", "s2",
+                                          overrides="not a dict")  # type: ignore
+
+    def test_reconfigure_dry_run_does_not_submit(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        fake_client.set("POST", "config/config_entries/subentries/flow", self.FORM)
+        out = subentries_core.reconfigure(
+            fake_client, "entry-1", "s2",
+            overrides={"chat_model": "models/gemini-2.5-flash"},
+            dry_run=True,
+        )
+        assert out["dry_run"] is True
+        assert out["merged"]["chat_model"] == "models/gemini-2.5-flash"
+        assert out["merged"]["temperature"] == 1.0  # preserved
+        submits = [c for c in fake_client.calls
+                    if c["verb"] == "POST"
+                    and "subentries/flow/fake-flow" in c["path"]]
+        assert submits == []
+
+    def test_reconfigure_merges_and_submits(self, fake_client):
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        fake_client.set("POST", "config/config_entries/subentries/flow", self.FORM)
+        fake_client.set("POST",
+                          "config/config_entries/subentries/flow/fake-flow",
+                          {"type": "abort", "reason": "reconfigure_successful"})
+        out = subentries_core.reconfigure(
+            fake_client, "entry-1", "s2",
+            overrides={"chat_model": "models/gemini-2.5-flash",
+                        "temperature": 0.7},
+        )
+        assert out["ok"] is True
+        submit_post = [c for c in fake_client.calls
+                        if c["verb"] == "POST"
+                        and c["path"] == "config/config_entries/subentries/flow/fake-flow"][-1]
+        merged = submit_post["payload"]
+        assert merged["chat_model"] == "models/gemini-2.5-flash"
+        assert merged["temperature"] == 0.7
+        assert merged["max_tokens"] == 3000  # preserved
+
+
 # ────────────────────────────────────────────────────────── system errors triage
 
 class TestSystemErrorsTriage:

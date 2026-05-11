@@ -51,6 +51,7 @@ from cli_anything.homeassistant.core import script as script_core
 from cli_anything.homeassistant.core import services as services_core
 from cli_anything.homeassistant.core import states as states_core
 from cli_anything.homeassistant.core import recorder as recorder_core
+from cli_anything.homeassistant.core import subentries as subentries_core
 from cli_anything.homeassistant.core import system as system_core
 from cli_anything.homeassistant.core import template as template_core
 from cli_anything.homeassistant.core import template_helpers as template_helpers_core
@@ -3753,6 +3754,86 @@ def tts_speak(ctx, tts_entity, message, media_player_entity, language,
 @click.pass_context
 def tts_clear_cache(ctx, tts_entity):
     emit(ctx, tts_core.clear_cache(make_client(ctx), tts_entity))
+
+
+# ──────────────────────────────────────────────────────── subentries
+
+@cli.group()
+def subentry():
+    """Manage config-entry SUBENTRIES (e.g. Google AI conversation/tts/stt/ai_task_data).
+
+    Many modern integrations expose sub-configurations on one config entry —
+    each subentry has its own reconfigure flow distinct from the parent
+    entry's options. Use this group to list, inspect, and reconfigure them.
+    """
+
+
+@subentry.command("list")
+@click.argument("entry_id")
+@click.pass_context
+def subentry_list(ctx, entry_id):
+    """List subentries of a parent config entry."""
+    rows = subentries_core.list_subentries(make_client(ctx), entry_id)
+    if not ctx.obj.get("as_json"):
+        # Compact display
+        rows = [{
+            "subentry_id": r.get("subentry_id"),
+            "subentry_type": r.get("subentry_type"),
+            "title": r.get("title"),
+            "unique_id": r.get("unique_id"),
+        } for r in rows]
+    emit(ctx, rows)
+
+
+@subentry.command("show")
+@click.argument("entry_id")
+@click.argument("ident",
+                 metavar="SUBENTRY_ID_OR_TITLE")
+@click.pass_context
+def subentry_show(ctx, entry_id, ident):
+    """Show the current options of a subentry.
+
+    `ident` is either the subentry_id (`01K...`) or its title (case-
+    insensitive match against `subentry list`).
+    """
+    emit(ctx, subentries_core.read_subentry(make_client(ctx), entry_id, ident))
+
+
+@subentry.command("reconfigure")
+@click.argument("entry_id")
+@click.argument("ident",
+                 metavar="SUBENTRY_ID_OR_TITLE")
+@click.option("--set", "set_pairs", multiple=True,
+              help="Field override key=value (repeatable, JSON-aware)")
+@click.option("--data-file", type=click.Path(exists=True, dir_okay=False),
+              help="Read full overrides as JSON from a file")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the would-be merged payload without submitting")
+@click.pass_context
+def subentry_reconfigure(ctx, entry_id, ident, set_pairs, data_file, dry_run):
+    """Reconfigure a subentry, preserving untouched fields.
+
+    Examples:
+
+      # Switch the AI Task model on a Google Generative AI entry
+      cli-anything-homeassistant subentry reconfigure \\
+          34a3b367d65a3e0b61a99d7202f7d4eb 'Google AI Task' \\
+          --set chat_model=models/gemini-2.5-flash \\
+          --set recommended=false
+
+      # Read-only preview
+      cli-anything-homeassistant subentry reconfigure ... --dry-run
+    """
+    overrides: dict = {}
+    if data_file:
+        overrides.update(json.loads(Path(data_file).read_text()))
+    if set_pairs:
+        overrides.update(parse_kv_pairs(set_pairs))
+    if not overrides:
+        _abort("provide at least one --set key=value or --data-file")
+    emit(ctx, subentries_core.reconfigure(
+        make_client(ctx), entry_id, ident, overrides, dry_run=dry_run,
+    ))
 
 
 if __name__ == "__main__":
