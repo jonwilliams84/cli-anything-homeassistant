@@ -73,6 +73,42 @@ def input_select_create(client, name: str, options: list[str], *,
     return client.ws_call("input_select/create", payload)
 
 
+def input_select_update(client, entity_id: str, *,
+                          options: list[str] | None = None,
+                          name: str | None = None,
+                          icon: str | None = None,
+                          initial: str | None = None) -> dict:
+    """PERSISTENTLY update an input_select helper (UI-managed only).
+
+    Uses HA's storage-collection WS command ``input_select/update``. The
+    change is written to ``.storage/input_select`` immediately and
+    survives HA restart — unlike ``input_select_set_options`` which only
+    updates the runtime state and reverts on restart.
+
+    The helper must be UI-managed (created via Settings → Helpers or via
+    ``input_select/create``). YAML-defined input_selects cannot be
+    updated this way — for those, the YAML config must be edited.
+
+    `entity_id` — the full entity_id (e.g. `input_select.room_selector_jon`).
+    The WS API strips the domain prefix internally.
+
+    At least one of `options`, `name`, `icon`, or `initial` must be set.
+    """
+    if not entity_id.startswith("input_select."):
+        raise ValueError(f"expected input_select.* entity_id, got {entity_id!r}")
+    if options is None and name is None and icon is None and initial is None:
+        raise ValueError("nothing to update — pass options/name/icon/initial")
+    payload: dict = {"input_select_id": entity_id.split(".", 1)[1]}
+    if options is not None:
+        if not isinstance(options, list) or not options:
+            raise ValueError("options must be a non-empty list")
+        payload["options"] = list(options)
+    if name is not None: payload["name"] = name
+    if icon is not None: payload["icon"] = icon
+    if initial is not None: payload["initial"] = initial
+    return client.ws_call("input_select/update", payload)
+
+
 def input_select_sync(client, src_entity_id: str, dst_entity_id: str,
                        *, fallback: str = "Auto") -> dict:
     """Copy the OPTIONS list from src to dst input_select. State is left alone.
