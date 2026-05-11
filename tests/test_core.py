@@ -2586,6 +2586,152 @@ class TestBuildersCustomCharts:
             )
 
 
+class TestBuildersSwissArmyKnife:
+    def test_minimal(self):
+        tools = [builders.sak_circle(cx=50, cy=50, radius=40)]
+        toolset = builders.sak_toolset("ts1", tools=tools)
+        c = builders.swiss_army_knife(
+            entities=["sensor.temp"],
+            toolsets=[toolset],
+        )
+        assert c["type"] == "custom:swiss-army-knife-card"
+        assert c["aspectratio"] == "1/1"
+        # entities auto-wrapped
+        assert c["entities"] == [{"entity": "sensor.temp"}]
+        # nested toolset
+        ts0 = c["layout"]["toolsets"][0]
+        assert ts0["toolset"] == "ts1"
+        assert ts0["tools"][0]["type"] == "circle"
+
+    def test_entities_pass_through_dicts(self):
+        c = builders.swiss_army_knife(
+            entities=[{"entity": "sensor.t", "name": "Temp", "decimals": 1}],
+            toolsets=[builders.sak_toolset("t",
+                tools=[builders.sak_circle(cx=50, cy=50)])],
+        )
+        assert c["entities"][0]["decimals"] == 1
+
+    def test_rejects_no_entities(self):
+        with pytest.raises(ValueError, match="at least one entity"):
+            builders.swiss_army_knife(entities=[],
+                toolsets=[builders.sak_toolset("t", tools=[])])
+
+    def test_rejects_no_toolsets(self):
+        with pytest.raises(ValueError, match="toolset"):
+            builders.swiss_army_knife(
+                entities=["sensor.x"], toolsets=[])
+
+    def test_rejects_bad_tool_type(self):
+        with pytest.raises(ValueError, match="unknown type"):
+            builders.swiss_army_knife(
+                entities=["sensor.x"],
+                toolsets=[{"toolset": "t",
+                            "position": {"cx": 50, "cy": 50},
+                            "tools": [{"type": "ghost",
+                                        "position": {"cx": 0, "cy": 0}}]}],
+            )
+
+    def test_aspectratio(self):
+        c = builders.swiss_army_knife(
+            entities=["sensor.t"],
+            toolsets=[builders.sak_toolset("t",
+                tools=[builders.sak_circle(cx=50, cy=50)])],
+            aspectratio="2/1",
+        )
+        assert c["aspectratio"] == "2/1"
+
+
+class TestSAKTools:
+    def test_circle(self):
+        t = builders.sak_circle(cx=50, cy=50, radius=45,
+                                  styles={"circle": {"fill": "red"}})
+        assert t["type"] == "circle"
+        assert t["position"] == {"cx": 50, "cy": 50, "radius": 45}
+        assert t["styles"]["circle"]["fill"] == "red"
+
+    def test_ellipse(self):
+        t = builders.sak_ellipse(cx=50, cy=50, rx=30, ry=20)
+        assert t["type"] == "ellipse"
+        assert t["position"]["rx"] == 30
+
+    def test_line(self):
+        t = builders.sak_line(x1=10, y1=10, x2=90, y2=90)
+        assert t["position"] == {"x1": 10, "y1": 10, "x2": 90, "y2": 90}
+
+    def test_rectangle(self):
+        t = builders.sak_rectangle(cx=50, cy=50, width=80, height=40, rx=8)
+        assert t["position"]["rx"] == 8
+
+    def test_text(self):
+        t = builders.sak_text("Hello", cx=50, cy=50, align="center")
+        assert t["text"] == "Hello"
+        assert t["position"]["align"] == "center"
+
+    def test_icon(self):
+        t = builders.sak_icon(cx=50, cy=25, entity_index=0, icon_size=30)
+        assert t["entity_index"] == 0
+        assert t["position"]["icon_size"] == 30
+
+    def test_state(self):
+        t = builders.sak_state(cx=50, cy=70, entity_index=2)
+        assert t["entity_index"] == 2
+        assert t["type"] == "state"
+
+    def test_name(self):
+        t = builders.sak_name(cx=50, cy=50)
+        assert t["type"] == "name"
+
+    def test_segarc(self):
+        t = builders.sak_segarc(cx=50, cy=50, radius=40,
+                                  start_angle=-180, end_angle=0)
+        assert t["position"]["start_angle"] == -180
+
+    def test_horseshoe(self):
+        t = builders.sak_horseshoe(cx=50, cy=50, radius=35, entity_index=1)
+        assert t["entity_index"] == 1
+        assert t["type"] == "horseshoe"
+
+    def test_sparkline(self):
+        t = builders.sak_sparkline(cx=50, cy=50, width=80, height=30,
+                                      hours=12)
+        assert t["position"]["hours"] == 12
+
+    def test_slider(self):
+        t = builders.sak_slider(cx=50, cy=50, length=60,
+                                  orientation="vertical")
+        assert t["position"]["orientation"] == "vertical"
+
+    def test_switch(self):
+        t = builders.sak_switch(cx=50, cy=50)
+        assert t["type"] == "switch"
+
+    def test_usersvg(self):
+        t = builders.sak_usersvg(cx=50, cy=50, width=80, height=80,
+                                    uri="/local/icon.svg")
+        assert t["uri"] == "/local/icon.svg"
+
+    def test_circslider(self):
+        t = builders.sak_circslider(cx=50, cy=50, radius=40,
+                                       start_angle=-180, end_angle=0)
+        assert t["position"]["radius"] == 40
+
+    def test_progpath(self):
+        t = builders.sak_progpath(cx=50, cy=50, width=80, height=10)
+        assert t["type"] == "progpath"
+
+    def test_regpoly(self):
+        t = builders.sak_regpoly(cx=50, cy=50, radius=20, sides=8)
+        assert t["position"]["sides"] == 8
+
+    def test_rectex(self):
+        t = builders.sak_rectex(cx=50, cy=50, width=60, height=30)
+        assert t["type"] == "rectex"
+
+    def test_area(self):
+        t = builders.sak_area(cx=50, cy=50, entity_index=0)
+        assert t["type"] == "area"
+
+
 class TestBuildersRegistry:
     def test_list_builders_includes_mushroom_and_apex(self):
         names = builders.list_builders()

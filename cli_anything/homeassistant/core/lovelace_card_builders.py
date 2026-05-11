@@ -689,6 +689,287 @@ def flex_table(*, entities, columns: list[dict],
     return card
 
 
+# ─────────────────────────────────────────────────── Swiss Army Knife
+# AmoebeLabs/swiss-army-knife-card — fully YAML-driven SVG card builder.
+# Card structure:
+#   type:           custom:swiss-army-knife-card
+#   aspectratio:    "W/H" — canvas aspect ratio (default 1/1)
+#   entities:       [{entity, name?, attribute?, decimals?, unit?, ...}, …]
+#   layout:
+#     toolsets:     [{toolset: <name>, position: {cx, cy}, tools: […]}, …]
+#
+# Each tool has: type, position, entity_index? (0-based into `entities`),
+# classes?, styles?, animations?, user_actions?.
+#
+# 17 tool types (per the official docs): circle, ellipse, line, rectangle,
+# rectex (rectangle-ex), regpoly, text, circslider, horseshoe, progpath,
+# segarc, slider, sparkline, switch, usersvg, icon (= entity-icon),
+# state (= entity-state) — plus `name` and `area` are common in examples.
+
+SAK_TOOL_TYPES = (
+    # basic
+    "circle", "ellipse", "line", "rectangle", "rectex", "regpoly", "text",
+    # advanced
+    "circslider", "horseshoe", "progpath", "segarc", "slider", "sparkline",
+    "switch", "usersvg",
+    # HA-entity
+    "icon", "state", "name", "area",
+)
+
+
+def swiss_army_knife(
+    *,
+    entities: list[str | dict],
+    toolsets: list[dict],
+    aspectratio: str = "1/1",
+    layout_extra: dict | None = None,
+) -> dict:
+    """`custom:swiss-army-knife-card` (AmoebeLabs).
+
+    `entities` — list of entity_ids (auto-wrapped to ``{entity: ...}``) OR
+                 dicts with ``entity``, ``name``, ``attribute``, etc.
+    `toolsets` — list of toolset dicts. Each toolset has:
+        ``{toolset: <name>, position: {cx, cy}, tools: [<tool>, ...]}``.
+        Build tools with the ``sak_*`` helpers below.
+    `aspectratio` — canvas aspect (e.g. "1/1", "2/1", "10/4"). Default 1/1.
+    `layout_extra` — extra keys to merge under `layout:` (e.g. `template:`).
+    """
+    if not entities:
+        raise ValueError("swiss-army-knife: at least one entity required")
+    if not toolsets:
+        raise ValueError("swiss-army-knife: at least one toolset required")
+    # Normalize entities
+    norm_entities: list[dict] = []
+    for e in entities:
+        if isinstance(e, str):
+            norm_entities.append({"entity": e})
+        elif isinstance(e, dict):
+            norm_entities.append(e)
+        else:
+            raise ValueError(
+                f"entities[*] must be str or dict, got {type(e).__name__}"
+            )
+    # Validate toolsets shape
+    for i, ts in enumerate(toolsets):
+        if not isinstance(ts, dict):
+            raise ValueError(f"toolsets[{i}] must be a dict")
+        if "tools" not in ts or not isinstance(ts["tools"], list):
+            raise ValueError(f"toolsets[{i}] missing 'tools' list")
+        # Each tool must have a valid type
+        for j, t in enumerate(ts["tools"]):
+            tt = t.get("type")
+            if tt not in SAK_TOOL_TYPES:
+                raise ValueError(
+                    f"toolsets[{i}].tools[{j}] has unknown type "
+                    f"{tt!r}; valid: {SAK_TOOL_TYPES}"
+                )
+    layout: dict[str, Any] = {"toolsets": toolsets}
+    if layout_extra:
+        layout = {**layout_extra, **layout}
+    return {
+        "type": "custom:swiss-army-knife-card",
+        "aspectratio": aspectratio,
+        "entities": norm_entities,
+        "layout": layout,
+    }
+
+
+# Toolset helper — keeps the SAK config readable when authoring cards.
+def sak_toolset(name: str, *, cx: float = 50, cy: float = 50,
+                  tools: list[dict] | None = None) -> dict:
+    return {
+        "toolset": name,
+        "position": {"cx": cx, "cy": cy},
+        "tools": list(tools or []),
+    }
+
+
+# ─── Tool helpers ─────────────────────────────────────────────────────
+# Each returns a tool dict with the right `type:`. Pass extra kwargs to
+# override anything (styles, classes, animations, entity_index, etc.).
+
+def _sak_tool(type_: str, **kw) -> dict:
+    out: dict[str, Any] = {"type": type_}
+    # `position`, `entity_index`, `styles`, `classes`, `animations`,
+    # `user_actions`, `text`, `icon` etc. all pass through.
+    for k, v in kw.items():
+        if v is None:
+            continue
+        out[k] = v
+    return out
+
+
+def sak_circle(*, cx: float, cy: float, radius: float = 45,
+                 entity_index: int | None = None,
+                 styles: dict | None = None,
+                 classes: dict | None = None,
+                 animations: list | None = None) -> dict:
+    return _sak_tool("circle",
+                      position={"cx": cx, "cy": cy, "radius": radius},
+                      entity_index=entity_index, styles=styles,
+                      classes=classes, animations=animations)
+
+
+def sak_ellipse(*, cx: float, cy: float, rx: float, ry: float,
+                  styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("ellipse",
+                      position={"cx": cx, "cy": cy, "rx": rx, "ry": ry},
+                      styles=styles, **kw)
+
+
+def sak_line(*, x1: float, y1: float, x2: float, y2: float,
+               styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("line",
+                      position={"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                      styles=styles, **kw)
+
+
+def sak_rectangle(*, cx: float, cy: float, width: float, height: float,
+                    rx: float | None = None,
+                    styles: dict | None = None, **kw) -> dict:
+    pos: dict[str, Any] = {"cx": cx, "cy": cy,
+                            "width": width, "height": height}
+    if rx is not None: pos["rx"] = rx
+    return _sak_tool("rectangle", position=pos, styles=styles, **kw)
+
+
+def sak_text(text: str, *, cx: float, cy: float,
+               align: str | None = None,
+               entity_index: int | None = None,
+               styles: dict | None = None, **kw) -> dict:
+    pos: dict[str, Any] = {"cx": cx, "cy": cy}
+    if align is not None: pos["align"] = align
+    return _sak_tool("text", text=text, position=pos,
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_icon(*, cx: float, cy: float, entity_index: int = 0,
+               icon_size: float = 25, align: str = "center",
+               styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("icon",
+                      position={"cx": cx, "cy": cy,
+                                 "align": align, "icon_size": icon_size},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_state(*, cx: float, cy: float, entity_index: int = 0,
+                styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("state",
+                      position={"cx": cx, "cy": cy},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_name(*, cx: float, cy: float, entity_index: int = 0,
+               styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("name",
+                      position={"cx": cx, "cy": cy},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_segarc(*, cx: float, cy: float, radius: float,
+                 start_angle: float = -200, end_angle: float = 20,
+                 entity_index: int = 0,
+                 segments: dict | None = None,
+                 scale: dict | None = None,
+                 styles: dict | None = None, **kw) -> dict:
+    """Segmented arc (great for gauges)."""
+    return _sak_tool("segarc",
+                      position={"cx": cx, "cy": cy, "radius": radius,
+                                 "start_angle": start_angle,
+                                 "end_angle": end_angle},
+                      entity_index=entity_index,
+                      segments=segments, scale=scale,
+                      styles=styles, **kw)
+
+
+def sak_horseshoe(*, cx: float, cy: float, radius: float,
+                    entity_index: int = 0,
+                    styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("horseshoe",
+                      position={"cx": cx, "cy": cy, "radius": radius},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_sparkline(*, cx: float, cy: float, width: float, height: float,
+                    entity_index: int = 0,
+                    hours: int = 24,
+                    styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("sparkline",
+                      position={"cx": cx, "cy": cy,
+                                 "width": width, "height": height,
+                                 "hours": hours},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_slider(*, cx: float, cy: float, length: float, orientation: str = "horizontal",
+                 entity_index: int = 0, styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("slider",
+                      position={"cx": cx, "cy": cy, "length": length,
+                                 "orientation": orientation},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_switch(*, cx: float, cy: float, width: float = 30, height: float = 15,
+                 entity_index: int = 0, styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("switch",
+                      position={"cx": cx, "cy": cy,
+                                 "width": width, "height": height},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_usersvg(*, cx: float, cy: float, width: float, height: float,
+                  uri: str, styles: dict | None = None, **kw) -> dict:
+    """User-supplied SVG embedded in the card."""
+    return _sak_tool("usersvg",
+                      position={"cx": cx, "cy": cy,
+                                 "width": width, "height": height},
+                      uri=uri, styles=styles, **kw)
+
+
+def sak_circslider(*, cx: float, cy: float, radius: float,
+                     entity_index: int = 0,
+                     start_angle: float = 0, end_angle: float = 360,
+                     styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("circslider",
+                      position={"cx": cx, "cy": cy, "radius": radius,
+                                 "start_angle": start_angle,
+                                 "end_angle": end_angle},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_progpath(*, cx: float, cy: float, width: float, height: float,
+                   entity_index: int = 0,
+                   styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("progpath",
+                      position={"cx": cx, "cy": cy,
+                                 "width": width, "height": height},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
+def sak_regpoly(*, cx: float, cy: float, radius: float, sides: int = 6,
+                  styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("regpoly",
+                      position={"cx": cx, "cy": cy, "radius": radius,
+                                 "sides": sides},
+                      styles=styles, **kw)
+
+
+def sak_rectex(*, cx: float, cy: float, width: float, height: float,
+                 styles: dict | None = None, **kw) -> dict:
+    """RectEx — rectangle with per-corner radii / advanced shapes."""
+    return _sak_tool("rectex",
+                      position={"cx": cx, "cy": cy,
+                                 "width": width, "height": height},
+                      styles=styles, **kw)
+
+
+def sak_area(*, cx: float, cy: float, entity_index: int = 0,
+               styles: dict | None = None, **kw) -> dict:
+    return _sak_tool("area",
+                      position={"cx": cx, "cy": cy},
+                      entity_index=entity_index, styles=styles, **kw)
+
+
 # ─────────────────────────────────────────────────── registry of builders
 
 BUILDERS: dict[str, callable] = {
@@ -725,6 +1006,7 @@ BUILDERS: dict[str, callable] = {
     "layout-card": layout_card,
     "decluttering": decluttering,
     "stack-in-card": stack_in_card,
+    "swiss-army-knife": swiss_army_knife,
     "simple-weather": simple_weather,
     "atomic-calendar": atomic_calendar,
     "digital-clock": digital_clock,
