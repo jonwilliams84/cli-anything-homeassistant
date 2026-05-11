@@ -430,16 +430,23 @@ def bubble(*, card_type: str = "button", entity: str | None = None,
              sub_button: list[dict] | None = None,
              styles: str | None = None,
              tap_action: dict | None = None,
-             button_type: str | None = None) -> dict:
-    """`custom:bubble-card` — the unified Clooos bubble UI card."""
+             button_type: str = "switch") -> dict:
+    """`custom:bubble-card` — the unified Clooos bubble UI card.
+
+    For `card_type=button`, `entity` is required and `button_type` (one of
+    switch / slider / state / name) defaults to 'switch'.
+    """
+    if card_type == "button" and not entity:
+        raise ValueError("bubble button card requires entity")
     card: dict[str, Any] = {"type": "custom:bubble-card", "card_type": card_type}
+    if card_type == "button":
+        card["button_type"] = button_type
     if entity is not None: card["entity"] = entity
     if name is not None: card["name"] = name
     if icon is not None: card["icon"] = icon
     if sub_button is not None: card["sub_button"] = sub_button
     if styles is not None: card["styles"] = styles
     if tap_action is not None: card["tap_action"] = tap_action
-    if button_type is not None: card["button_type"] = button_type
     return card
 
 
@@ -564,12 +571,34 @@ def bar_card(entities: list[str | dict], *, min: float = 0, max: float = 100,
 
 # ─────────────────────────────────────────────────── Simple Weather Card
 
+_SIMPLE_WEATHER_INFO_VALUES = {
+    "extrema", "precipitation", "precipitation_probability",
+    "humidity", "wind_speed", "wind_bearing", "pressure",
+}
+
+
 def simple_weather(entity: str, *, name: str | None = None,
-                     primary_info: list[str] | None = None,
-                     secondary_info: list[str] | None = None,
+                     primary_info: str | list[str] | None = None,
+                     secondary_info: str | list[str] | None = None,
                      backdrop: dict | bool | None = None) -> dict:
+    """`custom:simple-weather-card` (kalkih). `primary_info` and
+    `secondary_info` accept a single string or a list of:
+    extrema / precipitation / precipitation_probability /
+    humidity / wind_speed / wind_bearing / pressure.
+    """
     if not entity.startswith("weather."):
         raise ValueError("entity must be weather.*")
+    def _check(field_name, v):
+        if v is None: return
+        vals = [v] if isinstance(v, str) else list(v)
+        bad = [x for x in vals if x not in _SIMPLE_WEATHER_INFO_VALUES]
+        if bad:
+            raise ValueError(
+                f"{field_name} must be one of "
+                f"{sorted(_SIMPLE_WEATHER_INFO_VALUES)}, got bad values {bad}"
+            )
+    _check("primary_info", primary_info)
+    _check("secondary_info", secondary_info)
     card: dict[str, Any] = {"type": "custom:simple-weather-card", "entity": entity}
     if name is not None: card["name"] = name
     if primary_info is not None: card["primary_info"] = primary_info
@@ -615,12 +644,17 @@ def atomic_calendar(entities: list[str | dict], *, name: str | None = None,
 def digital_clock(*, time_format: dict | None = None,
                     date_format: dict | None = None,
                     locale: str | None = None,
-                    border: bool | None = None) -> dict:
+                    time_zone: str | None = None) -> dict:
+    """`custom:digital-clock` (wassy92x).
+
+    `time_format` / `date_format` are Luxon `toLocaleString` option objects
+    (camelCase keys: `hour`, `minute`, `weekday`, `day`, `month`, `hour12`).
+    """
     card: dict[str, Any] = {"type": "custom:digital-clock"}
     if time_format is not None: card["timeFormat"] = time_format
     if date_format is not None: card["dateFormat"] = date_format
     if locale is not None: card["locale"] = locale
-    if border is not None: card["border"] = border
+    if time_zone is not None: card["timeZone"] = time_zone
     return card
 
 
