@@ -1069,6 +1069,85 @@ class TestTTS:
         assert last["service_data"]["entity_id"] == "tts.piper"
 
 
+# ────────────────────────────────────────────────────────── hacs
+
+from cli_anything.homeassistant.core import hacs as hacs_core
+
+
+class TestHACS:
+    REPOS = [
+        {"id": "1", "full_name": "user/repo-a", "name": "Repo A",
+         "category": "integration", "installed": True, "installed_version": "1.0",
+         "available_version": "1.1", "local_path": "/config/.../a"},
+        {"id": "2", "full_name": "user/zigbee2mqtt-networkmap",
+         "name": "Network Map", "category": "plugin",
+         "installed": False, "available_version": "v0.10.0"},
+        {"id": "3", "full_name": "other/repo-a",
+         "name": "Another Repo A", "category": "plugin",
+         "installed": False, "available_version": "2.0"},
+    ]
+
+    def test_info(self, fake_client):
+        fake_client.set_ws("hacs/info", {"version": "1.2.3", "stage": "running"})
+        out = hacs_core.info(fake_client)
+        assert out["version"] == "1.2.3"
+
+    def test_list_default(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        rows = hacs_core.list_repos(fake_client)
+        assert len(rows) == 3
+
+    def test_list_installed_only(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        rows = hacs_core.list_repos(fake_client, installed_only=True)
+        assert len(rows) == 1
+        assert rows[0]["id"] == "1"
+
+    def test_list_category(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        rows = hacs_core.list_repos(fake_client, category="plugin")
+        assert {r["id"] for r in rows} == {"2", "3"}
+
+    def test_list_pattern_filter(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        rows = hacs_core.list_repos(fake_client, pattern="networkmap")
+        assert len(rows) == 1
+        assert rows[0]["id"] == "2"
+
+    def test_find_by_id(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        assert hacs_core.find_repo(fake_client, "2")["full_name"] == "user/zigbee2mqtt-networkmap"
+
+    def test_find_by_full_name(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        assert hacs_core.find_repo(fake_client,
+                                     "user/zigbee2mqtt-networkmap")["id"] == "2"
+
+    def test_find_short_name_unique(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        assert hacs_core.find_repo(fake_client,
+                                     "zigbee2mqtt-networkmap")["id"] == "2"
+
+    def test_find_short_name_ambiguous_raises(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        with pytest.raises(ValueError, match="multiple"):
+            hacs_core.find_repo(fake_client, "repo-a")
+
+    def test_install_passes_repo_id(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        fake_client.set_ws("hacs/repository/download", {"ok": True})
+        hacs_core.install(fake_client, "zigbee2mqtt-networkmap",
+                            version="v0.9.0")
+        last = fake_client.ws_calls[-1]
+        assert last["type"] == "hacs/repository/download"
+        assert last["payload"] == {"repository": "2", "version": "v0.9.0"}
+
+    def test_remove_validates_match(self, fake_client):
+        fake_client.set_ws("hacs/repositories/list", self.REPOS)
+        with pytest.raises(KeyError):
+            hacs_core.remove(fake_client, "nope-doesnt-exist")
+
+
 # ────────────────────────────────────────────────────────── subentries
 
 from cli_anything.homeassistant.core import subentries as subentries_core
@@ -1185,6 +1264,276 @@ class TestSubentries:
         assert merged["chat_model"] == "models/gemini-2.5-flash"
         assert merged["temperature"] == 0.7
         assert merged["max_tokens"] == 3000  # preserved
+
+    def test_list_all_walks_entries(self, fake_client):
+        fake_client.set_ws("config_entries/get", [
+            {"entry_id": "e1", "domain": "google_generative_ai_conversation",
+             "title": "Google AI"},
+            {"entry_id": "e2", "domain": "ollama", "title": "Ollama"},
+        ])
+        # Each entry returns different subentries — but FakeClient ws_responses
+        # are keyed by msg_type only, so all entries get the same canned response.
+        # That's fine for the test: just verify it visits every entry.
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        rows = subentries_core.list_all(fake_client, subentry_type="ai_task_data")
+        # 1 ai_task_data subentry per entry × 2 entries = 2
+        assert len(rows) == 2
+        assert all(r["subentry_type"] == "ai_task_data" for r in rows)
+        # Each row has entry_id / entry_domain merged in
+        assert all(r.get("entry_id") and r.get("entry_domain") for r in rows)
+
+    def test_list_all_domain_filter(self, fake_client):
+        fake_client.set_ws("config_entries/get", [
+            {"entry_id": "e1", "domain": "google_generative_ai_conversation",
+             "title": "Google AI"},
+            {"entry_id": "e2", "domain": "ollama", "title": "Ollama"},
+        ])
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        rows = subentries_core.list_all(fake_client, domain="ollama")
+        assert all(r["entry_domain"] == "ollama" for r in rows)
+
+
+# ────────────────────────────────────────────────────────── config_entries.walk
+
+class TestConfigFlowWalk:
+    def test_walk_validates_handler(self):
+        with pytest.raises(ValueError):
+            config_entries_core.walk(None, "", [{}])
+
+    def test_walk_validates_steps_type(self, fake_client):
+        with pytest.raises(ValueError):
+            config_entries_core.walk(fake_client, "mqtt", "not-a-list")  # type: ignore
+
+    def test_walk_terminates_at_create_entry_after_init(self, fake_client):
+        fake_client.set("POST", "config/config_entries/flow",
+                          {"type": "create_entry", "title": "Foo"})
+        out = config_entries_core.walk(fake_client, "demo", steps=[{"x": 1}])
+        assert out["completed"] is True
+        assert out["final"]["type"] == "create_entry"
+        # No submit happened because init already terminated
+        submit_posts = [c for c in fake_client.calls
+                         if c["verb"] == "POST"
+                         and "/flow/" in c["path"]]
+        assert submit_posts == []
+
+    def test_walk_chains_init_then_submits(self, fake_client, monkeypatch):
+        # init returns a form; first submit returns another form; second
+        # submit creates the entry. FakeClient can only return one fixed
+        # response per (verb, path), so we drive flow_configure via
+        # monkeypatch to get per-call answers.
+        fake_client.set("POST", "config/config_entries/flow",
+                          {"flow_id": "fid1", "type": "form",
+                           "step_id": "user"})
+        responses = iter([
+            {"flow_id": "fid1", "type": "form", "step_id": "options"},
+            {"type": "create_entry", "title": "Done"},
+        ])
+        monkeypatch.setattr(config_entries_core, "flow_configure",
+                             lambda c, fid, p: next(responses))
+        out = config_entries_core.walk(fake_client, "demo",
+                                         steps=[{"a": 1}, {"b": 2}])
+        assert out["completed"] is True
+        assert out["final"]["type"] == "create_entry"
+        # init + 2 submits = 3 history entries
+        assert len(out["history"]) == 3
+
+    def test_walk_aborts_on_exception(self, fake_client, monkeypatch):
+        fake_client.set("POST", "config/config_entries/flow",
+                          {"flow_id": "fid1", "type": "form",
+                           "step_id": "user"})
+
+        def boom(c, fid, payload):
+            raise RuntimeError("network down")
+
+        monkeypatch.setattr(config_entries_core, "flow_configure", boom)
+        # flow_abort should be called inside walk's except branch;
+        # FakeClient.delete may not be wired, so just provide a no-op.
+        monkeypatch.setattr(config_entries_core, "flow_abort",
+                             lambda c, fid: None)
+        out = config_entries_core.walk(fake_client, "demo",
+                                         steps=[{"x": 1}])
+        assert out["completed"] is False
+        assert any("error" in h for h in out["history"])
+
+    def test_walk_stop_on_form(self, fake_client, monkeypatch):
+        fake_client.set("POST", "config/config_entries/flow",
+                          {"flow_id": "fid1", "type": "form",
+                           "step_id": "user"})
+        monkeypatch.setattr(config_entries_core, "flow_configure",
+                             lambda c, fid, p: {"flow_id": fid,
+                                                 "type": "form",
+                                                 "step_id": "options"})
+        out = config_entries_core.walk(fake_client, "demo",
+                                         steps=[{"x": 1}],
+                                         stop_on_form=True)
+        assert out["completed"] is False
+        assert out["final"]["type"] == "form"
+
+
+# ────────────────────────────────────────────────────────── lovelace_paths.patch_card
+
+class TestLovelacePatchCard:
+    SAMPLE = {
+        "views": [
+            {"path": "home", "type": "masonry", "cards": [
+                {"type": "entities", "title": "Lights",
+                 "entities": ["light.kitchen"]},
+                {"type": "horizontal-stack", "cards": [
+                    {"type": "button", "name": "Living"},
+                ]},
+            ]},
+        ],
+    }
+
+    def test_patch_shallow_field(self):
+        cfg = json.loads(json.dumps(self.SAMPLE))
+        out = lovelace_paths.patch_card(cfg, "home.0",
+                                          {"title": "Lighting"})
+        assert out["title"] == "Lighting"
+        # Other fields preserved
+        assert out["entities"] == ["light.kitchen"]
+
+    def test_patch_adds_new_field(self):
+        cfg = json.loads(json.dumps(self.SAMPLE))
+        out = lovelace_paths.patch_card(cfg, "home.0",
+                                          {"show_header_toggle": False})
+        assert out["show_header_toggle"] is False
+
+    def test_patch_strict_rejects_unknown(self):
+        cfg = json.loads(json.dumps(self.SAMPLE))
+        with pytest.raises(KeyError, match="unknown fields"):
+            lovelace_paths.patch_card(cfg, "home.0",
+                                       {"made_up_field": "x"},
+                                       strict=True)
+
+    def test_patch_validates_fields_dict(self):
+        cfg = json.loads(json.dumps(self.SAMPLE))
+        with pytest.raises(ValueError):
+            lovelace_paths.patch_card(cfg, "home.0", "not a dict")  # type: ignore
+        with pytest.raises(ValueError):
+            lovelace_paths.patch_card(cfg, "home.0", {})
+
+    def test_patch_shallow_merges_nested_dict(self):
+        cfg = {"views": [{"path": "p", "cards": [
+            {"type": "tile", "tap_action": {"action": "toggle"}},
+        ]}]}
+        lovelace_paths.patch_card(cfg, "p.0",
+                                    {"tap_action": {"haptic": "light"}})
+        # Both keys present after shallow merge
+        ta = cfg["views"][0]["cards"][0]["tap_action"]
+        assert ta == {"action": "toggle", "haptic": "light"}
+
+    def test_patch_replaces_list_field(self):
+        cfg = json.loads(json.dumps(self.SAMPLE))
+        lovelace_paths.patch_card(cfg, "home.0",
+                                    {"entities": ["light.bedroom"]})
+        assert cfg["views"][0]["cards"][0]["entities"] == ["light.bedroom"]
+
+
+# ────────────────────────────────────────────────────────── updates.install_all
+
+class TestUpdatesInstallAll:
+    def _seed(self, fake_client, updates):
+        fake_client.set("GET", "states", updates)
+        fake_client.set_service("update", "install", {"ok": True})
+
+    def test_install_all_dry_run(self, fake_client):
+        self._seed(fake_client, [
+            {"entity_id": "update.core", "state": "on", "attributes": {}},
+            {"entity_id": "update.zigbee2mqtt", "state": "on",
+             "attributes": {}},
+        ])
+        out = updates_core.install_all(fake_client, dry_run=True)
+        assert out["dry_run"] is True
+        assert set(out["selected"]) == {"update.core", "update.zigbee2mqtt"}
+        # No services actually called
+        assert fake_client.service_calls == []
+
+    def test_install_all_excludes_substring(self, fake_client):
+        self._seed(fake_client, [
+            {"entity_id": "update.core", "state": "on", "attributes": {}},
+            {"entity_id": "update.zigbee2mqtt", "state": "on",
+             "attributes": {}},
+            {"entity_id": "update.network_map_card", "state": "on",
+             "attributes": {}},
+        ])
+        out = updates_core.install_all(fake_client,
+                                         exclude=["network_map", "core"],
+                                         dry_run=True)
+        assert out["selected"] == ["update.zigbee2mqtt"]
+        assert set(out["excluded"]) == {"update.core",
+                                          "update.network_map_card"}
+
+    def test_install_all_runs_services(self, fake_client):
+        self._seed(fake_client, [
+            {"entity_id": "update.core", "state": "on", "attributes": {}},
+            {"entity_id": "update.hacs", "state": "on", "attributes": {}},
+        ])
+        out = updates_core.install_all(fake_client, backup=True)
+        assert out["dry_run"] is False
+        assert {r["entity_id"] for r in out["results"]} == {
+            "update.core", "update.hacs"}
+        assert all(r["ok"] is True for r in out["results"])
+        installs = [c for c in fake_client.service_calls
+                    if c["service"] == "install"]
+        assert len(installs) == 2
+        # backup flag forwarded
+        assert all(c["service_data"].get("backup") is True for c in installs)
+
+    def test_install_all_no_available(self, fake_client):
+        fake_client.set("GET", "states", [
+            {"entity_id": "update.core", "state": "off", "attributes": {}},
+        ])
+        out = updates_core.install_all(fake_client)
+        assert out["selected"] == []
+        assert out["results"] == []
+
+
+# ────────────────────────────────────────────────────────── recorder.purge
+
+from cli_anything.homeassistant.core import recorder as recorder_core
+
+
+class TestRecorderPurge:
+    def test_purge_default(self, fake_client):
+        fake_client.set_service("recorder", "purge", {"ok": True})
+        recorder_core.purge(fake_client)
+        last = fake_client.service_calls[-1]
+        assert last["domain"] == "recorder"
+        assert last["service"] == "purge"
+        # No data when no args set
+        assert last["service_data"] in (None, {})
+
+    def test_purge_keep_days(self, fake_client):
+        fake_client.set_service("recorder", "purge", {})
+        recorder_core.purge(fake_client, keep_days=7, repack=True)
+        last = fake_client.service_calls[-1]
+        assert last["service_data"]["keep_days"] == 7
+        assert last["service_data"]["repack"] is True
+
+    def test_purge_apply_filter(self, fake_client):
+        fake_client.set_service("recorder", "purge", {})
+        recorder_core.purge(fake_client, apply_filter=True)
+        last = fake_client.service_calls[-1]
+        assert last["service_data"]["apply_filter"] is True
+
+    def test_purge_entities_requires_some_input(self):
+        with pytest.raises(ValueError):
+            recorder_core.purge_entities(None, entity_ids=[])
+
+    def test_purge_entities_payload(self, fake_client):
+        fake_client.set_service("recorder", "purge_entities", {})
+        recorder_core.purge_entities(
+            fake_client, entity_ids=["sensor.foo"],
+            domains=["script"], entity_globs=["sensor.test_*"], days=3,
+        )
+        last = fake_client.service_calls[-1]
+        assert last["service"] == "purge_entities"
+        sd = last["service_data"]
+        assert sd["entity_id"] == ["sensor.foo"]
+        assert sd["domains"] == ["script"]
+        assert sd["entity_globs"] == ["sensor.test_*"]
+        assert sd["days"] == 3
 
 
 # ────────────────────────────────────────────────────────── system errors triage

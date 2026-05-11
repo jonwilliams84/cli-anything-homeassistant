@@ -145,6 +145,41 @@ def get_card(config: dict, dot_path: str) -> Any:
     return target
 
 
+def patch_card(config: dict, dot_path: str, fields: dict[str, Any], *,
+                strict: bool = False) -> dict:
+    """Patch individual fields on the card at `dot_path` without replacing it.
+
+    `fields` is a shallow {key: value} dict. Nested dicts are merged one level
+    deep; lists and scalars are replaced wholesale.
+
+    Pass strict=True to error if a field doesn't already exist on the card
+    (catches typos); otherwise new fields are added.
+
+    Returns the patched card object (also mutates config in place).
+    """
+    if not isinstance(fields, dict):
+        raise ValueError("fields must be a dict")
+    if not fields:
+        raise ValueError("fields must not be empty")
+    target, _ = _resolve_dotpath(config, dot_path)
+    if not isinstance(target, dict):
+        raise ValueError(
+            f"target at {dot_path!r} is a {type(target).__name__}, not a card dict"
+        )
+    if strict:
+        unknown = [k for k in fields if k not in target]
+        if unknown:
+            raise KeyError(
+                f"unknown fields on card: {unknown}; existing keys: {list(target)}"
+            )
+    for k, v in fields.items():
+        if (isinstance(v, dict) and isinstance(target.get(k), dict)):
+            target[k] = {**target[k], **v}  # shallow merge nested dict
+        else:
+            target[k] = v
+    return target
+
+
 def set_card(config: dict, dot_path: str, new_value: Any) -> dict:
     """Replace whatever lives at `dot_path` with `new_value`. Mutates config."""
     # Walk to the parent of the final segment and assign.

@@ -98,3 +98,44 @@ def find_unrecorded(client, entity_ids: Iterable[str], *,
     return [s["entity_id"] for s in batch_stats(client, entity_ids,
                                                   hours=hours)
             if s["history_points_24h"] == 0]
+
+
+def purge(client, *, keep_days: int | None = None,
+           repack: bool = False, apply_filter: bool = False) -> dict:
+    """Trigger the recorder's general purge (recorder.purge service).
+
+    `keep_days`     — how many days of history to keep (default: recorder's own)
+    `repack`        — VACUUM the DB after purge (slow; off by default)
+    `apply_filter`  — apply the include/exclude filter from configuration.yaml
+                       to existing rows (rare but useful for cleanup)
+    """
+    from cli_anything.homeassistant.core import services as services_core
+    data: dict = {}
+    if keep_days is not None: data["keep_days"] = keep_days
+    if repack:                data["repack"] = True
+    if apply_filter:          data["apply_filter"] = True
+    return services_core.call_service(client, "recorder", "purge",
+                                       service_data=data or None)
+
+
+def purge_entities(client, entity_ids: list[str], *,
+                    domains: list[str] | None = None,
+                    entity_globs: list[str] | None = None,
+                    days: int | None = None) -> dict:
+    """Purge history for specific entities / domains / globs.
+
+    `entity_ids`    — exact ids to wipe
+    `domains`       — wipe every entity in these domains
+    `entity_globs`  — wildcard patterns (e.g. ``sensor.test_*``)
+    `days`          — keep this many days; older rows go away
+    """
+    from cli_anything.homeassistant.core import services as services_core
+    data: dict = {}
+    if entity_ids:    data["entity_id"] = list(entity_ids)
+    if domains:       data["domains"] = list(domains)
+    if entity_globs:  data["entity_globs"] = list(entity_globs)
+    if days is not None: data["days"] = days
+    if not data:
+        raise ValueError("provide at least one of entity_ids / domains / entity_globs")
+    return services_core.call_service(client, "recorder", "purge_entities",
+                                       service_data=data)

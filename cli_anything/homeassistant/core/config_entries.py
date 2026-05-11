@@ -155,6 +155,70 @@ def create(client, handler: str, user_input: dict,
     return flow_configure(client, flow_id, user_input)
 
 
+def walk(client, handler: str, steps: list[dict], *,
+          show_advanced_options: bool = False,
+          stop_on_form: bool = False) -> dict:
+    """Drive a multi-step config flow: init → step → step → ...
+
+    `steps` is the list of form payloads, one per step. The flow is
+    expected to terminate after `len(steps)` submissions; if it doesn't
+    (and `stop_on_form` is False), the remaining form is returned in the
+    result for the caller to inspect.
+
+    Returns: {flow_id, history: [{step_id, type, response}, ...],
+              final: <last response>, completed: bool}.
+
+    Aborts the flow on any error and includes the partial history.
+    """
+    if not handler:
+        raise ValueError("handler is required")
+    if not isinstance(steps, list):
+        raise ValueError("steps must be a list of dicts")
+
+    history: list[dict] = []
+    current = flow_init(client, handler,
+                          show_advanced_options=show_advanced_options)
+    flow_id = current.get("flow_id")
+    history.append({"step": "init", "type": current.get("type"),
+                     "step_id": current.get("step_id"),
+                     "response": current})
+    if current.get("type") in ("create_entry", "abort"):
+        return {"flow_id": flow_id, "history": history,
+                "final": current, "completed": True}
+    if not flow_id:
+        return {"flow_id": None, "history": history,
+                "final": current, "completed": False}
+
+    completed = False
+    for i, payload in enumerate(steps):
+        try:
+            resp = flow_configure(client, flow_id, payload)
+        except Exception as exc:
+            try:
+                flow_abort(client, flow_id)
+            except Exception:
+                pass
+            history.append({"step": f"submit[{i}]", "error": str(exc),
+                             "payload": payload})
+            return {"flow_id": flow_id, "history": history,
+                    "final": None, "completed": False}
+        history.append({"step": f"submit[{i}]", "type": resp.get("type"),
+                         "step_id": resp.get("step_id"),
+                         "response": resp})
+        if resp.get("type") in ("create_entry", "abort"):
+            completed = True
+            return {"flow_id": flow_id, "history": history,
+                    "final": resp, "completed": True}
+        if resp.get("type") == "form" and stop_on_form:
+            return {"flow_id": flow_id, "history": history,
+                    "final": resp, "completed": False}
+
+    # Ran out of payloads but flow isn't done.
+    return {"flow_id": flow_id, "history": history,
+            "final": current if not history else history[-1].get("response"),
+            "completed": completed}
+
+
 def disable_entry(client, entry_id: str, disabled: bool = True) -> dict:
     """Disable or enable a config entry."""
     if not entry_id:

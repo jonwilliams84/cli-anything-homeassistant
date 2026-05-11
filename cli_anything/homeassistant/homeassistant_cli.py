@@ -52,6 +52,7 @@ from cli_anything.homeassistant.core import services as services_core
 from cli_anything.homeassistant.core import states as states_core
 from cli_anything.homeassistant.core import recorder as recorder_core
 from cli_anything.homeassistant.core import subentries as subentries_core
+from cli_anything.homeassistant.core import hacs as hacs_core
 from cli_anything.homeassistant.core import system as system_core
 from cli_anything.homeassistant.core import template as template_core
 from cli_anything.homeassistant.core import template_helpers as template_helpers_core
@@ -3833,6 +3834,274 @@ def subentry_reconfigure(ctx, entry_id, ident, set_pairs, data_file, dry_run):
         _abort("provide at least one --set key=value or --data-file")
     emit(ctx, subentries_core.reconfigure(
         make_client(ctx), entry_id, ident, overrides, dry_run=dry_run,
+    ))
+
+
+# ──────────────────────────────────────────────────────── HACS
+
+@cli.group()
+def hacs():
+    """HACS (Home Assistant Community Store) repository management."""
+
+
+@hacs.command("info")
+@click.pass_context
+def hacs_info(ctx):
+    """Global HACS state: version, stage, categories."""
+    emit(ctx, hacs_core.info(make_client(ctx)))
+
+
+@hacs.command("list")
+@click.option("--installed", is_flag=True, default=False,
+              help="Only show installed repos (default: every known repo, ~3000)")
+@click.option("--category", default=None,
+              help="Filter by category (integration / plugin / theme / appdaemon / ...)")
+@click.option("--pattern", default=None,
+              help="Substring filter on name OR full_name (case-insensitive)")
+@click.pass_context
+def hacs_list(ctx, installed, category, pattern):
+    rows = hacs_core.list_repos(
+        make_client(ctx),
+        installed_only=installed, category=category, pattern=pattern,
+    )
+    # Slim output for the table view
+    slim = [{
+        "id": r.get("id"),
+        "full_name": r.get("full_name"),
+        "category": r.get("category"),
+        "installed": r.get("installed"),
+        "installed_version": r.get("installed_version"),
+        "available_version": r.get("available_version"),
+    } for r in rows]
+    emit(ctx, slim if not ctx.obj.get("as_json") else rows)
+
+
+@hacs.command("show")
+@click.argument("ident")
+@click.pass_context
+def hacs_show(ctx, ident):
+    emit(ctx, hacs_core.show(make_client(ctx), ident))
+
+
+@hacs.command("install")
+@click.argument("ident")
+@click.option("--version", default=None,
+              help="Specific version tag (default: latest)")
+@click.confirmation_option(prompt="Install this HACS repo?")
+@click.pass_context
+def hacs_install(ctx, ident, version):
+    emit(ctx, hacs_core.install(make_client(ctx), ident, version=version))
+
+
+@hacs.command("remove")
+@click.argument("ident")
+@click.confirmation_option(prompt="Uninstall this HACS repo? (deletes files + resource)")
+@click.pass_context
+def hacs_remove(ctx, ident):
+    emit(ctx, hacs_core.remove(make_client(ctx), ident))
+
+
+@hacs.command("refresh")
+@click.argument("ident")
+@click.pass_context
+def hacs_refresh(ctx, ident):
+    """Re-fetch upstream metadata for one repo (versions, README, etc)."""
+    emit(ctx, hacs_core.refresh(make_client(ctx), ident))
+
+
+# ──────────────────────────────────────────────────────── subentry list-all
+
+@subentry.command("list-all")
+@click.option("--type", "subentry_type", default=None,
+              help="Filter to one subentry_type (e.g. 'ai_task_data')")
+@click.option("--title", "title_pattern", default=None,
+              help="Substring match on subentry title (case-insensitive)")
+@click.option("--domain", default=None,
+              help="Restrict to parent entries in this integration domain")
+@click.pass_context
+def subentry_list_all(ctx, subentry_type, title_pattern, domain):
+    """List subentries across EVERY config entry.
+
+    Use this when you don't know which integration owns the subentry.
+    Returns each subentry with entry_id / entry_title / entry_domain merged in.
+    """
+    emit(ctx, subentries_core.list_all(
+        make_client(ctx),
+        subentry_type=subentry_type, title_pattern=title_pattern, domain=domain,
+    ))
+
+
+# ──────────────────────────────────────────────────────── config-flow walk
+
+@config_flow.command("walk")
+@click.argument("handler")
+@click.argument("step_files", nargs=-1, type=click.Path(exists=True, dir_okay=False))
+@click.option("--advanced", "show_advanced_options", is_flag=True, default=False)
+@click.option("--stop-on-form", is_flag=True, default=False,
+              help="Stop and return the form if the flow asks for more input")
+@click.pass_context
+def config_flow_walk(ctx, handler, step_files, show_advanced_options, stop_on_form):
+    """Drive a multi-step config flow: init → submit each step file in turn.
+
+    Each STEP_FILE is a JSON file with the payload for that step. The flow
+    aborts cleanly on any error.
+
+    Example:
+      config-flow walk statistics step1.json step2.json step3.json
+    """
+    if not step_files:
+        _abort("provide at least one step file")
+    steps = [json.loads(Path(f).read_text()) for f in step_files]
+    emit(ctx, config_entries_core.walk(
+        make_client(ctx), handler, steps,
+        show_advanced_options=show_advanced_options,
+        stop_on_form=stop_on_form,
+    ))
+
+
+# ──────────────────────────────────────────────────────── lovelace card patch
+
+@lovelace_card.command("patch")
+@click.argument("url_path")
+@click.option("--pointer", required=True,
+              help="Card pointer, e.g. 'views[3]/cards[11]/cards[0]/cards[0]'")
+@click.option("--set", "set_pairs", multiple=True,
+              help="Field override key=value (repeatable, JSON-aware)")
+@click.option("--data-file", type=click.Path(exists=True, dir_okay=False),
+              help="Read patch as a JSON object from a file")
+@click.option("--strict", is_flag=True, default=False,
+              help="Error if a field doesn't already exist on the card")
+@click.option("--dry-run", is_flag=True, default=False)
+@click.pass_context
+def lovelace_card_patch(ctx, url_path, pointer, set_pairs, data_file, strict, dry_run):
+    """Patch individual fields on one card by pointer.
+
+    Avoids fetching/pushing the whole dashboard for a one-field change:
+
+      lovelace card patch jon-mobile --pointer views[3]/cards[11]/cards[0]/cards[0] \\
+          --set camera_image=camera.doorbell_last_event
+    """
+    fields: dict = {}
+    if data_file:
+        fields.update(json.loads(Path(data_file).read_text()))
+    if set_pairs:
+        fields.update(parse_kv_pairs(set_pairs))
+    if not fields:
+        _abort("provide at least one --set key=value or --data-file")
+
+    # The existing pointer-resolver in lovelace_cards_core uses
+    # `views[N]/cards[M]/...` syntax. Convert to the dot-path lovelace_paths
+    # expects.
+    # Easy bridge: parse the pointer into a dot-path via _resolve_dotpath's
+    # input format.
+    # Format: views[3]/cards[11]/cards[0]/cards[0] →
+    #         "3.sections.0.cards.0" OR "3.cards.0" depending on view shape
+    cfg = lovelace_core.get_dashboard_config(make_client(ctx), url_path)
+    # Convert the / pointer to the dot-form by walking the tree.
+    parts = [p for p in pointer.split("/") if p]
+    target = cfg
+    walked_keys: list[str] = []
+    for p in parts:
+        if "[" in p and p.endswith("]"):
+            base, idx = p.split("[", 1)
+            idx = int(idx[:-1])
+            target = target[base][idx] if base else target[idx]
+            walked_keys.append(base or str(idx))
+            walked_keys.append(str(idx))
+        else:
+            target = target[p]
+            walked_keys.append(p)
+    if not isinstance(target, dict):
+        _abort(f"pointer {pointer!r} resolves to a {type(target).__name__}, not a card")
+
+    if dry_run:
+        before = {k: target.get(k) for k in fields}
+        emit(ctx, {"pointer": pointer, "dry_run": True,
+                    "before": before, "would_set": fields})
+        return
+
+    # Apply patch in-place to the dict we walked into (cfg is mutated)
+    for k, v in fields.items():
+        if strict and k not in target:
+            _abort(f"unknown field {k!r}; existing: {sorted(target)}")
+        if isinstance(v, dict) and isinstance(target.get(k), dict):
+            target[k] = {**target[k], **v}
+        else:
+            target[k] = v
+    res = lovelace_core.save_dashboard_config(make_client(ctx), url_path, cfg)
+    emit(ctx, {"pointer": pointer, "patched_fields": list(fields),
+                "result": res})
+
+
+# ──────────────────────────────────────────────────────── small wins
+
+@updates_grp.command("install-all")
+@click.option("--exclude", "-x", multiple=True,
+              help="Substring patterns to skip (repeatable)")
+@click.option("--backup", is_flag=True, default=False,
+              help="Backup before each install")
+@click.option("--dry-run", is_flag=True, default=False)
+@click.pass_context
+def updates_install_all(ctx, exclude, backup, dry_run):
+    """Install every available update in one go."""
+    emit(ctx, updates_core.install_all(
+        make_client(ctx),
+        exclude=list(exclude) or None, backup=backup, dry_run=dry_run,
+    ))
+
+
+@entity.command("disable")
+@click.argument("entity_id")
+@click.pass_context
+def entity_disable(ctx, entity_id):
+    """Disable an entity (sets disabled_by=user)."""
+    emit(ctx, registry_core.update_entity(make_client(ctx), entity_id,
+                                            disabled_by="user"))
+
+
+@entity.command("enable")
+@click.argument("entity_id")
+@click.pass_context
+def entity_enable(ctx, entity_id):
+    """Re-enable a previously disabled entity."""
+    emit(ctx, registry_core.update_entity(make_client(ctx), entity_id,
+                                            disabled_by=None))
+
+
+@recorder.command("purge")
+@click.option("--keep-days", type=int, default=None,
+              help="How many days of history to keep (default: recorder's own)")
+@click.option("--repack", is_flag=True, default=False,
+              help="VACUUM the DB after purge (slow)")
+@click.option("--apply-filter", is_flag=True, default=False,
+              help="Apply include/exclude filter from configuration.yaml")
+@click.confirmation_option(prompt="Purge recorder history?")
+@click.pass_context
+def recorder_purge(ctx, keep_days, repack, apply_filter):
+    """Trigger recorder.purge — global retention enforcement."""
+    emit(ctx, recorder_core.purge(make_client(ctx),
+                                    keep_days=keep_days,
+                                    repack=repack,
+                                    apply_filter=apply_filter))
+
+
+@recorder.command("purge-entities")
+@click.option("--entity", "entity_ids", multiple=True,
+              help="Exact entity_id to wipe (repeatable)")
+@click.option("--domain", "domains", multiple=True,
+              help="Wipe every entity in this domain (repeatable)")
+@click.option("--glob", "entity_globs", multiple=True,
+              help="Wildcard pattern e.g. 'sensor.test_*' (repeatable)")
+@click.option("--days", type=int, default=None,
+              help="Keep this many days; older rows go")
+@click.confirmation_option(prompt="Purge history for these entities? (destructive)")
+@click.pass_context
+def recorder_purge_entities(ctx, entity_ids, domains, entity_globs, days):
+    """Purge history for specific entities, domains, or wildcard patterns."""
+    emit(ctx, recorder_core.purge_entities(
+        make_client(ctx),
+        entity_ids=list(entity_ids), domains=list(domains),
+        entity_globs=list(entity_globs), days=days,
     ))
 
 

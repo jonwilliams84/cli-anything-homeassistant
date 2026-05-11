@@ -53,6 +53,52 @@ def find_subentry(client, entry_id: str, ident: str) -> Optional[dict]:
     return None
 
 
+def list_all(client, *,
+              subentry_type: Optional[str] = None,
+              title_pattern: Optional[str] = None,
+              domain: Optional[str] = None) -> list[dict]:
+    """List subentries across EVERY config entry.
+
+    Useful when you don't know which integration owns a subentry. Each row is
+    a regular subentry record with `entry_id`, `entry_title`, `entry_domain`
+    keys merged in so the caller can drill back to the parent.
+
+    Filters:
+      subentry_type   exact match on subentry_type (e.g. "ai_task_data")
+      title_pattern   substring match on subentry title (case-insensitive)
+      domain          restrict to parent entries in this integration domain
+    """
+    # Enumerate every config entry, then list its subentries.
+    entries = client.ws_call("config_entries/get") or []
+    if not isinstance(entries, list):
+        return []
+    if domain:
+        entries = [e for e in entries if e.get("domain") == domain]
+    p = (title_pattern or "").lower()
+    out: list[dict] = []
+    for e in entries:
+        eid = e.get("entry_id")
+        if not eid:
+            continue
+        try:
+            subs = client.ws_call("config_entries/subentries/list",
+                                    {"entry_id": eid}) or []
+        except Exception:
+            continue
+        for s in subs:
+            if subentry_type and s.get("subentry_type") != subentry_type:
+                continue
+            if p and p not in (s.get("title") or "").lower():
+                continue
+            out.append({
+                **s,
+                "entry_id": eid,
+                "entry_title": e.get("title"),
+                "entry_domain": e.get("domain"),
+            })
+    return out
+
+
 def _init_reconfigure(client, *, entry_id: str, subentry_id: str,
                         subentry_type: str) -> dict:
     """Open a reconfigure flow and return its first-step descriptor."""

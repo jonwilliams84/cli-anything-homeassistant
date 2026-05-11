@@ -80,3 +80,38 @@ def clear_skipped(client, entity_id: str) -> Any:
         client, "update", "clear_skipped",
         target={"entity_id": entity_id},
     )
+
+
+def install_all(client, *, exclude: Optional[list[str]] = None,
+                 backup: bool = False, dry_run: bool = False) -> dict:
+    """Install every available update in one call.
+
+    `exclude` is a list of substring patterns matched against entity_id.
+    `dry_run=True` reports which would be installed without triggering them.
+    """
+    rows = list_updates(client, available_only=True)
+    excl = exclude or []
+    selected: list[dict] = []
+    skipped: list[dict] = []
+    for r in rows:
+        eid = r["entity_id"]
+        if any(p in eid for p in excl):
+            skipped.append(r)
+        else:
+            selected.append(r)
+    results: list[dict] = []
+    if not dry_run:
+        for r in selected:
+            try:
+                res = install(client, r["entity_id"], backup=backup)
+                results.append({"entity_id": r["entity_id"], "ok": True,
+                                 "result": res})
+            except Exception as exc:
+                results.append({"entity_id": r["entity_id"], "ok": False,
+                                 "error": str(exc)})
+    return {
+        "selected": [r["entity_id"] for r in selected],
+        "excluded": [r["entity_id"] for r in skipped],
+        "dry_run": dry_run,
+        "results": results,
+    }
