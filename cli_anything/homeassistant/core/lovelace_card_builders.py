@@ -544,29 +544,11 @@ def stack_in_card(cards: list[dict], *, mode: str = "vertical",
     return out
 
 
-# ─────────────────────────────────────────────────── Bar Card
-
-def bar_card(entities: list[str | dict], *, min: float = 0, max: float = 100,
-              height: str | None = None,
-              width: str | None = None,
-              direction: str = "right",
-              positions: dict | None = None,
-              severity: list[dict] | None = None,
-              title: str | None = None) -> dict:
-    if not entities:
-        raise ValueError("at least one entity required")
-    card: dict[str, Any] = {
-        "type": "custom:bar-card",
-        "entities": list(entities),
-        "min": min, "max": max,
-        "direction": direction,
-    }
-    if height is not None: card["height"] = height
-    if width is not None: card["width"] = width
-    if positions is not None: card["positions"] = positions
-    if severity is not None: card["severity"] = severity
-    if title is not None: card["title"] = title
-    return card
+# `bar-card` (custom-cards/bar-card) was archived by its author in 2023
+# and is not in the HACS default repo list. We deliberately do NOT ship a
+# builder for it; for similar bar-style visualisations use the built-in
+# `gauge` (with severity) or `tile` (with linear-colored states), or a
+# `custom:mushroom-template-card` with a styled progress bar.
 
 
 # ─────────────────────────────────────────────────── Simple Weather Card
@@ -713,7 +695,6 @@ BUILDERS: dict[str, callable] = {
     "layout-card": layout_card,
     "decluttering": decluttering,
     "stack-in-card": stack_in_card,
-    "bar-card": bar_card,
     "simple-weather": simple_weather,
     "atomic-calendar": atomic_calendar,
     "digital-clock": digital_clock,

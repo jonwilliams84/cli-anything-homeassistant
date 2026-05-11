@@ -2550,11 +2550,6 @@ class TestBuildersCustomCharts:
                                       mode="horizontal")
         assert c["mode"] == "horizontal"
 
-    def test_bar_card(self):
-        c = builders.bar_card(["sensor.battery"], min=0, max=100,
-                                direction="up")
-        assert c["direction"] == "up"
-
     def test_simple_weather_validates(self):
         with pytest.raises(ValueError):
             builders.simple_weather("sensor.foo")
