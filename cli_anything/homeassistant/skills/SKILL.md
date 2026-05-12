@@ -941,6 +941,22 @@ Coverage jumped from ~33% to ~70% of HA's user-facing WS surface. Test count: 98
 
 WS coverage: **66.2% → 82.7%** of HA's WS surface. Test count: **1158**.
 
+## v1.25 — Sprint 5 final gap-closure (+53 WS commands)
+
+| Module | WS commands |
+|---|---|
+| `trace_debugger` | 7 trace breakpoint commands (`trace/debug/breakpoint/{list,subscribe,set,clear}`, `trace/debug/{step,continue,stop}`) |
+| `helper_previews` | 8 `*_start_preview` commands for live config-flow previews (group, generic_camera, mold_indicator, statistics, threshold, time_date, switch_as_x + generic dispatcher) |
+| `user_admin` | 5 user/credential admin (`config/auth/{create,update}`, `config/auth_provider/homeassistant/{create,delete,change_password}`) |
+| `history_logbook` | 4 history+logbook streams (`history/{history_during_period,stream}`, `logbook/{get_events,event_stream}`) |
+| `system_ops` | 13 system ops (`backup/{start,end,subscribe_events}`, `repairs/{get_issue_data,ignore_issue}`, `manifest/{get,list}`, `analytics/{,preferences}`, `application_credentials/{config,config_entry}`, `mqtt/{subscribe,device/debug_info}`) |
+| `entity_registry_extras` | 7 registry + misc (`config/entity_registry/{get,get_entries,list_for_display,remove}`, `config_entries/subscribe`, `integration/setup_info`, `recorder/statistic_during_period`) |
+| `singletons` | 9 one-offs (`diagnostics/get`, `update/release_notes`, `usb/scan`, `zha/devices/permit`, `search/related`, `media_player/browse_media`, `persistent_notification/subscribe`, `todo/item/subscribe`, `hardware/subscribe_system_status`) |
+
+WS coverage: **82.7% → ~95%** of non-vendor WS surface. Test count: **1381**.
+
+Remaining non-vendor gaps are deliberate: regex artefacts (energy source-type discriminators), foundational protocol primitives already accessible via REST/state_stream (call_service, execute_script, render_template, etc.), and device-class introspection (`sensor/numeric_device_classes` etc.).
+
 ## Notes & Caveats
 
 - The CLI is **stateless across invocations** — only the connection profile
