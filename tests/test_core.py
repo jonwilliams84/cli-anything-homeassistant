@@ -2835,6 +2835,224 @@ def sample_dashboard():
     }
 
 
+class TestLayoutLint:
+    """Heuristic layout-quality lint — catches visual issues HA renders but
+    doesn't flag (heading truncation, sibling mismatch, etc.)."""
+
+    def test_heading_truncation_mobile(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "heading",
+                  "heading": "Layout · stacks / grid / conditional / picture-elements"},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="mobile")
+        rules = [i["rule"] for i in issues]
+        assert "heading-truncation" in rules
+
+    def test_heading_short_no_issue(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "heading", "heading": "Lights"},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="mobile")
+        assert not any(i["rule"] == "heading-truncation" for i in issues)
+
+    def test_useless_single_child_stack(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "cards": [
+                {"type": "vertical-stack", "cards": [
+                    {"type": "tile", "entity": "light.kitchen"},
+                ]},
+            ]}]}]}
+        issues = ll.lint_layout(dash)
+        assert any(i["rule"] == "useless-single-stack" for i in issues)
+
+    def test_empty_stack_flagged(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "cards": [
+                {"type": "horizontal-stack", "cards": []},
+            ]}]}]}
+        issues = ll.lint_layout(dash)
+        assert any(i["rule"] == "empty-stack" for i in issues)
+
+    def test_hstack_squeeze_mobile(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "horizontal-stack", "cards": [
+                    {"type": "tile", "entity": "a"},
+                    {"type": "tile", "entity": "b"},
+                    {"type": "tile", "entity": "c"},
+                ]},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="mobile")
+        assert any(i["rule"] == "hstack-squeeze" for i in issues)
+
+    def test_hstack_two_cards_mobile_ok(self):
+        """2-card hstacks survive mobile well — don't flag."""
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "horizontal-stack", "cards": [
+                    {"type": "tile", "entity": "a"},
+                    {"type": "tile", "entity": "b"},
+                ]},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="mobile")
+        assert not any(i["rule"] == "hstack-squeeze" for i in issues)
+
+    def test_hstack_squeeze_desktop_narrow(self):
+        """Desktop: hstack with 3 children in column_span=2 should flag."""
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 2, "cards": [
+                {"type": "horizontal-stack", "cards": [
+                    {"type": "tile", "entity": "a"},
+                    {"type": "tile", "entity": "b"},
+                    {"type": "tile", "entity": "c"},
+                ]},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="desktop")
+        assert any(i["rule"] == "hstack-squeeze" for i in issues)
+
+    def test_sibling_height_mismatch_apexcharts_v_minigraph(self):
+        """The exact case from the screenshot: apexcharts (huge) vs mini-graph (medium)."""
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "grid", "columns": 2, "cards": [
+                    {"type": "custom:apexcharts-card", "series": [
+                        {"entity": "sensor.x"}]},
+                    {"type": "custom:mini-graph-card",
+                      "entities": [{"entity": "sensor.y"}]},
+                ]},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="desktop")
+        msgs = [i["message"] for i in issues
+                 if i["rule"] == "sibling-height-mismatch"]
+        assert msgs, "should detect apexcharts vs mini-graph height mismatch"
+
+    def test_no_mismatch_when_uniform(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "grid", "columns": 2, "cards": [
+                    {"type": "tile", "entity": "light.a"},
+                    {"type": "tile", "entity": "light.b"},
+                ]},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="desktop")
+        assert not any(i["rule"] == "sibling-height-mismatch" for i in issues)
+
+    def test_digital_clock_oversize(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 2, "cards": [
+                {"type": "custom:digital-clock"},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="mobile")
+        assert any(i["rule"] == "digital-clock-oversize" for i in issues)
+
+    def test_digital_clock_with_override_skipped(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 2, "cards": [
+                {"type": "custom:digital-clock",
+                  "card_mod": {"style": "ha-card { font-size: 1em; }"}},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="mobile")
+        assert not any(i["rule"] == "digital-clock-oversize" for i in issues)
+
+    def test_tight_grid_with_text_heavy(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "grid", "columns": 4, "cards": [
+                    {"type": "entities", "entities": ["light.a", "light.b"]},
+                    {"type": "tile", "entity": "light.c"},
+                    {"type": "tile", "entity": "light.d"},
+                    {"type": "tile", "entity": "light.e"},
+                ]},
+            ]}]}]}
+        issues = ll.lint_layout(dash)
+        assert any(i["rule"] == "tight-grid-text-heavy" for i in issues)
+
+    def test_viewport_both_tags_issues(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "heading",
+                  "heading": "Layout · stacks / grid / conditional / picture-elements"},
+            ]}]}]}
+        issues = ll.lint_layout(dash, viewport="both")
+        viewports = {i.get("viewport") for i in issues}
+        # Mobile budget is tighter — must include mobile.
+        assert "mobile" in viewports
+
+    def test_viewport_validates_value(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        with pytest.raises(ValueError):
+            ll.lint_layout({"views": []}, viewport="phone")
+
+    def test_card_height_class(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        assert ll.card_height_class({"type": "tile", "entity": "x"}) == 2
+        assert ll.card_height_class({"type": "heading", "heading": "x"}) == 1
+        assert ll.card_height_class(
+            {"type": "custom:apexcharts-card", "series": []}) == 14
+        assert ll.card_height_class({"type": "vertical-stack", "cards": [
+            {"type": "tile", "entity": "a"}, {"type": "tile", "entity": "b"},
+        ]}) == 4  # 2 + 2
+
+    def test_simple_weather_card_not_huge(self):
+        """Regression: 'simple-weather-card' must NOT match the
+        'weather-card' substring rule that makes weather-chart-card huge."""
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        # simple-weather-card is intentionally small (a chip-like weather tile)
+        assert ll.card_height_class(
+            {"type": "custom:simple-weather-card", "entity": "weather.home"}) == 2
+        # weather-chart-card IS huge — guard the other direction
+        assert ll.card_height_class(
+            {"type": "custom:weather-chart-card", "entity": "weather.home"}) == 14
+
+    def test_rules_filter(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"sections": [{
+            "type": "grid", "column_span": 4, "cards": [
+                {"type": "heading",
+                  "heading": "a much too long heading for any sensible "
+                                "mobile layout"},
+                {"type": "vertical-stack", "cards": [
+                    {"type": "tile", "entity": "x"}]},
+            ]}]}]}
+        # Run only heading rule
+        issues = ll.lint_layout(dash, rules={"heading-truncation"})
+        assert all(i["rule"] == "heading-truncation" for i in issues)
+
+    def test_format_issues(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        out = ll.format_issues([{
+            "severity": "warning", "path": "views[0]/sections[0]",
+            "rule": "heading-truncation",
+            "message": "boom", "hint": "fix it",
+        }])
+        assert "[WARNING]" in out
+        assert "[heading-truncation]" in out
+        assert "fix it" in out
+        assert ll.format_issues([]) == "✓ no layout issues"
+
+    def test_summarise_by_rule(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        out = ll.summarise_by_rule([
+            {"rule": "a"}, {"rule": "a"}, {"rule": "b"},
+        ])
+        assert out == {"a": 2, "b": 1}
+
+
 class TestDashboardSnapshot:
     """snapshot_dashboard + restore_dashboard_snapshot + automatic
     snapshot-on-save."""
