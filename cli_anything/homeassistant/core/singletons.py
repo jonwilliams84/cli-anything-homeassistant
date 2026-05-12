@@ -30,6 +30,11 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable
 
+from cli_anything.homeassistant.core._ws_subscribe_utils import (
+    resolve_stop_event as _resolve_stop_event,
+    wrap_with_max_events as _wrap_with_max_events,
+)
+
 
 # ════════════════════════════════════════════════════════════════════════
 # 1. diagnostics_get — WS diagnostics/get
@@ -199,16 +204,7 @@ def subscribe_persistent_notifications(
         raise ValueError("on_notification must be callable")
 
     stop, owns_stop = _resolve_stop_event(stop_event, max_notifications)
-
-    count_box = [0]
-
-    def wrapper(notification: object) -> None:
-        on_notification(notification)
-        if owns_stop and max_notifications is not None:
-            count_box[0] += 1
-            if count_box[0] >= max_notifications:
-                stop.set()
-
+    wrapper = _wrap_with_max_events(on_notification, stop, owns_stop, max_notifications)
     client.ws_subscribe("persistent_notification/subscribe", {}, wrapper, stop)
 
 
@@ -256,16 +252,7 @@ def subscribe_todo_items(
         raise ValueError("on_update must be callable")
 
     stop, owns_stop = _resolve_stop_event(stop_event, max_updates)
-
-    count_box = [0]
-
-    def wrapper(update: object) -> None:
-        on_update(update)
-        if owns_stop and max_updates is not None:
-            count_box[0] += 1
-            if count_box[0] >= max_updates:
-                stop.set()
-
+    wrapper = _wrap_with_max_events(on_update, stop, owns_stop, max_updates)
     client.ws_subscribe("todo/item/subscribe", {"entity_id": entity_id}, wrapper, stop)
 
 
@@ -312,34 +299,5 @@ def subscribe_hardware_status(
         raise ValueError("on_status must be callable")
 
     stop, owns_stop = _resolve_stop_event(stop_event, max_updates)
-
-    count_box = [0]
-
-    def wrapper(status: object) -> None:
-        on_status(status)
-        if owns_stop and max_updates is not None:
-            count_box[0] += 1
-            if count_box[0] >= max_updates:
-                stop.set()
-
+    wrapper = _wrap_with_max_events(on_status, stop, owns_stop, max_updates)
     client.ws_subscribe("hardware/subscribe_system_status", {}, wrapper, stop)
-
-
-# ════════════════════════════════════════════════════════════════════════
-# Internal helpers
-# ════════════════════════════════════════════════════════════════════════
-
-def _resolve_stop_event(
-    stop_event: threading.Event | None,
-    max_events: int | None,
-) -> tuple[threading.Event, bool]:
-    """Return (stop_event, caller_owns_it).
-
-    *caller_owns_it* is True when we created the event internally so that
-    the subscription loop should set it after max_events have arrived.
-    """
-    if stop_event is None and max_events is None:
-        raise ValueError("must supply stop_event or max_events")
-    if stop_event is None:
-        return threading.Event(), True
-    return stop_event, False

@@ -226,7 +226,7 @@ class TestBlueprints:
             fake_client,
             domain="automation",
             path="my_blueprint.yaml",
-            input=user_input,
+            inputs=user_input,
         )
         call = fake_client.ws_calls[-1]
         assert call["type"] == "blueprint/substitute"
@@ -244,7 +244,7 @@ class TestBlueprints:
             fake_client,
             domain="script",
             path="my_script_bp.yaml",
-            input={"name": "Test"},
+            inputs={"name": "Test"},
         )
         assert result == response
 
@@ -252,20 +252,20 @@ class TestBlueprints:
         """substitute_blueprint raises ValueError for an unrecognised domain."""
         with pytest.raises(ValueError, match="domain must be one of"):
             blueprints.substitute_blueprint(
-                fake_client, domain="light", path="bp.yaml", input={}
+                fake_client, domain="light", path="bp.yaml", inputs={}
             )
 
     def test_substitute_blueprint_empty_path_raises(self, fake_client):
         """substitute_blueprint raises ValueError when path is empty."""
         with pytest.raises(ValueError, match="path is required"):
             blueprints.substitute_blueprint(
-                fake_client, domain="automation", path="", input={}
+                fake_client, domain="automation", path="", inputs={}
             )
 
     def test_substitute_blueprint_non_dict_input_raises(self, fake_client):
         """substitute_blueprint raises ValueError when input is not a dict."""
-        with pytest.raises(ValueError, match="input must be a dict"):
+        with pytest.raises(ValueError, match="inputs must be a dict"):
             blueprints.substitute_blueprint(
                 fake_client, domain="automation",
-                path="my_bp.yaml", input=["not", "a", "dict"]
+                path="my_bp.yaml", inputs=["not", "a", "dict"]
             )

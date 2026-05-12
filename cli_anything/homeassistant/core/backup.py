@@ -4,6 +4,8 @@ HA's backup feature lives behind the WS `backup/*` namespace. The exact set
 of message types has evolved (info / details / generate / remove / restore
 were added in 2024.x). We use the names current as of 2024.6+; older HA may
 require small adjustments.
+
+(`info()` is also exported as `backup_info` for unambiguous `from X import` usage.)
 """
 
 from __future__ import annotations
@@ -101,3 +103,6 @@ def agents_info(client) -> list[dict]:
 def config_info(client) -> dict:
     """Read the backup automation/schedule configuration."""
     return client.ws_call("backup/config/info") or {}
+
+
+backup_info = info

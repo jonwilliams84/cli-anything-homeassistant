@@ -48,3 +48,6 @@ def set_theme(client, name: str, *,
 def reload(client) -> Any:
     """Reload themes from `themes:` in configuration.yaml."""
     return services_core.call_service(client, "frontend", "reload_themes")
+
+
+themes_reload = reload

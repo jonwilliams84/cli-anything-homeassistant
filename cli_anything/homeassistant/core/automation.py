@@ -117,3 +117,6 @@ def save_config(client, entity_id: str, config: dict) -> dict:
     if not auto_id:
         raise ValueError("config['id'] is required")
     return client.post(f"config/automation/config/{auto_id}", config)
+
+
+automation_reload = reload

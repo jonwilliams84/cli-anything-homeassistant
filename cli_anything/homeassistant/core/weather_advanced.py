@@ -57,32 +57,32 @@ def subscribe_forecast(client, *, entity_id: str, forecast_type: str) -> dict:
     return client.ws_call("weather/subscribe_forecast", payload) or {}
 
 
-def get_forecasts(client, *, entity_id: str, type: str = "daily") -> list[dict]:
+def get_forecasts(client, *, entity_id: str, forecast_type: str = "daily") -> list[dict]:
     """Retrieve weather forecast data via service call.
 
     Args:
         client: HomeAssistant client.
         entity_id: Must start with "weather." (e.g., "weather.home").
-        type: One of "daily", "hourly", "twice_daily". Defaults to "daily".
+        forecast_type: One of "daily", "hourly", "twice_daily". Defaults to "daily".
 
     Returns:
         List of forecast dicts. Empty list if no forecast available.
 
     Raises:
         ValueError: If entity_id does not start with "weather." or
-                   type is not one of the allowed values.
+                   forecast_type is not one of the allowed values.
     """
     if not entity_id:
         raise ValueError("entity_id is required")
     if not entity_id.startswith("weather."):
         raise ValueError(f"entity_id must start with 'weather.', got: {entity_id}")
 
-    if not type:
-        raise ValueError("type is required")
+    if not forecast_type:
+        raise ValueError("forecast_type is required")
     valid_types = {"daily", "hourly", "twice_daily"}
-    if type not in valid_types:
-        raise ValueError(f"type must be one of {valid_types}, got: {type}")
+    if forecast_type not in valid_types:
+        raise ValueError(f"forecast_type must be one of {valid_types}, got: {forecast_type}")
 
-    payload = {"entity_id": entity_id, "type": type}
+    payload = {"entity_id": entity_id, "type": forecast_type}
     result = client.post("services/weather/get_forecasts", payload) or {}
     return result.get("forecast", [])

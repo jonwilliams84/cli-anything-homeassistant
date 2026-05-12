@@ -4,6 +4,8 @@ WS namespace: `energy/*`. Reads + writes the Energy dashboard config (which
 sensors drive the electricity/gas/water cards, individual device sources,
 solar production, grid pricing, etc.) and exposes the fossil-consumption
 helper used to compute % renewable energy.
+
+(`info()` is also exported as `energy_info` for unambiguous `from X import` usage.)
 """
 
 from __future__ import annotations
@@ -56,3 +58,6 @@ def fossil_energy_consumption(client, *,
     if end_time:
         payload["end_time"] = end_time
     return client.ws_call("energy/fossil_energy_consumption", payload) or {}
+
+
+energy_info = info

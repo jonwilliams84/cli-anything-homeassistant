@@ -1,14 +1,9 @@
-"""Auth-related operations: current user, long-lived access tokens, user list."""
+"""Auth-related operations: long-lived access tokens, user list."""
 
 from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
-
-
-def current_user(client) -> dict:
-    """Return the user the active token is for, plus admin/owner flags."""
-    return client.ws_call("auth/current_user")
 
 
 def list_users(client) -> list[dict]:

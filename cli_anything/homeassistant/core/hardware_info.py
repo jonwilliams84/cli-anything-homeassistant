@@ -17,12 +17,19 @@ Public API
 * :func:`board_info`
 * :func:`cpu_info`
 * :func:`subscribe_system_status`
+
+(`info()` is also exported as `hardware_info` for unambiguous `from X import` usage.)
 """
 
 from __future__ import annotations
 
 import threading
 from typing import Callable
+
+from cli_anything.homeassistant.core._ws_subscribe_utils import (
+    resolve_stop_event as _resolve_stop_event,
+    wrap_with_max_events as _wrap_with_max_events,
+)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -37,22 +44,6 @@ def _validate_callable(fn: object, name: str = "on_status") -> None:
 def _validate_max_events(max_events: int | None) -> None:
     if max_events is not None and max_events < 1:
         raise ValueError("max_events must be > 0 when supplied")
-
-
-def _resolve_stop_event(
-    stop_event: threading.Event | None,
-    max_events: int | None,
-) -> tuple[threading.Event, bool]:
-    """Return (stop_event, caller_owns_it).
-
-    *caller_owns_it* is True when we created the event internally so that
-    the subscription loop should set it after max_events have arrived.
-    """
-    if stop_event is None and max_events is None:
-        raise ValueError("must supply stop_event or max_events (or both)")
-    if stop_event is None:
-        return threading.Event(), True
-    return stop_event, False
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -157,14 +148,8 @@ def subscribe_system_status(
     _validate_callable(on_status, "on_status")
     _validate_max_events(max_events)
     stop, owns_stop = _resolve_stop_event(stop_event, max_events)
-
-    count_box = [0]
-
-    def wrapper(event: object) -> None:
-        on_status(event)
-        if owns_stop and max_events is not None:
-            count_box[0] += 1
-            if count_box[0] >= max_events:
-                stop.set()
-
+    wrapper = _wrap_with_max_events(on_status, stop, owns_stop, max_events)
     client.ws_subscribe("hardware/subscribe_system_status", {}, on_message=wrapper, stop_event=stop)
+
+
+hardware_info = info

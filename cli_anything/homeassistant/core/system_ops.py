@@ -8,6 +8,14 @@ are standalone utilities).
 
 from __future__ import annotations
 
+import threading
+from typing import Callable
+
+from cli_anything.homeassistant.core._ws_subscribe_utils import (
+    resolve_stop_event as _resolve_stop_event,
+    wrap_with_max_events as _wrap_with_max_events,
+)
+
 
 # ════════════════════════════════════════════════════════════════════════
 # Backup hooks — lifecycle markers
@@ -15,20 +23,49 @@ from __future__ import annotations
 
 def backup_start(client) -> dict:
     """Mark backup as in-progress. WS ``backup/start``."""
-    return client.ws_call("backup/start", None)
+    return client.ws_call("backup/start", {})
 
 
 def backup_end(client) -> dict:
     """Mark backup as complete. WS ``backup/end``."""
-    return client.ws_call("backup/end", None)
+    return client.ws_call("backup/end", {})
 
 
-def backup_subscribe_events(client) -> dict:
+def backup_subscribe_events(
+    client,
+    *,
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Subscribe to backup state-change events. WS ``backup/subscribe_events``.
 
-    Returns subscription confirmation (exact format depends on HA websocket layer).
+    Blocks until ``stop_event`` is set or ``max_events`` have been received.
+
+    Parameters
+    ----------
+    client:
+        Home Assistant client instance exposing ``ws_subscribe``.
+    on_event:
+        Callable invoked with each backup event dict received from HA.
+    stop_event:
+        :class:`threading.Event` whose set-state terminates the loop. At
+        least one of ``stop_event`` or ``max_events`` must be supplied.
+    max_events:
+        Stop automatically after this many events. Ignored when
+        ``stop_event`` is also supplied.
+
+    Raises
+    ------
+    ValueError
+        If neither ``stop_event`` nor ``max_events`` is provided, or if
+        ``on_event`` is not callable.
     """
-    return client.ws_call("backup/subscribe_events", None)
+    if not callable(on_event):
+        raise ValueError("on_event must be callable")
+    stop, owns_stop = _resolve_stop_event(stop_event, max_events)
+    wrapper = _wrap_with_max_events(on_event, stop, owns_stop, max_events)
+    client.ws_subscribe("backup/subscribe_events", None, wrapper, stop)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -81,7 +118,7 @@ def list_manifests(client) -> dict:
 
     Returns a dict mapping domain → manifest object.
     """
-    return client.ws_call("manifest/list", None)
+    return client.ws_call("manifest/list", {})
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -93,7 +130,7 @@ def get_analytics(client) -> dict:
 
     Returns a dict with ``preferences`` (dict) and ``onboarded`` (bool).
     """
-    return client.ws_call("analytics", None)
+    return client.ws_call("analytics", {})
 
 
 def set_analytics_preferences(client, *, preferences: dict) -> dict:
@@ -118,7 +155,7 @@ def application_credentials_config(client) -> dict:
 
     Returns a list of integration domains that support application credentials.
     """
-    return client.ws_call("application_credentials/config", None)
+    return client.ws_call("application_credentials/config", {})
 
 
 def application_credentials_config_entry(client, *, config_entry_id: str) -> dict:
@@ -136,20 +173,52 @@ def application_credentials_config_entry(client, *, config_entry_id: str) -> dic
 # MQTT debug — topic subscription and device debug info
 # ════════════════════════════════════════════════════════════════════════
 
-def mqtt_subscribe(client, *, topic: str, qos: int = 0) -> dict:
+def mqtt_subscribe(
+    client,
+    *,
+    topic: str,
+    qos: int = 0,
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Subscribe to an MQTT topic. WS ``mqtt/subscribe``.
 
-    `topic` — MQTT topic string (required).
-    `qos` — Quality of service: 0, 1, or 2 (default: 0).
+    Blocks until ``stop_event`` is set or ``max_events`` have been received.
 
-    Returns subscription confirmation.
+    Parameters
+    ----------
+    client:
+        Home Assistant client instance exposing ``ws_subscribe``.
+    topic:
+        MQTT topic string (required, non-empty).
+    qos:
+        Quality of service: 0, 1, or 2 (default: 0).
+    on_event:
+        Callable invoked with each MQTT message dict received from HA.
+    stop_event:
+        :class:`threading.Event` whose set-state terminates the loop. At
+        least one of ``stop_event`` or ``max_events`` must be supplied.
+    max_events:
+        Stop automatically after this many events. Ignored when
+        ``stop_event`` is also supplied.
+
+    Raises
+    ------
+    ValueError
+        If ``topic`` is empty, ``qos`` is not in {0, 1, 2}, neither
+        ``stop_event`` nor ``max_events`` is provided, or ``on_event``
+        is not callable.
     """
     if not topic:
         raise ValueError("topic required")
     if qos not in (0, 1, 2):
         raise ValueError(f"qos must be 0, 1, or 2; got {qos!r}")
-    return client.ws_call("mqtt/subscribe",
-                          {"topic": topic, "qos": qos})
+    if not callable(on_event):
+        raise ValueError("on_event must be callable")
+    stop, owns_stop = _resolve_stop_event(stop_event, max_events)
+    wrapper = _wrap_with_max_events(on_event, stop, owns_stop, max_events)
+    client.ws_subscribe("mqtt/subscribe", {"topic": topic, "qos": qos}, wrapper, stop)
 
 
 def mqtt_device_debug_info(client, *, device_id: str) -> dict:

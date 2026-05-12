@@ -34,6 +34,9 @@ def list_blueprints(client, domain: str | None = None) -> dict:
     `domain` accepts positional OR keyword form. Validates against
     ``'automation' | 'script' | 'template'``.
 
+    Prefer `list_blueprints_kw` in new code; this variant exists for back-compat
+    with the legacy positional form.
+
     Returns the raw HA response (a dict keyed by path / by domain).
     """
     if domain is not None:
@@ -43,6 +46,11 @@ def list_blueprints(client, domain: str | None = None) -> dict:
         payload = {}
     data = client.ws_call("blueprint/list", payload)
     return data if isinstance(data, dict) else {}
+
+
+def list_blueprints_kw(client, *, domain: str | None = None) -> dict:
+    """Kwarg-only variant of list_blueprints — preferred for new code."""
+    return list_blueprints(client, domain)
 
 
 def import_blueprint(client, *, url: str) -> dict:
@@ -113,24 +121,24 @@ def substitute_blueprint(
     *,
     domain: str,
     path: str,
-    input: dict,
+    inputs: dict,
 ) -> dict:
-    """Render a blueprint with caller-supplied *input* variables.
+    """Render a blueprint with caller-supplied *inputs* variables.
 
     *domain* — one of ``'automation'``, ``'script'``, ``'template'``.
     *path*   — relative path of the blueprint file; non-empty.
-    *input*  — dict mapping blueprint input keys to values.
+    *inputs* — dict mapping blueprint input keys to values.
 
     Returns ``{"substituted_config": <rendered config>}`` on success.
     """
     _check_domain(domain)
     if not path:
         raise ValueError("path is required and must be non-empty")
-    if not isinstance(input, dict):
-        raise ValueError("input must be a dict")
+    if not isinstance(inputs, dict):
+        raise ValueError("inputs must be a dict")
     return client.ws_call(
         "blueprint/substitute",
-        {"domain": domain, "path": path, "input": input},
+        {"domain": domain, "path": path, "input": inputs},
     ) or {}
 
 
@@ -151,17 +159,30 @@ def show(client, domain: str, path: str) -> dict | None:
 
 def substitute(client, *, domain: str, path: str,
                  user_input: dict | None = None,
-                 input: dict | None = None) -> dict:
+                 input: dict | None = None,
+                 inputs: dict | None = None) -> dict:
     """Backwards-compatible alias for ``substitute_blueprint``.
 
-    Accepts the legacy ``user_input=`` kwarg as well as ``input=``.
+    Accepts the legacy ``user_input=`` and ``input=`` kwargs as well as the new ``inputs=``.
     """
-    if user_input is not None and input is not None and user_input != input:
-        raise ValueError("pass either `user_input=` or `input=`, not both")
-    payload_input = input if input is not None else user_input
-    if payload_input is None:
-        raise ValueError("input (or user_input) is required")
+    # Count how many are provided
+    provided = sum([
+        user_input is not None,
+        input is not None,
+        inputs is not None,
+    ])
+    if provided > 1:
+        # Check if all provided values are identical
+        values = [v for v in [user_input, input, inputs] if v is not None]
+        if not all(v == values[0] for v in values):
+            raise ValueError("pass only one of `user_input=`, `input=`, or `inputs=`")
+
+    if provided == 0:
+        raise ValueError("one of `user_input=`, `input=`, or `inputs=` is required")
+
+    # Get the first non-None value
+    payload_input = user_input or input or inputs
     if not isinstance(payload_input, dict):
         raise ValueError("input must be a dict")
     return substitute_blueprint(client, domain=domain, path=path,
-                                  input=payload_input)
+                                  inputs=payload_input)

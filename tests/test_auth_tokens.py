@@ -13,11 +13,11 @@ class TestAuthTokens:
     # ────────────────────────────────────────────────────────────────────
 
     def test_current_user_ws_payload(self, fake_client):
-        """current_user sends auth/current_user with no payload."""
+        """current_user sends auth/current_user with empty payload."""
         fake_client.set_ws("auth/current_user", {"id": "u1", "name": "Alice", "is_admin": True})
         auth_tokens.current_user(fake_client)
         assert fake_client.ws_calls == [
-            {"type": "auth/current_user", "payload": None}
+            {"type": "auth/current_user", "payload": {}}
         ]
 
     def test_current_user_return_shape(self, fake_client):
@@ -34,11 +34,11 @@ class TestAuthTokens:
     # ────────────────────────────────────────────────────────────────────
 
     def test_list_refresh_tokens_ws_payload(self, fake_client):
-        """list_refresh_tokens sends auth/refresh_tokens with no payload."""
+        """list_refresh_tokens sends auth/refresh_tokens with empty payload."""
         fake_client.set_ws("auth/refresh_tokens", [])
         auth_tokens.list_refresh_tokens(fake_client)
         assert fake_client.ws_calls == [
-            {"type": "auth/refresh_tokens", "payload": None}
+            {"type": "auth/refresh_tokens", "payload": {}}
         ]
 
     def test_list_refresh_tokens_return_shape(self, fake_client):

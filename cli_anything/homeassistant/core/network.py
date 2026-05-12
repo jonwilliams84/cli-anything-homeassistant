@@ -2,6 +2,8 @@
 
 Manage network adapter configuration and retrieve internal/external/cloud URLs
 via the ``network/*`` WebSocket commands.
+
+(`info()` is also exported as `network_info` for unambiguous `from X import` usage.)
 """
 
 from __future__ import annotations
@@ -55,3 +57,6 @@ def url(client) -> dict:
         "external_url": result.get("external"),
         "cloud_url": result.get("cloud"),
     }
+
+
+network_info = info

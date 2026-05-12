@@ -7,6 +7,14 @@ connection, and intercepting wake words for testing.
 
 from __future__ import annotations
 
+import threading
+from typing import Callable
+
+from cli_anything.homeassistant.core._ws_subscribe_utils import (
+    resolve_stop_event as _resolve_stop_event,
+    wrap_with_max_events as _wrap_with_max_events,
+)
+
 
 def get_configuration(client, *, entity_id: str) -> dict:
     """Get the current configuration of an assist_satellite entity.
@@ -75,27 +83,54 @@ def test_connection(client, *, entity_id: str) -> dict:
     return client.ws_call("assist_satellite/test_connection", {"entity_id": entity_id})
 
 
-def intercept_wake_word(client, *, entity_id: str) -> dict:
-    """Intercept the next wake word from an assist_satellite entity.
+def intercept_wake_word(
+    client,
+    *,
+    entity_id: str,
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
+    """Intercept wake word events from an assist_satellite entity.
 
-    NOTE: This WS command is a SUBSCRIBE command that returns a stream of
-    results. This wrapper sends a one-shot WS call and records it in
-    ``client.ws_calls`` for testing. For full streaming support, use
-    ``client.ws_subscribe()`` directly on the returned task.
+    Subscribes to the ``assist_satellite/intercept_wake_word`` WS command.
+    Blocks until ``stop_event`` is set or ``max_events`` wake word events are
+    received and forwarded to ``on_event``.
 
-    Returns a dict with `wake_word_phrase` key upon successful interception.
+    Parameters
+    ----------
+    client:
+        HomeAssistantClient instance exposing ``ws_subscribe``.
+    entity_id:
+        Full entity_id (must start with "assist_satellite.").
+    on_event:
+        Callable invoked with each wake word event dict received from HA.
+        Events typically contain a ``wake_word_phrase`` key.
+    stop_event:
+        :class:`threading.Event` whose set-state terminates the loop. At
+        least one of ``stop_event`` or ``max_events`` must be supplied.
+    max_events:
+        Stop automatically after this many events. Ignored when
+        ``stop_event`` is also supplied.
 
-    Args:
-        client: HomeAssistantClient instance.
-        entity_id: Full entity_id (must start with "assist_satellite.").
-
-    Raises:
-        ValueError: If entity_id does not start with "assist_satellite.".
+    Raises
+    ------
+    ValueError
+        If entity_id does not start with "assist_satellite.", ``on_event``
+        is not callable, or neither ``stop_event`` nor ``max_events`` is
+        provided.
     """
     if not entity_id.startswith("assist_satellite."):
         raise ValueError(
             f"expected assist_satellite.* entity_id, got {entity_id!r}"
         )
-    return client.ws_call(
-        "assist_satellite/intercept_wake_word", {"entity_id": entity_id}
+    if not callable(on_event):
+        raise ValueError("on_event must be callable")
+    stop, owns_stop = _resolve_stop_event(stop_event, max_events)
+    wrapper = _wrap_with_max_events(on_event, stop, owns_stop, max_events)
+    client.ws_subscribe(
+        "assist_satellite/intercept_wake_word",
+        {"entity_id": entity_id},
+        wrapper,
+        stop,
     )

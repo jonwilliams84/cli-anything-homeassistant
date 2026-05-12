@@ -36,14 +36,14 @@ class TestStatisticsAdmin:
         }
 
     def test_adjust_sum_statistics_no_unit(self, fake_client):
-        """adjustment_unit_of_measurement defaults to None and is sent as-is."""
+        """adjustment_unit_of_measurement is omitted from payload when not supplied."""
         statistics_admin.adjust_sum_statistics(
             fake_client,
             statistic_id="sensor.gas_meter",
             start_time="2024-06-01T00:00:00+00:00",
             adjustment=-1.0,
         )
-        assert fake_client.ws_calls[-1]["payload"]["adjustment_unit_of_measurement"] is None
+        assert "adjustment_unit_of_measurement" not in fake_client.ws_calls[-1]["payload"]
 
     def test_adjust_sum_statistics_returns_response(self, fake_client):
         """Return value is whatever the server sends back."""
@@ -137,7 +137,7 @@ class TestStatisticsAdmin:
     # ────────────────────────────────────────────────────────────────────
 
     def test_validate_statistics_happy_path(self, fake_client):
-        """validate_statistics sends recorder/validate_statistics with no payload."""
+        """validate_statistics sends recorder/validate_statistics with empty payload."""
         canned = {
             "sensor.broken": [
                 {"type": "unsupported_state_class", "data": {"state_class": "total"}}
@@ -146,7 +146,7 @@ class TestStatisticsAdmin:
         fake_client.set_ws("recorder/validate_statistics", canned)
         result = statistics_admin.validate_statistics(fake_client)
         assert fake_client.ws_calls[-1]["type"] == "recorder/validate_statistics"
-        assert fake_client.ws_calls[-1]["payload"] is None
+        assert fake_client.ws_calls[-1]["payload"] == {}
         assert "sensor.broken" in result
 
     def test_validate_statistics_returns_dict(self, fake_client):
@@ -170,7 +170,7 @@ class TestStatisticsAdmin:
         fake_client.set_ws("recorder/update_statistics_issues", {})
         statistics_admin.update_statistics_issues(
             fake_client,
-            type="unsupported_state_class",
+            issue_type="unsupported_state_class",
             statistic_id="sensor.broken",
         )
         assert fake_client.ws_calls[-1]["type"] == "recorder/update_statistics_issues"
@@ -184,7 +184,7 @@ class TestStatisticsAdmin:
         fake_client.set_ws("recorder/update_statistics_issues", {"cleared": True})
         result = statistics_admin.update_statistics_issues(
             fake_client,
-            type="units_changed",
+            issue_type="units_changed",
             statistic_id="sensor.foo",
         )
         assert result == {"cleared": True}
@@ -193,15 +193,15 @@ class TestStatisticsAdmin:
         with pytest.raises(ValueError, match="statistic_id"):
             statistics_admin.update_statistics_issues(
                 fake_client,
-                type="unsupported_state_class",
+                issue_type="unsupported_state_class",
                 statistic_id="",
             )
 
     def test_update_statistics_issues_empty_type(self, fake_client):
-        with pytest.raises(ValueError, match="type"):
+        with pytest.raises(ValueError, match="issue_type"):
             statistics_admin.update_statistics_issues(
                 fake_client,
-                type="",
+                issue_type="",
                 statistic_id="sensor.foo",
             )
 
@@ -321,4 +321,22 @@ class TestStatisticsAdmin:
         with pytest.raises(ValueError, match="stats"):
             statistics_admin.import_statistics(
                 fake_client, metadata=meta, stats=[]
+            )
+
+    def test_import_statistics_metadata_none_raises(self, fake_client):
+        """import_statistics raises ValueError when metadata is None."""
+        with pytest.raises(ValueError, match="metadata must be a dict"):
+            statistics_admin.import_statistics(
+                fake_client,
+                metadata=None,
+                stats=[{"start": "2024-01-01T00:00:00+00:00", "sum": 1.0}],
+            )
+
+    def test_import_statistics_metadata_non_dict_raises(self, fake_client):
+        """import_statistics raises ValueError when metadata is not a dict."""
+        with pytest.raises(ValueError, match="metadata must be a dict"):
+            statistics_admin.import_statistics(
+                fake_client,
+                metadata="sensor.energy",
+                stats=[{"start": "2024-01-01T00:00:00+00:00", "sum": 1.0}],
             )

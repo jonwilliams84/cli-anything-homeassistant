@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
+from tests.conftest import SubscribingFakeClient
 from cli_anything.homeassistant.core import assist_satellite
 
 
@@ -170,31 +173,96 @@ class TestAssistSatellite:
 
     # ── intercept_wake_word ─────────────────────────────────────────────────
 
-    def test_intercept_wake_word_happy(self, fake_client):
-        fake_client.set_ws(
-            "assist_satellite/intercept_wake_word",
-            {"wake_word_phrase": "Hey Google"},
+    def test_intercept_wake_word_calls_ws_subscribe(self):
+        """intercept_wake_word calls ws_subscribe with correct type and payload."""
+        client = SubscribingFakeClient()
+        stop = threading.Event()
+        stop.set()
+        assist_satellite.intercept_wake_word(
+            client,
+            entity_id="assist_satellite.device_1",
+            on_event=lambda e: None,
+            stop_event=stop,
         )
-        result = assist_satellite.intercept_wake_word(
-            fake_client, entity_id="assist_satellite.device_1"
-        )
-        assert result == {"wake_word_phrase": "Hey Google"}
-        last_ws = fake_client.ws_calls[-1]
-        assert last_ws["type"] == "assist_satellite/intercept_wake_word"
-        assert last_ws["payload"]["entity_id"] == "assist_satellite.device_1"
+        assert len(client.subscribe_calls) == 1
+        msg_type, payload = client.subscribe_calls[0]
+        assert msg_type == "assist_satellite/intercept_wake_word"
+        assert payload == {"entity_id": "assist_satellite.device_1"}
 
-    def test_intercept_wake_word_invalid_entity_prefix(self, fake_client):
+    def test_intercept_wake_word_delivers_events(self):
+        """intercept_wake_word forwards wake word events to on_event."""
+        client = SubscribingFakeClient()
+        ev = {"wake_word_phrase": "Hey Google"}
+        client.queue_events(ev)
+        received = []
+        assist_satellite.intercept_wake_word(
+            client,
+            entity_id="assist_satellite.device_1",
+            on_event=received.append,
+            max_events=1,
+        )
+        assert received == [ev]
+
+    def test_intercept_wake_word_max_events_auto_stop(self):
+        """intercept_wake_word stops after max_events deliveries."""
+        client = SubscribingFakeClient()
+        client.queue_events(
+            {"wake_word_phrase": "Hey Google"},
+            {"wake_word_phrase": "Hey Jarvis"},
+            {"wake_word_phrase": "Hey Siri"},
+        )
+        received = []
+        assist_satellite.intercept_wake_word(
+            client,
+            entity_id="assist_satellite.device_1",
+            on_event=received.append,
+            max_events=2,
+        )
+        assert len(received) == 2
+
+    def test_intercept_wake_word_stop_event(self):
+        """intercept_wake_word respects a pre-set stop_event."""
+        client = SubscribingFakeClient()
+        client.queue_events({"wake_word_phrase": "Hey Google"})
+        stop = threading.Event()
+        stop.set()
+        received = []
+        assist_satellite.intercept_wake_word(
+            client,
+            entity_id="assist_satellite.device_1",
+            on_event=received.append,
+            stop_event=stop,
+        )
+        assert received == []
+
+    def test_intercept_wake_word_invalid_entity_prefix(self):
+        """intercept_wake_word raises ValueError for non-assist_satellite entity."""
+        client = SubscribingFakeClient()
         with pytest.raises(ValueError, match="expected assist_satellite"):
             assist_satellite.intercept_wake_word(
-                fake_client, entity_id="sensor.microphone"
+                client,
+                entity_id="sensor.microphone",
+                on_event=lambda e: None,
+                max_events=1,
             )
 
-    def test_intercept_wake_word_return_shape(self, fake_client):
-        fake_client.set_ws(
-            "assist_satellite/intercept_wake_word",
-            {"wake_word_phrase": "test phrase"},
-        )
-        result = assist_satellite.intercept_wake_word(
-            fake_client, entity_id="assist_satellite.device_1"
-        )
-        assert isinstance(result, dict)
+    def test_intercept_wake_word_raises_without_stop_or_max(self):
+        """intercept_wake_word raises ValueError if no stop_event or max_events."""
+        client = SubscribingFakeClient()
+        with pytest.raises(ValueError, match="must supply stop_event or max_events"):
+            assist_satellite.intercept_wake_word(
+                client,
+                entity_id="assist_satellite.device_1",
+                on_event=lambda e: None,
+            )
+
+    def test_intercept_wake_word_raises_on_non_callable(self):
+        """intercept_wake_word raises ValueError if on_event is not callable."""
+        client = SubscribingFakeClient()
+        with pytest.raises(ValueError, match="on_event must be callable"):
+            assist_satellite.intercept_wake_word(
+                client,
+                entity_id="assist_satellite.device_1",
+                on_event="not_callable",  # type: ignore[arg-type]
+                max_events=1,
+            )

@@ -149,7 +149,7 @@ class TestBackupAdvanced:
         )
         backup_advanced.generate_with_automatic_settings(fake_client)
         assert fake_client.ws_calls == [
-            {"type": "backup/generate_with_automatic_settings", "payload": None}
+            {"type": "backup/generate_with_automatic_settings", "payload": {}}
         ]
 
     def test_generate_with_automatic_settings_returns_dict(self, fake_client):
@@ -170,7 +170,7 @@ class TestBackupAdvanced:
         fake_client.set_ws("backup/agents/info", agents_payload)
         result = backup_advanced.list_agents(fake_client)
         assert fake_client.ws_calls == [
-            {"type": "backup/agents/info", "payload": None}
+            {"type": "backup/agents/info", "payload": {}}
         ]
 
     def test_list_agents_returns_list(self, fake_client):

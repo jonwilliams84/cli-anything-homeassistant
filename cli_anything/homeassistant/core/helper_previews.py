@@ -1,28 +1,12 @@
-"""Live-config preview WebSocket commands for config-flow helpers.
+"""Live-config preview WebSocket subscriptions for config-flow helpers.
 
 Each of the seven helper domains below registers a ``<domain>/start_preview``
 WS subscription command in its config flow.  When called, HA begins streaming
 ``event`` messages back to the caller containing the preview state of a helper
 entity **before** the flow is committed.
 
-This module wraps those subscription commands as one-shot WS sends (the
-initial subscription message is recorded in ``client.ws_calls`` for
-testability).
-
-**Streaming note** — these are *subscribe* commands, not simple request/
-response calls.  The functions here send only the *initial* subscription
-message.  Callers that want the live event stream must consume it via
-``client.ws_subscribe`` (or equivalent).  Example::
-
-    sub_id = client.ws_subscribe(
-        "group/start_preview",
-        {
-            "flow_id": flow_id,
-            "flow_type": "config_flow",
-            "user_input": user_input,
-        },
-        callback=on_event,
-    )
+This module wraps those subscription commands as proper ``ws_subscribe`` calls
+so callers receive the live event stream.
 
 WS subscription commands covered:
   group/start_preview
@@ -35,6 +19,14 @@ WS subscription commands covered:
 """
 
 from __future__ import annotations
+
+import threading
+from typing import Callable
+
+from cli_anything.homeassistant.core._ws_subscribe_utils import (
+    resolve_stop_event as _resolve_stop_event,
+    wrap_with_max_events as _wrap_with_max_events,
+)
 
 # Valid flow_type values accepted by all domains.
 _VALID_FLOW_TYPES = frozenset({"config_flow", "options_flow"})
@@ -69,16 +61,28 @@ def _validate_preview_args(flow_id: str, flow_type: str, user_input: dict) -> No
         raise ValueError("user_input must be a non-empty dict")
 
 
-def _send_preview(client, msg_type: str, flow_id: str,
-                  flow_type: str, user_input: dict) -> dict:
-    """Validate, build payload, and dispatch the WS subscription message."""
+def _subscribe_preview(
+    client,
+    msg_type: str,
+    flow_id: str,
+    flow_type: str,
+    user_input: dict,
+    on_event: Callable,
+    stop_event: threading.Event | None,
+    max_events: int | None,
+) -> None:
+    """Validate, build payload, and start a WS subscription for a preview command."""
     _validate_preview_args(flow_id, flow_type, user_input)
+    if not callable(on_event):
+        raise ValueError("on_event must be callable")
     payload = {
         "flow_id": flow_id,
         "flow_type": flow_type,
         "user_input": user_input,
     }
-    return client.ws_call(msg_type, payload)
+    stop, owns_stop = _resolve_stop_event(stop_event, max_events)
+    wrapper = _wrap_with_max_events(on_event, stop, owns_stop, max_events)
+    client.ws_subscribe(msg_type, payload, wrapper, stop)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -91,18 +95,27 @@ def start_group_preview(
     flow_id: str,
     flow_type: str,
     user_input: dict,
-) -> dict:
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Start a live group-helper preview via WS ``group/start_preview``.
 
     HA schema requires ``flow_id``, ``flow_type``, and ``user_input``.
     ``flow_type`` must be ``"config_flow"`` or ``"options_flow"``.
 
-    Returns the raw WS response (an empty dict from FakeClient; a
-    subscription-ack from a real HA instance).  Full streaming of preview
-    events requires ``client.ws_subscribe``; see module docstring.
+    Blocks until ``stop_event`` is set or ``max_events`` preview events are
+    received and forwarded to ``on_event``.
+
+    Raises
+    ------
+    ValueError
+        For invalid ``flow_type``, empty ``flow_id``, non-dict ``user_input``,
+        non-callable ``on_event``, or missing ``stop_event`` / ``max_events``.
     """
-    return _send_preview(client, "group/start_preview",
-                         flow_id, flow_type, user_input)
+    _subscribe_preview(client, "group/start_preview",
+                       flow_id, flow_type, user_input,
+                       on_event, stop_event, max_events)
 
 
 def start_generic_camera_preview(
@@ -111,7 +124,10 @@ def start_generic_camera_preview(
     flow_id: str,
     flow_type: str,
     user_input: dict,
-) -> dict:
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Start a live generic-camera preview via WS ``generic_camera/start_preview``.
 
     HA schema: ``flow_id`` is Required; ``flow_type`` and ``user_input`` are
@@ -120,10 +136,14 @@ def start_generic_camera_preview(
 
     ``flow_type`` must be ``"config_flow"`` or ``"options_flow"``.
 
-    Returns the raw WS response.  Full streaming requires ``client.ws_subscribe``.
+    Raises
+    ------
+    ValueError
+        For invalid args or missing stop/max.
     """
-    return _send_preview(client, "generic_camera/start_preview",
-                         flow_id, flow_type, user_input)
+    _subscribe_preview(client, "generic_camera/start_preview",
+                       flow_id, flow_type, user_input,
+                       on_event, stop_event, max_events)
 
 
 def start_mold_indicator_preview(
@@ -132,16 +152,23 @@ def start_mold_indicator_preview(
     flow_id: str,
     flow_type: str,
     user_input: dict,
-) -> dict:
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Start a live mold-indicator preview via WS ``mold_indicator/start_preview``.
 
     HA schema requires ``flow_id``, ``flow_type``, and ``user_input``.
     ``flow_type`` must be ``"config_flow"`` or ``"options_flow"``.
 
-    Returns the raw WS response.  Full streaming requires ``client.ws_subscribe``.
+    Raises
+    ------
+    ValueError
+        For invalid args or missing stop/max.
     """
-    return _send_preview(client, "mold_indicator/start_preview",
-                         flow_id, flow_type, user_input)
+    _subscribe_preview(client, "mold_indicator/start_preview",
+                       flow_id, flow_type, user_input,
+                       on_event, stop_event, max_events)
 
 
 def start_statistics_preview(
@@ -150,16 +177,23 @@ def start_statistics_preview(
     flow_id: str,
     flow_type: str,
     user_input: dict,
-) -> dict:
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Start a live statistics-sensor preview via WS ``statistics/start_preview``.
 
     HA schema requires ``flow_id``, ``flow_type``, and ``user_input``.
     ``flow_type`` must be ``"config_flow"`` or ``"options_flow"``.
 
-    Returns the raw WS response.  Full streaming requires ``client.ws_subscribe``.
+    Raises
+    ------
+    ValueError
+        For invalid args or missing stop/max.
     """
-    return _send_preview(client, "statistics/start_preview",
-                         flow_id, flow_type, user_input)
+    _subscribe_preview(client, "statistics/start_preview",
+                       flow_id, flow_type, user_input,
+                       on_event, stop_event, max_events)
 
 
 def start_threshold_preview(
@@ -168,16 +202,23 @@ def start_threshold_preview(
     flow_id: str,
     flow_type: str,
     user_input: dict,
-) -> dict:
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Start a live threshold binary-sensor preview via WS ``threshold/start_preview``.
 
     HA schema requires ``flow_id``, ``flow_type``, and ``user_input``.
     ``flow_type`` must be ``"config_flow"`` or ``"options_flow"``.
 
-    Returns the raw WS response.  Full streaming requires ``client.ws_subscribe``.
+    Raises
+    ------
+    ValueError
+        For invalid args or missing stop/max.
     """
-    return _send_preview(client, "threshold/start_preview",
-                         flow_id, flow_type, user_input)
+    _subscribe_preview(client, "threshold/start_preview",
+                       flow_id, flow_type, user_input,
+                       on_event, stop_event, max_events)
 
 
 def start_time_date_preview(
@@ -186,7 +227,10 @@ def start_time_date_preview(
     flow_id: str,
     flow_type: str,
     user_input: dict,
-) -> dict:
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Start a live time/date sensor preview via WS ``time_date/start_preview``.
 
     HA schema requires ``flow_id``, ``flow_type``, and ``user_input``.
@@ -198,10 +242,14 @@ def start_time_date_preview(
     get consistent errors; HA itself will reject ``"options_flow"`` at the
     server side.
 
-    Returns the raw WS response.  Full streaming requires ``client.ws_subscribe``.
+    Raises
+    ------
+    ValueError
+        For invalid args or missing stop/max.
     """
-    return _send_preview(client, "time_date/start_preview",
-                         flow_id, flow_type, user_input)
+    _subscribe_preview(client, "time_date/start_preview",
+                       flow_id, flow_type, user_input,
+                       on_event, stop_event, max_events)
 
 
 def start_switch_as_x_preview(
@@ -210,16 +258,23 @@ def start_switch_as_x_preview(
     flow_id: str,
     flow_type: str,
     user_input: dict,
-) -> dict:
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
     """Start a live switch-as-x preview via WS ``switch_as_x/start_preview``.
 
     HA schema requires ``flow_id``, ``flow_type``, and ``user_input``.
     ``flow_type`` must be ``"config_flow"`` or ``"options_flow"``.
 
-    Returns the raw WS response.  Full streaming requires ``client.ws_subscribe``.
+    Raises
+    ------
+    ValueError
+        For invalid args or missing stop/max.
     """
-    return _send_preview(client, "switch_as_x/start_preview",
-                         flow_id, flow_type, user_input)
+    _subscribe_preview(client, "switch_as_x/start_preview",
+                       flow_id, flow_type, user_input,
+                       on_event, stop_event, max_events)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -233,8 +288,11 @@ def start_helper_preview(
     flow_id: str,
     flow_type: str,
     user_input: dict,
-) -> dict:
-    """Dispatch a ``<domain>/start_preview`` WS subscription message.
+    on_event: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
+    """Dispatch a ``<domain>/start_preview`` WS subscription.
 
     A generic alternative to calling the per-domain functions directly.
     ``domain`` must be one of the seven supported preview domains:
@@ -244,12 +302,13 @@ def start_helper_preview(
 
     Raises ``ValueError`` for an unsupported domain or invalid arguments.
 
-    Returns the raw WS response.  Full streaming requires ``client.ws_subscribe``.
+    Blocks until ``stop_event`` is set or ``max_events`` events are received.
     """
     if domain not in _PREVIEW_DOMAINS:
         raise ValueError(
             f"domain {domain!r} is not a supported preview domain; "
             f"must be one of {sorted(_PREVIEW_DOMAINS)}"
         )
-    return _send_preview(client, f"{domain}/start_preview",
-                         flow_id, flow_type, user_input)
+    _subscribe_preview(client, f"{domain}/start_preview",
+                       flow_id, flow_type, user_input,
+                       on_event, stop_event, max_events)

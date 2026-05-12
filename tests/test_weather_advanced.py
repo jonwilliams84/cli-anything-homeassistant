@@ -122,7 +122,7 @@ class TestWeatherAdvanced:
             ]
         })
         result = weather_core.get_forecasts(
-            fake_client, entity_id="weather.home", type="daily"
+            fake_client, entity_id="weather.home", forecast_type="daily"
         )
         assert len(result) == 2
         assert result[0]["temperature"] == 22
@@ -139,7 +139,7 @@ class TestWeatherAdvanced:
             "forecast": [{"datetime": "2026-05-12T13:00:00Z", "temperature": 21}]
         })
         result = weather_core.get_forecasts(
-            fake_client, entity_id="weather.home", type="hourly"
+            fake_client, entity_id="weather.home", forecast_type="hourly"
         )
         assert len(result) == 1
         assert result[0]["temperature"] == 21
@@ -150,7 +150,7 @@ class TestWeatherAdvanced:
             "forecast": [{"datetime": "2026-05-12T06:00:00Z", "temperature": 18}]
         })
         result = weather_core.get_forecasts(
-            fake_client, entity_id="weather.home", type="twice_daily"
+            fake_client, entity_id="weather.home", forecast_type="twice_daily"
         )
         assert len(result) == 1
 
@@ -165,7 +165,7 @@ class TestWeatherAdvanced:
         """Test handling of empty forecast list."""
         fake_client.set("POST", "services/weather/get_forecasts", {"forecast": []})
         result = weather_core.get_forecasts(
-            fake_client, entity_id="weather.home", type="daily"
+            fake_client, entity_id="weather.home", forecast_type="daily"
         )
         assert result == []
 
@@ -173,7 +173,7 @@ class TestWeatherAdvanced:
         """Test handling of response without forecast key."""
         fake_client.set("POST", "services/weather/get_forecasts", {})
         result = weather_core.get_forecasts(
-            fake_client, entity_id="weather.home", type="daily"
+            fake_client, entity_id="weather.home", forecast_type="daily"
         )
         assert result == []
 
@@ -188,8 +188,8 @@ class TestWeatherAdvanced:
             weather_core.get_forecasts(None, entity_id="sensor.temperature")
 
     def test_get_forecasts_invalid_type(self):
-        """Test validation: type must be one of the allowed values."""
-        with pytest.raises(ValueError, match="type must be one of"):
+        """Test validation: forecast_type must be one of the allowed values."""
+        with pytest.raises(ValueError, match="forecast_type must be one of"):
             weather_core.get_forecasts(
-                None, entity_id="weather.home", type="invalid"
+                None, entity_id="weather.home", forecast_type="invalid"
             )

@@ -23,7 +23,7 @@ def current_user(client) -> dict:
     Sends ``auth/current_user`` via WebSocket.
     Returns a dict with at least ``id``, ``name``, ``is_admin``.
     """
-    return client.ws_call("auth/current_user")
+    return client.ws_call("auth/current_user", {})
 
 
 def list_refresh_tokens(client) -> list:
@@ -31,7 +31,7 @@ def list_refresh_tokens(client) -> list:
 
     Sends ``auth/refresh_tokens`` via WebSocket.
     """
-    return client.ws_call("auth/refresh_tokens")
+    return client.ws_call("auth/refresh_tokens", {})
 
 
 def create_long_lived_access_token(

@@ -86,3 +86,6 @@ def get_trace(client, entity_id: str, run_id: str | None = None) -> dict:
     return client.ws_call("trace/get", {"domain": "script",
                                             "item_id": item_id,
                                             "run_id": run_id}) or {}
+
+
+script_reload = reload

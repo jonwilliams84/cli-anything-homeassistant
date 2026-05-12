@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -79,9 +80,70 @@ class FakeClient:
         return self.ws_responses.get(msg_type, [])
 
 
+class SubscribingFakeClient(FakeClient):
+    """FakeClient subclass that supports ws_subscribe.
+
+    Records each ``ws_subscribe`` call and delivers a queue of pre-set
+    events synchronously before setting the stop_event so callers that
+    block on the event loop return cleanly.
+
+    Usage::
+
+        client = SubscribingFakeClient()
+        client.queue_events({"type": "event_1"}, {"type": "event_2"})
+        # ws_subscribe will deliver both events and then set stop_event.
+
+    Attributes
+    ----------
+    subscribe_calls:
+        List of ``(msg_type, payload)`` tuples recorded for each
+        ws_subscribe invocation.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.subscribe_calls: list[tuple[str, Any]] = []
+        self._queued_events: list[Any] = []
+
+    def queue_events(self, *events: Any) -> None:
+        """Pre-load events to be delivered by the next ws_subscribe call."""
+        self._queued_events.extend(events)
+
+    # Accept both positional and keyword forms of on_message/stop_event so
+    # callers using keyword-only args (hardware_info style) work transparently.
+    def ws_subscribe(
+        self,
+        msg_type: str,
+        payload: dict | None,
+        on_message=None,
+        stop_event: threading.Event | None = None,
+        **kwargs,
+    ) -> None:
+        """Shim: record the call, deliver queued events, then stop."""
+        if on_message is None:
+            on_message = kwargs.get("on_message")
+        if stop_event is None:
+            stop_event = kwargs.get("stop_event")
+
+        self.subscribe_calls.append((msg_type, payload))
+        for event in self._queued_events:
+            if stop_event is not None and stop_event.is_set():
+                break
+            on_message(event)
+        self._queued_events.clear()
+        # Signal stop so callers that block on the event loop can return.
+        if stop_event is not None:
+            stop_event.set()
+
+
 @pytest.fixture
 def fake_client() -> FakeClient:
     return FakeClient()
+
+
+@pytest.fixture
+def subscribing_client() -> SubscribingFakeClient:
+    return SubscribingFakeClient()
 
 
 @pytest.fixture

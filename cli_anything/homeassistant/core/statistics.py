@@ -8,6 +8,8 @@ This module exposes:
   - list / metadata lookups
   - statistics_during_period (the chart-data endpoint)
   - update_metadata (fix unit changes after the fact)
+
+(`info()` is also exported as `statistics_info` for unambiguous `from X import` usage.)
 """
 
 from __future__ import annotations
@@ -107,3 +109,6 @@ def clear(client, statistic_ids: list[str]) -> Any:
 def info(client) -> dict:
     """Overall recorder info: backlog, migration state, recording flag, etc."""
     return client.ws_call("recorder/info") or {}
+
+
+statistics_info = info

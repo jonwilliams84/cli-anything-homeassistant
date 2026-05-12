@@ -40,8 +40,9 @@ def adjust_sum_statistics(
         "statistic_id": statistic_id,
         "start_time": start_time,
         "adjustment": float(adjustment),
-        "adjustment_unit_of_measurement": adjustment_unit_of_measurement,
     }
+    if adjustment_unit_of_measurement is not None:
+        payload["adjustment_unit_of_measurement"] = adjustment_unit_of_measurement
     return client.ws_call("recorder/adjust_sum_statistics", payload)
 
 
@@ -85,7 +86,7 @@ def validate_statistics(client) -> dict:
     unsupported state class, entity missing, etc.).  An empty dict means
     no issues were found.
     """
-    result = client.ws_call("recorder/validate_statistics", None)
+    result = client.ws_call("recorder/validate_statistics", {})
     if isinstance(result, dict):
         return result
     return {}
@@ -94,24 +95,24 @@ def validate_statistics(client) -> dict:
 def update_statistics_issues(
     client,
     *,
-    type: str,
+    issue_type: str,
     statistic_id: str,
 ) -> Any:
     """Acknowledge or clear a specific statistics issue for a statistic id.
 
     WS message type: ``recorder/update_statistics_issues``
 
-    ``type``         — the issue type string, e.g. ``"unsupported_state_class"``
+    ``issue_type``   — the issue type string, e.g. ``"unsupported_state_class"``
                        or ``"units_changed"``.
     ``statistic_id`` — the recorder statistic id the issue belongs to.
     """
     if not statistic_id:
         raise ValueError("statistic_id must not be empty")
-    if not type:
-        raise ValueError("type must not be empty")
+    if not issue_type:
+        raise ValueError("issue_type must not be empty")
     payload: dict[str, Any] = {
         "statistic_id": statistic_id,
-        "type": type,
+        "type": issue_type,
     }
     return client.ws_call("recorder/update_statistics_issues", payload)
 
@@ -167,6 +168,8 @@ def import_statistics(
 
     ``stats`` must be non-empty.
     """
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be a dict")
     if not metadata.get("statistic_id"):
         raise ValueError("metadata['statistic_id'] must not be empty")
     if not stats:

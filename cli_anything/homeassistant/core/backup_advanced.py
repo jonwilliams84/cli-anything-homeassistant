@@ -137,7 +137,7 @@ def generate_with_automatic_settings(client) -> dict:
     Returns:
         dict describing the initiated backup job.
     """
-    result = client.ws_call("backup/generate_with_automatic_settings")
+    result = client.ws_call("backup/generate_with_automatic_settings", {})
     return result if isinstance(result, dict) else {}
 
 
@@ -150,7 +150,7 @@ def list_agents(client) -> list[dict]:
     Returns:
         List of agent dicts, each containing at least ``agent_id``.
     """
-    data = client.ws_call("backup/agents/info")
+    data = client.ws_call("backup/agents/info", {})
     if isinstance(data, dict):
         agents = data.get("agents")
         return agents if isinstance(agents, list) else []

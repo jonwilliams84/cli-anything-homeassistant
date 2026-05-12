@@ -11,6 +11,7 @@ import pytest
 
 from cli_anything.homeassistant.core import (
     auth as auth_core,
+    auth_tokens as auth_tokens_core,
     automation as automation_core,
     config_entries as config_entries_core,
     domain as domain_core,
@@ -1915,7 +1916,7 @@ class TestAuth:
     def test_current_user(self, fake_client):
         fake_client.set_ws("auth/current_user",
                            {"id": "u1", "name": "Jon", "is_admin": True})
-        u = auth_core.current_user(fake_client)
+        u = auth_tokens_core.current_user(fake_client)
         assert u["name"] == "Jon" and u["is_admin"] is True
 
     def test_list_users(self, fake_client):

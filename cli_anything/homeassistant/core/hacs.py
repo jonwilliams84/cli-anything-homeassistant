@@ -8,6 +8,8 @@ Wraps the WebSocket API the HACS frontend itself uses:
   - ``hacs/repository/download`` — install (download files + register Lovelace resource)
   - ``hacs/repository/remove``   — uninstall (delete files + remove resource registration)
   - ``hacs/repository/refresh``  — refresh metadata from upstream
+
+(`info()` is also exported as `hacs_info` for unambiguous `from X import` usage.)
 """
 
 from __future__ import annotations
@@ -120,3 +122,6 @@ def refresh(client, ident: str) -> Any:
         raise KeyError(f"no HACS repo matching {ident!r}")
     return client.ws_call("hacs/repository/refresh",
                             {"repository": str(repo["id"])})
+
+
+hacs_info = info

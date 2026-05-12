@@ -22,6 +22,12 @@ from __future__ import annotations
 import threading
 from typing import Callable
 
+from cli_anything.homeassistant.core._ws_subscribe_utils import (
+    resolve_stop_event as _resolve_stop_event,
+    wrap_with_max_events as _wrap_with_max_events,
+    validate_callable as _validate_callable_util,
+)
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # Internal helpers
@@ -49,22 +55,6 @@ def _validate_count(count: int) -> None:
 def _validate_timeout(timeout_seconds: float) -> None:
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be > 0")
-
-
-def _resolve_stop_event(
-    stop_event: threading.Event | None,
-    max_events: int | None,
-) -> tuple[threading.Event, bool]:
-    """Return (stop_event, caller_owns_it).
-
-    *caller_owns_it* is True when we created the event internally so that
-    the subscription loop should set it after max_events have arrived.
-    """
-    if stop_event is None and max_events is None:
-        raise ValueError("must supply stop_event or max_events")
-    if stop_event is None:
-        return _make_stop_event(), True
-    return stop_event, False
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -114,15 +104,7 @@ def subscribe_events(
     if event_type is not None:
         payload["event_type"] = event_type
 
-    count_box = [0]
-
-    def wrapper(event: object) -> None:
-        on_event(event)
-        if owns_stop and max_events is not None:
-            count_box[0] += 1
-            if count_box[0] >= max_events:
-                stop.set()
-
+    wrapper = _wrap_with_max_events(on_event, stop, owns_stop, max_events)
     client.ws_subscribe("subscribe_events", payload or None, wrapper, stop)
 
 
@@ -163,6 +145,9 @@ def subscribe_state_changed(
     stop, owns_stop = _resolve_stop_event(stop_event, max_events)
 
     id_set = set(entity_ids) if entity_ids else None
+    # Build a counting wrapper for the entity-filtered callback.
+    # We can't use wrap_with_max_events directly because entity filtering
+    # means the count must only increment for events that pass the filter.
     count_box = [0]
 
     def filtered_handler(event: object) -> None:
@@ -226,15 +211,7 @@ def subscribe_trigger(
     if variables is not None:
         payload["variables"] = variables
 
-    count_box = [0]
-
-    def wrapper(event: object) -> None:
-        on_trigger(event)
-        if owns_stop and max_events is not None:
-            count_box[0] += 1
-            if count_box[0] >= max_events:
-                stop.set()
-
+    wrapper = _wrap_with_max_events(on_trigger, stop, owns_stop, max_events)
     client.ws_subscribe("subscribe_trigger", payload, wrapper, stop)
 
 
