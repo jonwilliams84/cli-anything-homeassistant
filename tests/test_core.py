@@ -2058,14 +2058,14 @@ class TestHelpers:
     def test_input_select_sync_with_change(self, fake_client):
         # Initial: src has 3 options, dst has 2 (and current state 'Foo' isn't
         # in src's new options) — so we expect a fallback Auto-select first,
-        # then a set_options on dst.
+        # then a PERSISTENT input_select/update WS call on dst.
         fake_client.set("GET", "states/input_select.src",
                          {"state": "Auto", "attributes": {"options":
                           ["Auto", "Bedroom", "Lounge"]}})
-        # First read of dst state shows old options + invalid selection.
-        # After set_options is called, the second GET returns the new state.
         gets = [
-            {"state": "Foo", "attributes": {"options": ["Foo", "Bar"]}},
+            {"state": "Foo",
+              "attributes": {"options": ["Foo", "Bar"],
+                              "friendly_name": "Destination"}},
             {"state": "Auto", "attributes": {"options":
              ["Auto", "Bedroom", "Lounge"]}},
         ]
@@ -2081,15 +2081,638 @@ class TestHelpers:
             return original_get(path, params)
         fake_client.get = stub_get  # type: ignore[method-assign]
         fake_client.set("POST", "services/input_select/select_option", [])
-        fake_client.set("POST", "services/input_select/set_options", [])
+        fake_client.set_ws("input_select/update", {"id": "dst",
+                                                     "options": ["Auto", "Bedroom", "Lounge"]})
         result = helpers_core.input_select_sync(
             fake_client, "input_select.src", "input_select.dst")
         assert result["changed"] is True
         assert result["dst_state"] == "Auto"
-        # Both a select_option (fallback) and a set_options should have run
+        # Fallback select fired
         post_paths = [c["path"] for c in fake_client.calls if c["verb"] == "POST"]
         assert "services/input_select/select_option" in post_paths
-        assert "services/input_select/set_options" in post_paths
+        # And the PERSISTENT WS update — not the in-memory set_options service.
+        ws_types = [c["type"] for c in fake_client.ws_calls]
+        assert "input_select/update" in ws_types
+        assert "services/input_select/set_options" not in post_paths
+        # The update payload should include name (HA's schema requires it)
+        update_call = next(c for c in fake_client.ws_calls
+                            if c["type"] == "input_select/update")
+        assert update_call["payload"]["name"] == "Destination"
+        assert update_call["payload"]["options"] == ["Auto", "Bedroom", "Lounge"]
+
+
+class TestInputBooleanHelper:
+    def test_create(self, fake_client):
+        fake_client.set_ws("input_boolean/create", {"id": "foo"})
+        helpers_core.input_boolean_create(fake_client, "Foo", icon="mdi:abc",
+                                              initial=True)
+        call = fake_client.ws_calls[-1]
+        assert call["type"] == "input_boolean/create"
+        assert call["payload"] == {"name": "Foo", "icon": "mdi:abc",
+                                     "initial": True}
+
+    def test_update_preserves_name(self, fake_client):
+        fake_client.set_ws("input_boolean/update", {})
+        fake_client.set("GET", "states/input_boolean.foo",
+                          {"attributes": {"friendly_name": "Foo Friendly"}})
+        helpers_core.input_boolean_update(fake_client, "input_boolean.foo",
+                                              icon="mdi:new")
+        call = fake_client.ws_calls[-1]
+        assert call["payload"]["input_boolean_id"] == "foo"
+        assert call["payload"]["name"] == "Foo Friendly"
+        assert call["payload"]["icon"] == "mdi:new"
+
+    def test_update_validates_domain(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.input_boolean_update(fake_client, "switch.foo",
+                                                  icon="mdi:x")
+
+    def test_delete(self, fake_client):
+        fake_client.set_ws("input_boolean/delete", {})
+        helpers_core.input_boolean_delete(fake_client, "input_boolean.foo")
+        call = fake_client.ws_calls[-1]
+        assert call["payload"] == {"input_boolean_id": "foo"}
+
+    def test_toggle(self, fake_client):
+        helpers_core.input_boolean_toggle(fake_client, "input_boolean.foo")
+        post = next(c for c in fake_client.calls if c["verb"] == "POST")
+        assert post["path"] == "services/input_boolean/toggle"
+
+
+class TestInputButtonHelper:
+    def test_create_press_delete(self, fake_client):
+        fake_client.set_ws("input_button/create", {"id": "btn"})
+        fake_client.set_ws("input_button/delete", {})
+        helpers_core.input_button_create(fake_client, "Btn", icon="mdi:b")
+        helpers_core.input_button_press(fake_client, "input_button.btn")
+        helpers_core.input_button_delete(fake_client, "input_button.btn")
+        types = [c["type"] for c in fake_client.ws_calls]
+        assert types == ["input_button/create", "input_button/delete"]
+        posts = [c["path"] for c in fake_client.calls if c["verb"] == "POST"]
+        assert "services/input_button/press" in posts
+
+
+class TestInputNumberHelper:
+    def test_create_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.input_number_create(fake_client, "n", min=0, max=0)
+        with pytest.raises(ValueError):
+            helpers_core.input_number_create(fake_client, "n", min=0, max=10, step=-1)
+        with pytest.raises(ValueError):
+            helpers_core.input_number_create(fake_client, "n", min=0, max=10, mode="bogus")
+
+    def test_create_ok(self, fake_client):
+        fake_client.set_ws("input_number/create", {"id": "x"})
+        helpers_core.input_number_create(fake_client, "Temp", min=0, max=30,
+                                            step=0.5, mode="box",
+                                            unit_of_measurement="°C")
+        call = fake_client.ws_calls[-1]
+        assert call["payload"]["min"] == 0
+        assert call["payload"]["max"] == 30
+        assert call["payload"]["step"] == 0.5
+        assert call["payload"]["mode"] == "box"
+        assert call["payload"]["unit_of_measurement"] == "°C"
+
+    def test_set_value(self, fake_client):
+        helpers_core.input_number_set_value(fake_client, "input_number.n", 4.2)
+        post = fake_client.calls[-1]
+        assert post["payload"] == {"entity_id": "input_number.n", "value": 4.2}
+
+
+class TestInputTextHelper:
+    def test_create_validates_mode(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.input_text_create(fake_client, "n", mode="xx")
+
+    def test_create_validates_minmax(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.input_text_create(fake_client, "n", min=-1, max=5)
+        with pytest.raises(ValueError):
+            helpers_core.input_text_create(fake_client, "n", min=10, max=5)
+
+    def test_create_ok(self, fake_client):
+        fake_client.set_ws("input_text/create", {})
+        helpers_core.input_text_create(fake_client, "Msg", min=1, max=200,
+                                          pattern="^[A-Z]+$", mode="password")
+        call = fake_client.ws_calls[-1]
+        assert call["payload"]["pattern"] == "^[A-Z]+$"
+        assert call["payload"]["mode"] == "password"
+
+
+class TestInputDateTimeHelper:
+    def test_create_requires_field(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.input_datetime_create(fake_client, "t",
+                                                  has_date=False, has_time=False)
+
+    def test_set_requires_something(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.input_datetime_set(fake_client, "input_datetime.t")
+
+    def test_set_datetime(self, fake_client):
+        helpers_core.input_datetime_set(fake_client, "input_datetime.t",
+                                            datetime="2026-05-11 12:00:00")
+        post = fake_client.calls[-1]
+        assert post["path"] == "services/input_datetime/set_datetime"
+        assert post["payload"]["datetime"] == "2026-05-11 12:00:00"
+
+
+class TestCounterHelper:
+    def test_create_validates_step(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.counter_create(fake_client, "c", step=0)
+
+    def test_create_ok(self, fake_client):
+        fake_client.set_ws("counter/create", {})
+        helpers_core.counter_create(fake_client, "C", initial=5, step=2,
+                                       minimum=0, maximum=100)
+        call = fake_client.ws_calls[-1]
+        assert call["payload"]["initial"] == 5
+        assert call["payload"]["step"] == 2
+        assert call["payload"]["minimum"] == 0
+        assert call["payload"]["maximum"] == 100
+
+    def test_runtime_actions(self, fake_client):
+        helpers_core.counter_increment(fake_client, "counter.c")
+        helpers_core.counter_decrement(fake_client, "counter.c")
+        helpers_core.counter_reset(fake_client, "counter.c")
+        helpers_core.counter_set_value(fake_client, "counter.c", 42)
+        paths = [c["path"] for c in fake_client.calls if c["verb"] == "POST"]
+        assert "services/counter/increment" in paths
+        assert "services/counter/decrement" in paths
+        assert "services/counter/reset" in paths
+        assert "services/counter/set_value" in paths
+
+
+class TestTimerHelper:
+    def test_create_and_actions(self, fake_client):
+        fake_client.set_ws("timer/create", {})
+        helpers_core.timer_create(fake_client, "T", duration="00:05:00",
+                                     restore=True)
+        helpers_core.timer_start(fake_client, "timer.t", duration="00:10:00")
+        helpers_core.timer_pause(fake_client, "timer.t")
+        helpers_core.timer_cancel(fake_client, "timer.t")
+        helpers_core.timer_finish(fake_client, "timer.t")
+        helpers_core.timer_change(fake_client, "timer.t", "-00:01:00")
+        paths = [c["path"] for c in fake_client.calls if c["verb"] == "POST"]
+        assert "services/timer/start" in paths
+        assert "services/timer/pause" in paths
+        assert "services/timer/cancel" in paths
+        assert "services/timer/finish" in paths
+        assert "services/timer/change" in paths
+
+
+class TestScheduleHelper:
+    def test_create_with_windows(self, fake_client):
+        fake_client.set_ws("schedule/create", {})
+        helpers_core.schedule_create(fake_client, "Heating",
+            monday=[{"from": "06:00:00", "to": "09:00:00"}],
+            tuesday=[{"from": "06:00:00", "to": "09:00:00"}],
+            icon="mdi:radiator")
+        call = fake_client.ws_calls[-1]
+        assert call["payload"]["monday"][0]["from"] == "06:00:00"
+        assert "wednesday" not in call["payload"]  # only supplied days included
+
+    def test_delete(self, fake_client):
+        fake_client.set_ws("schedule/delete", {})
+        helpers_core.schedule_delete(fake_client, "schedule.heating")
+        call = fake_client.ws_calls[-1]
+        assert call["payload"] == {"schedule_id": "heating"}
+
+
+class TestPersonHelper:
+    def test_create_requires_name(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.person_create(fake_client, "")
+
+    def test_create_ok(self, fake_client):
+        fake_client.set_ws("person/create", {"id": "p1"})
+        helpers_core.person_create(fake_client, "Jon", user_id="u1",
+                                      device_trackers=["device_tracker.phone"])
+        call = fake_client.ws_calls[-1]
+        assert call["type"] == "person/create"
+        assert call["payload"]["name"] == "Jon"
+        assert call["payload"]["user_id"] == "u1"
+        assert call["payload"]["device_trackers"] == ["device_tracker.phone"]
+
+    def test_update_requires_field(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.person_update(fake_client, "p1")
+
+    def test_update_partial(self, fake_client):
+        fake_client.set_ws("person/update", {})
+        helpers_core.person_update(fake_client, "p1", name="Jonny")
+        call = fake_client.ws_calls[-1]
+        assert call["payload"] == {"person_id": "p1", "name": "Jonny"}
+
+    def test_delete(self, fake_client):
+        fake_client.set_ws("person/delete", {})
+        helpers_core.person_delete(fake_client, "p1")
+        assert fake_client.ws_calls[-1]["payload"] == {"person_id": "p1"}
+
+
+class TestZoneHelper:
+    def test_create_validates_radius(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.zone_create(fake_client, "Z", latitude=0, longitude=0,
+                                        radius=0)
+
+    def test_create_ok(self, fake_client):
+        fake_client.set_ws("zone/create", {"id": "z1"})
+        helpers_core.zone_create(fake_client, "Home", latitude=52.0,
+                                    longitude=4.9, radius=50.0,
+                                    icon="mdi:home", passive=True)
+        call = fake_client.ws_calls[-1]
+        assert call["payload"]["name"] == "Home"
+        assert call["payload"]["latitude"] == 52.0
+        assert call["payload"]["radius"] == 50.0
+        assert call["payload"]["passive"] is True
+        assert call["payload"]["icon"] == "mdi:home"
+
+    def test_update_requires_field(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.zone_update(fake_client, "z1")
+
+    def test_delete(self, fake_client):
+        fake_client.set_ws("zone/delete", {})
+        helpers_core.zone_delete(fake_client, "z1")
+        assert fake_client.ws_calls[-1]["payload"] == {"zone_id": "z1"}
+
+
+class TestTagHelper:
+    def test_create_ok(self, fake_client):
+        fake_client.set_ws("tag/create", {})
+        helpers_core.tag_create(fake_client, "abc-123",
+                                   name="Front door", description="NFC sticker")
+        call = fake_client.ws_calls[-1]
+        assert call["payload"]["tag_id"] == "abc-123"
+        assert call["payload"]["name"] == "Front door"
+        assert call["payload"]["description"] == "NFC sticker"
+
+    def test_create_requires_id(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.tag_create(fake_client, "")
+
+    def test_update_requires_field(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.tag_update(fake_client, "abc-123")
+
+    def test_delete(self, fake_client):
+        fake_client.set_ws("tag/delete", {})
+        helpers_core.tag_delete(fake_client, "abc-123")
+        assert fake_client.ws_calls[-1]["payload"] == {"tag_id": "abc-123"}
+
+
+class TestConfigFlowHelpers:
+    """Helpers created via the config_entries flow API (template, derivative,
+    utility_meter, etc.)."""
+
+    def test_config_entries_list_filter_by_domain(self, fake_client):
+        fake_client.set_ws("config_entries/get", [
+            {"entry_id": "a1", "domain": "derivative"},
+            {"entry_id": "b1", "domain": "template"},
+            {"entry_id": "a2", "domain": "derivative"},
+        ])
+        out = helpers_core.config_entries_list(fake_client, domain="derivative")
+        assert [e["entry_id"] for e in out] == ["a1", "a2"]
+        call = fake_client.ws_calls[-1]
+        assert call["payload"]["domain"] == "derivative"
+
+    def test_config_entries_list_type_filter(self, fake_client):
+        fake_client.set_ws("config_entries/get", [])
+        helpers_core.config_entries_list(fake_client, type_filter="helper")
+        assert fake_client.ws_calls[-1]["payload"]["type_filter"] == "helper"
+
+    def test_config_entry_remove(self, fake_client):
+        fake_client.set_ws("config_entries/remove", {"ok": True})
+        helpers_core.config_entry_remove(fake_client, "entry-1")
+        call = fake_client.ws_calls[-1]
+        assert call["type"] == "config_entries/remove"
+        assert call["payload"] == {"entry_id": "entry-1"}
+
+    def test_config_flow_init(self, fake_client):
+        fake_client.set_ws("config_entries/flow/init",
+                            {"flow_id": "F1", "type": "form"})
+        result = helpers_core.config_flow_init(fake_client, "derivative")
+        assert result["flow_id"] == "F1"
+        call = fake_client.ws_calls[-1]
+        assert call["payload"] == {"handler": "derivative",
+                                     "show_advanced_options": False}
+
+    def test_config_flow_configure(self, fake_client):
+        fake_client.set_ws("config_entries/flow/configure",
+                            {"type": "create_entry",
+                             "result": {"entry_id": "E1"}})
+        result = helpers_core.config_flow_configure(
+            fake_client, "F1", {"name": "x", "source": "sensor.y"})
+        assert result["result"]["entry_id"] == "E1"
+        call = fake_client.ws_calls[-1]
+        assert call["payload"] == {"flow_id": "F1",
+                                     "user_input": {"name": "x",
+                                                     "source": "sensor.y"}}
+
+    def test_config_flow_helper_create_does_two_calls(self, fake_client):
+        fake_client.set_ws("config_entries/flow/init", {"flow_id": "FX"})
+        fake_client.set_ws("config_entries/flow/configure",
+                            {"type": "create_entry",
+                             "result": {"entry_id": "E2"}})
+        result = helpers_core.config_flow_helper_create(
+            fake_client, "derivative",
+            {"name": "Watt rate", "source": "sensor.energy"})
+        assert result["result"]["entry_id"] == "E2"
+        types = [c["type"] for c in fake_client.ws_calls]
+        assert types == ["config_entries/flow/init",
+                          "config_entries/flow/configure"]
+
+
+class TestConfigFlowHelperWrappers:
+    """Per-domain wrappers: derivative, integration, utility_meter, etc."""
+
+    @pytest.fixture
+    def primed(self, fake_client):
+        fake_client.set_ws("config_entries/flow/init", {"flow_id": "F"})
+        fake_client.set_ws("config_entries/flow/configure",
+                            {"type": "create_entry",
+                             "result": {"entry_id": "E"}})
+        return fake_client
+
+    def test_derivative_create(self, primed):
+        helpers_core.derivative_create(primed, name="Watts",
+                                          source="sensor.energy",
+                                          unit_time="h", round=3,
+                                          time_window={"minutes": 5})
+        configure = primed.ws_calls[-1]
+        ui = configure["payload"]["user_input"]
+        assert ui["name"] == "Watts"
+        assert ui["source"] == "sensor.energy"
+        assert ui["unit_time"] == "h"
+        assert ui["round"] == 3
+        assert ui["time_window"] == {"minutes": 5}
+
+    def test_derivative_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.derivative_create(fake_client, name="", source="s")
+        with pytest.raises(ValueError):
+            helpers_core.derivative_create(fake_client, name="x", source="")
+
+    def test_integration_create_validates_method(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.integration_create(fake_client, name="n",
+                                                source="sensor.s", method="bad")
+
+    def test_integration_create_ok(self, primed):
+        helpers_core.integration_create(primed, name="Wh", source="sensor.p",
+                                            method="trapezoidal")
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["method"] == "trapezoidal"
+
+    def test_utility_meter_create(self, primed):
+        helpers_core.utility_meter_create(primed, name="DailyKWh",
+                                              source="sensor.energy",
+                                              cycle="daily",
+                                              tariffs=["peak", "offpeak"])
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["cycle"] == "daily"
+        assert ui["tariffs"] == ["peak", "offpeak"]
+
+    def test_utility_meter_validates_cycle(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.utility_meter_create(fake_client, name="n",
+                                                  source="sensor.s",
+                                                  cycle="fortnightly")
+
+    def test_min_max_create(self, primed):
+        helpers_core.min_max_create(primed, name="avg",
+                                       entity_ids=["sensor.a", "sensor.b"],
+                                       type="mean")
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["type"] == "mean"
+        assert ui["entity_ids"] == ["sensor.a", "sensor.b"]
+
+    def test_min_max_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.min_max_create(fake_client, name="n",
+                                           entity_ids=["s"], type="bogus")
+        with pytest.raises(ValueError):
+            helpers_core.min_max_create(fake_client, name="n",
+                                           entity_ids=[], type="mean")
+
+    def test_threshold_create(self, primed):
+        helpers_core.threshold_create(primed, name="warn",
+                                         entity_id="sensor.temp", upper=30)
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["upper"] == 30
+        assert "lower" not in ui
+
+    def test_threshold_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.threshold_create(fake_client, name="n",
+                                             entity_id="sensor.s")
+
+    def test_trend_create(self, primed):
+        helpers_core.trend_create(primed, name="rising",
+                                     entity_id="sensor.temp", invert=False,
+                                     max_samples=10)
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["max_samples"] == 10
+
+    def test_statistics_create(self, primed):
+        helpers_core.statistics_create(primed, name="stats",
+                                          entity_id="sensor.temp",
+                                          state_characteristic="mean")
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["state_characteristic"] == "mean"
+
+    def test_history_stats_create_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.history_stats_create(fake_client, name="n",
+                                                  entity_id="sensor.s",
+                                                  state="on", type="bogus")
+        with pytest.raises(ValueError):
+            helpers_core.history_stats_create(fake_client, name="n",
+                                                  entity_id="sensor.s",
+                                                  state="on",
+                                                  start="x")  # only one bound
+
+    def test_history_stats_create_ok(self, primed):
+        helpers_core.history_stats_create(primed, name="UptimeToday",
+                                              entity_id="binary_sensor.up",
+                                              state="on",
+                                              start="{{ now().date() }}",
+                                              duration={"hours": 24})
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["state"] == "on"
+        assert ui["duration"] == {"hours": 24}
+
+    def test_filter_create_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.filter_create(fake_client, name="n",
+                                          entity_id="sensor.s", filters=[])
+
+    def test_filter_create_ok(self, primed):
+        helpers_core.filter_create(primed, name="smooth",
+                                      entity_id="sensor.temp",
+                                      filters=[{"filter": "lowpass",
+                                                 "time_constant": 10}])
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["filters"][0]["filter"] == "lowpass"
+
+    def test_random_create_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.random_create(fake_client, name="n",
+                                          minimum=10, maximum=5)
+
+    def test_random_create_ok(self, primed):
+        helpers_core.random_create(primed, name="r", minimum=1, maximum=6)
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["minimum"] == 1
+        assert ui["maximum"] == 6
+
+    def test_template_create_validates_type(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.template_create(fake_client, name="n",
+                                            template_type="bogus")
+
+    def test_template_create_validates_state_required(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.template_create(fake_client, name="n",
+                                            template_type="sensor")
+
+    def test_template_create_button_no_state(self, primed):
+        helpers_core.template_create(primed, name="press",
+                                        template_type="button")
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["template_type"] == "button"
+        assert "state" not in ui
+
+    def test_template_create_sensor(self, primed):
+        helpers_core.template_create(primed, name="kWh",
+                                        template_type="sensor",
+                                        state="{{ states('sensor.x') | float * 0.001 }}",
+                                        unit_of_measurement="kWh",
+                                        state_class="total_increasing")
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["template_type"] == "sensor"
+        assert ui["unit_of_measurement"] == "kWh"
+        assert ui["state_class"] == "total_increasing"
+
+    def test_group_create_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.group_create(fake_client, name="g",
+                                         entities=["light.a"],
+                                         group_type="bogus")
+        with pytest.raises(ValueError):
+            helpers_core.group_create(fake_client, name="g",
+                                         entities=[], group_type="light")
+
+    def test_group_create_ok(self, primed):
+        helpers_core.group_create(primed, name="kitchen-lights",
+                                     entities=["light.a", "light.b"],
+                                     group_type="light", all=True)
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["group_type"] == "light"
+        assert ui["entities"] == ["light.a", "light.b"]
+        assert ui["all"] is True
+
+    def test_generic_thermostat_create(self, primed):
+        helpers_core.generic_thermostat_create(primed, name="t",
+                                                   heater="switch.h",
+                                                   target_sensor="sensor.t",
+                                                   target_temp=21.5)
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["heater"] == "switch.h"
+        assert ui["target_temp"] == 21.5
+
+    def test_generic_hygrostat_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.generic_hygrostat_create(fake_client, name="h",
+                                                      humidifier="switch.x",
+                                                      target_sensor="sensor.h",
+                                                      device_class="bogus")
+
+    def test_generic_hygrostat_create(self, primed):
+        helpers_core.generic_hygrostat_create(primed, name="h",
+                                                  humidifier="switch.x",
+                                                  target_sensor="sensor.h")
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["device_class"] == "humidifier"
+
+    def test_switch_as_x_validates_domain(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.switch_as_x_create(fake_client, name="n",
+                                                entity_id="switch.x",
+                                                target_domain="bogus")
+
+    def test_switch_as_x_validates_entity(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.switch_as_x_create(fake_client, name="n",
+                                                entity_id="light.x",
+                                                target_domain="light")
+
+    def test_switch_as_x_ok(self, primed):
+        helpers_core.switch_as_x_create(primed, name="fan",
+                                            entity_id="switch.fan",
+                                            target_domain="fan")
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["target_domain"] == "fan"
+
+    def test_tod_create(self, primed):
+        helpers_core.tod_create(primed, name="day",
+                                   after="sunrise", before="sunset")
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["after"] == "sunrise"
+        assert ui["before"] == "sunset"
+
+    def test_mold_indicator_create(self, primed):
+        helpers_core.mold_indicator_create(primed, name="mold",
+                                              indoor_temp_sensor="sensor.it",
+                                              indoor_humidity_sensor="sensor.ih",
+                                              outdoor_temp_sensor="sensor.ot",
+                                              calibration_factor=2.5)
+        ui = primed.ws_calls[-1]["payload"]["user_input"]
+        assert ui["calibration_factor"] == 2.5
+
+
+class TestListAllHelpers:
+    def test_includes_new_storage_types(self, fake_client):
+        for t in helpers_core.HELPER_TYPES:
+            fake_client.set_ws(f"{t}/list", [{"id": f"{t}-1"}])
+        fake_client.set_ws("config_entries/get", [])
+        out = helpers_core.list_all_helpers(fake_client)
+        for t in ("input_boolean", "input_select", "counter", "timer",
+                  "schedule", "person", "zone", "tag"):
+            assert t in out
+            assert out[t][0]["id"] == f"{t}-1"
+
+    def test_includes_config_flow_helpers_grouped(self, fake_client):
+        for t in helpers_core.HELPER_TYPES:
+            fake_client.set_ws(f"{t}/list", [])
+        fake_client.set_ws("config_entries/get", [
+            {"entry_id": "d1", "domain": "derivative"},
+            {"entry_id": "u1", "domain": "utility_meter"},
+            {"entry_id": "u2", "domain": "utility_meter"},
+            {"entry_id": "g1", "domain": "group"},
+        ])
+        out = helpers_core.list_all_helpers(fake_client)
+        assert len(out["derivative"]) == 1
+        assert len(out["utility_meter"]) == 2
+        assert len(out["group"]) == 1
+        # Domains with no entries still present with empty lists
+        assert out["template"] == []
+        # And the WS call requested type_filter=helper
+        call = next(c for c in fake_client.ws_calls
+                     if c["type"] == "config_entries/get")
+        assert call["payload"]["type_filter"] == "helper"
+
+    def test_can_skip_config_flow(self, fake_client):
+        for t in helpers_core.HELPER_TYPES:
+            fake_client.set_ws(f"{t}/list", [])
+        out = helpers_core.list_all_helpers(fake_client, include_config_flow=False)
+        for d in helpers_core.CONFIG_FLOW_HELPER_DOMAINS:
+            assert d not in out
+        # config_entries/get must NOT have been called
+        types = [c["type"] for c in fake_client.ws_calls]
+        assert "config_entries/get" not in types
 
 
 # ────────────────────────────────────────────────────────── lovelace
