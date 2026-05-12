@@ -2835,6 +2835,346 @@ def sample_dashboard():
     }
 
 
+class TestViewBuilders:
+    """View-type-aware builders + per-card view_layout helper."""
+
+    def test_sections_view(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_sections(title="Home", path="home", max_columns=3,
+                                  sections=[{"type": "grid",
+                                              "cards": [{"type": "tile",
+                                                          "entity": "x"}]}])
+        assert view["type"] == "sections"
+        assert view["max_columns"] == 3
+        assert view["path"] == "home"
+        assert len(view["sections"]) == 1
+
+    def test_sections_validates_max_columns(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        with pytest.raises(ValueError):
+            v.view_sections(title="x", max_columns=5)
+        with pytest.raises(ValueError):
+            v.view_sections(title="x", max_columns=0)
+
+    def test_sections_dense_placement(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_sections(title="x", dense_section_placement=True)
+        assert view["dense_section_placement"] is True
+
+    def test_panel_view_requires_card(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        with pytest.raises(ValueError):
+            v.view_panel(title="x", card={})
+        with pytest.raises(ValueError):
+            v.view_panel(title="x", card={"no_type": True})
+
+    def test_panel_view_ok(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_panel(title="Cam", card={"type": "picture-glance",
+                                                  "entity": "camera.x"})
+        assert view["type"] == "panel"
+        assert len(view["cards"]) == 1
+
+    def test_masonry_view(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_masonry(title="Stuff", cards=[
+            {"type": "tile", "entity": "x"}])
+        assert view["type"] == "masonry"
+        assert len(view["cards"]) == 1
+
+    def test_sidebar_view(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_sidebar(title="Old", cards=[
+            {"type": "tile", "entity": "x",
+              "view_layout": {"column": 1}}])
+        assert view["type"] == "sidebar"
+
+    def test_grid_layout_view(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_grid_layout(
+            title="Grid", grid_template_columns="1fr 2fr 1fr",
+            grid_gap="8px", max_cols=3,
+            mediaquery={"(max-width: 600px)":
+                          {"grid-template-columns": "1fr"}},
+            cards=[{"type": "tile", "entity": "x"}])
+        assert view["type"] == "custom:grid-layout"
+        assert view["layout"]["grid-template-columns"] == "1fr 2fr 1fr"
+        assert view["layout"]["grid-gap"] == "8px"
+        assert view["layout"]["max_cols"] == 3
+        assert "mediaquery" in view["layout"]
+
+    def test_masonry_layout_view(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_masonry_layout(title="MX", width=320, max_cols=3)
+        assert view["type"] == "custom:masonry-layout"
+        assert view["layout"]["width"] == 320
+
+    def test_subview_back_path_validation(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        # back_path without subview=True is rejected
+        with pytest.raises(ValueError):
+            v.view_sections(title="x", back_path="home")
+
+    def test_subview_with_back_path(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_sections(title="Detail", subview=True,
+                                  back_path="home")
+        assert view["subview"] is True
+        assert view["back_path"] == "home"
+
+    def test_with_view_layout(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        card = {"type": "tile", "entity": "x"}
+        out = v.with_view_layout(card, grid_column="1 / span 2",
+                                    grid_row="2", place_self="center")
+        assert out["view_layout"]["grid-column"] == "1 / span 2"
+        assert out["view_layout"]["grid-row"] == "2"
+        assert out["view_layout"]["place-self"] == "center"
+
+    def test_with_view_layout_sidebar_column(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        card = v.with_view_layout({"type": "tile", "entity": "x"},
+                                     column=1)
+        assert card["view_layout"]["column"] == 1
+
+    def test_with_view_layout_chains(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        card = {"type": "tile", "entity": "x"}
+        v.with_view_layout(card, grid_column="1")
+        v.with_view_layout(card, grid_row="3")
+        assert card["view_layout"] == {"grid-column": "1", "grid-row": "3"}
+
+    def test_set_max_columns_only_on_sections(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        masonry = {"type": "masonry"}
+        with pytest.raises(ValueError):
+            v.set_max_columns(masonry, 2)
+        sections = {"type": "sections"}
+        v.set_max_columns(sections, 3)
+        assert sections["max_columns"] == 3
+
+    def test_set_visibility(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = {"type": "sections"}
+        v.set_visibility(view, [{"user": "abc123"}])
+        assert view["visible"] == [{"user": "abc123"}]
+        v.set_visibility(view, None)
+        assert "visible" not in view
+
+    def test_set_subview_toggle(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = {"type": "sections"}
+        v.set_subview(view, True, back_path="home")
+        assert view["subview"] is True and view["back_path"] == "home"
+        v.set_subview(view, False)
+        assert "subview" not in view and "back_path" not in view
+
+    def test_view_summary(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        view = v.view_sections(title="Home", path="home", max_columns=2,
+                                  sections=[{"type": "grid", "cards": []},
+                                              {"type": "grid", "cards": []}])
+        s = v.view_summary(view)
+        assert s["title"] == "Home"
+        assert s["type"] == "sections"
+        assert s["max_columns"] == 2
+        assert s["sections"] == 2
+
+    def test_list_view_summaries(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        dash = {"views": [
+            v.view_sections(title="A"),
+            v.view_panel(title="B", card={"type": "tile", "entity": "x"}),
+            v.view_masonry(title="C"),
+        ]}
+        out = v.list_view_summaries(dash)
+        assert [s["type"] for s in out] == ["sections", "panel", "masonry"]
+
+
+class TestSectionHeaders:
+    """The modern sections-view per-section header (title + badges + layout)."""
+
+    def test_section_header_title_only(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        h = v.section_header(title="Good morning, home")
+        assert h["layout"] == "responsive"
+        assert h["badges_position"] == "bottom"
+        assert h["badges_wrap"] == "wrap"
+        assert h["card"]["type"] == "heading"
+        assert h["card"]["heading"] == "Good morning, home"
+
+    def test_section_header_with_subtitle_uses_markdown(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        h = v.section_header(title="Hello", subtitle="welcome back")
+        assert h["card"]["type"] == "markdown"
+        assert "welcome back" in h["card"]["content"]
+
+    def test_section_header_with_custom_card(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        custom = {"type": "custom:mushroom-template-card",
+                    "primary": "Hi"}
+        h = v.section_header(card=custom)
+        assert h["card"] is custom
+
+    def test_section_header_with_badges(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        h = v.section_header(title="x", badges=[
+            v.badge_entity("weather.home", show_state=True),
+            v.badge_entity("sensor.indoor_temp", show_state=True),
+        ])
+        assert len(h["badges"]) == 2
+        assert h["badges"][0]["entity"] == "weather.home"
+
+    def test_section_header_validates_layout(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        with pytest.raises(ValueError):
+            v.section_header(title="x", layout="bogus")
+        with pytest.raises(ValueError):
+            v.section_header(title="x", badges_position="middle")
+        with pytest.raises(ValueError):
+            v.section_header(title="x", badges_wrap="grid")
+
+    def test_section_header_requires_content(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        with pytest.raises(ValueError):
+            v.section_header()
+
+    def test_section_header_custom_card_must_have_type(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        with pytest.raises(ValueError):
+            v.section_header(card={"no_type": True})
+
+    def test_section_header_layout_options(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        for lay in ("responsive", "start", "center"):
+            h = v.section_header(title="x", layout=lay)
+            assert h["layout"] == lay
+        for pos in ("top", "bottom"):
+            h = v.section_header(title="x", badges_position=pos)
+            assert h["badges_position"] == pos
+        for wrap in ("wrap", "scroll"):
+            h = v.section_header(title="x", badges_wrap=wrap)
+            assert h["badges_wrap"] == wrap
+
+    def test_view_section_helper(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        h = v.section_header(title="Living room")
+        sec = v.view_section(header=h, column_span=2,
+                                cards=[{"type": "tile", "entity": "light.x"}],
+                                visibility=[{"condition": "state",
+                                              "entity": "input_select.room",
+                                              "state": "Living"}])
+        assert sec["type"] == "grid"
+        assert sec["header"] is h
+        assert sec["column_span"] == 2
+        assert sec["visibility"][0]["entity"] == "input_select.room"
+
+    def test_badge_entity_minimum(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        b = v.badge_entity("sensor.x")
+        assert b == {"type": "entity", "entity": "sensor.x"}
+
+    def test_badge_entity_full(self):
+        from cli_anything.homeassistant.core import lovelace_views as v
+        b = v.badge_entity("sensor.x", name="X", icon="mdi:x",
+                              color="red", show_state=True, show_icon=False)
+        assert b["color"] == "red"
+        assert b["show_state"] is True
+        assert b["show_icon"] is False
+
+
+class TestSectionsAddHeaderField:
+    """The pre-existing add_section() now accepts a `header` and
+    `visibility` field for the modern sections-view shape."""
+
+    def test_add_section_with_header(self):
+        from cli_anything.homeassistant.core import (
+            lovelace_sections as ls, lovelace_views as lv,
+        )
+        cfg = {"views": [{"path": "home", "type": "sections",
+                            "sections": []}]}
+        h = lv.section_header(title="Good morning",
+                                 badges=[lv.badge_entity("weather.home")])
+        sec = ls.add_section(cfg, "home", header=h,
+                                cards=[{"type": "tile", "entity": "light.x"}])
+        assert sec["header"] is h
+        assert sec["type"] == "grid"
+        assert len(cfg["views"][0]["sections"]) == 1
+
+    def test_add_section_with_visibility(self):
+        from cli_anything.homeassistant.core import lovelace_sections as ls
+        cfg = {"views": [{"path": "home", "type": "sections",
+                            "sections": []}]}
+        vis = [{"condition": "state", "entity": "input_select.room",
+                 "state": "Living"}]
+        sec = ls.add_section(cfg, "home", title="Living", visibility=vis)
+        assert sec["visibility"] == vis
+
+    def test_add_section_title_and_header_mutually_exclusive(self):
+        from cli_anything.homeassistant.core import (
+            lovelace_sections as ls, lovelace_views as lv,
+        )
+        cfg = {"views": [{"path": "home", "type": "sections",
+                            "sections": []}]}
+        with pytest.raises(ValueError):
+            ls.add_section(cfg, "home", title="A",
+                              header=lv.section_header(title="B"))
+
+
+class TestViewLevelLint:
+    """View-level rules — panel multi-card, sidebar deprecated, etc."""
+
+    def test_panel_multi_card_warns(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"type": "panel", "cards": [
+            {"type": "tile", "entity": "a"},
+            {"type": "tile", "entity": "b"},
+        ]}]}
+        issues = ll.lint_layout(dash)
+        assert any(i["rule"] == "panel-multi-card" for i in issues)
+
+    def test_panel_one_card_ok(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"type": "panel", "cards": [
+            {"type": "tile", "entity": "a"}]}]}
+        issues = ll.lint_layout(dash)
+        assert not any(i["rule"] == "panel-multi-card" for i in issues)
+
+    def test_sections_missing_max_columns(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"type": "sections", "sections": []}]}
+        issues = ll.lint_layout(dash)
+        assert any(i["rule"] == "sections-no-max-columns" for i in issues)
+
+    def test_sections_with_max_columns_ok(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"type": "sections", "max_columns": 2,
+                              "sections": []}]}
+        issues = ll.lint_layout(dash)
+        assert not any(i["rule"] == "sections-no-max-columns" for i in issues)
+
+    def test_sidebar_deprecated(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"type": "sidebar", "cards": []}]}
+        issues = ll.lint_layout(dash)
+        assert any(i["rule"] == "sidebar-deprecated" for i in issues)
+
+    def test_subview_without_back_path(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"type": "sections", "subview": True,
+                              "max_columns": 2, "sections": []}]}
+        issues = ll.lint_layout(dash)
+        assert any(i["rule"] == "subview-no-back-path" for i in issues)
+
+    def test_subview_with_back_path_ok(self):
+        from cli_anything.homeassistant.core import lovelace_layout_lint as ll
+        dash = {"views": [{"type": "sections", "subview": True,
+                              "back_path": "home", "max_columns": 2,
+                              "sections": []}]}
+        issues = ll.lint_layout(dash)
+        assert not any(i["rule"] == "subview-no-back-path" for i in issues)
+
+
 class TestLayoutLint:
     """Heuristic layout-quality lint — catches visual issues HA renders but
     doesn't flag (heading truncation, sibling mismatch, etc.)."""

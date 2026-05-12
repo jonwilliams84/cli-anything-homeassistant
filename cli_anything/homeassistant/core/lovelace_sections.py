@@ -21,21 +21,44 @@ def add_section(config: dict, view_path: str, *,
                   title: str | None = None,
                   cards: list[dict] | None = None,
                   column_span: int | None = None,
+                  row_span: int | None = None,
+                  header: dict | None = None,
+                  visibility: list[dict] | None = None,
                   index: int | None = None) -> dict:
-    """Add a new section to a sections view. Returns the section dict."""
+    """Add a new section to a sections view. Returns the section dict.
+
+    `header` — pass a section header dict (use
+      ``lovelace_views.section_header(...)``) to attach the modern
+      title-bar with badges + layout controls.
+    `title` — legacy convenience that inserts a heading card at the top
+      of the section. Mutually exclusive with `header` (raises if both
+      are given).
+    `visibility` — list of visibility condition dicts (e.g. for the
+      room-selector pattern).
+    """
     v = lovelace_paths.get_view(config, view_path)
     if v.get("type") != "sections":
         raise ValueError(
             f"view {view_path!r} is type={v.get('type')!r}, "
             "not a sections view"
         )
+    if title is not None and header is not None:
+        raise ValueError("pass `header` OR `title`, not both")
     sections = v.setdefault("sections", [])
     section: dict[str, Any] = {"type": "grid", "cards": list(cards or [])}
-    if title is not None:
-        # Section title is rendered as a heading card in the cards array
+    if header is not None:
+        if not isinstance(header, dict):
+            raise ValueError("header must be a dict — use lovelace_views.section_header()")
+        section["header"] = header
+    elif title is not None:
+        # Legacy: section title rendered as a heading card.
         section["cards"].insert(0, {"type": "heading", "heading": title})
     if column_span is not None:
         section["column_span"] = column_span
+    if row_span is not None:
+        section["row_span"] = row_span
+    if visibility is not None:
+        section["visibility"] = visibility
     pos = len(sections) if index is None else max(0, min(index, len(sections)))
     sections.insert(pos, section)
     return section
