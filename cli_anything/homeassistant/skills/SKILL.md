@@ -925,6 +925,22 @@ Modules added in the v1.21 → v1.23 sprint (import as
 
 Coverage jumped from ~33% to ~70% of HA's user-facing WS surface. Test count: 985 unit tests.
 
+## v1.24 — Sprint 4 gap-closure (+39 WS commands)
+
+| Module | WS commands |
+|---|---|
+| `camera_ws` | `camera/capabilities`, `stream`, `get_prefs`, `update_prefs`, `webrtc/get_client_config`, `webrtc/offer`, `webrtc/candidate` |
+| `shopping_list` | `shopping_list/items`, `items/add`, `items/update`, `items/remove`, `items/clear`, `items/reorder` |
+| `media_source` | `media_source/browse_media`, `resolve_media`, `local_source/remove` |
+| `device_automation` | `device_automation/{trigger,condition,action}/{list,capabilities}` + `summarise_device()` aggregator |
+| `expose_entity` | `homeassistant/expose_entity/list`, `expose_entity`, `expose_new_entities/get`, `expose_new_entities/set` |
+| `network` | `network`, `network/configure`, `network/url` |
+| `assist_satellite` | `assist_satellite/get_configuration`, `set_wake_words`, `test_connection`, `intercept_wake_word` |
+| `logger_ws` | `logger/log_info`, `log_level`, `integration_log_level` (runtime log levels) |
+| `calendar_ws` | `calendar/event/create`, `event/update`, `event/delete` (WS variants — REST still in `calendars.py`) |
+
+WS coverage: **66.2% → 82.7%** of HA's WS surface. Test count: **1158**.
+
 ## Notes & Caveats
 
 - The CLI is **stateless across invocations** — only the connection profile
