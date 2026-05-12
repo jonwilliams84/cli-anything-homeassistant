@@ -1431,3 +1431,575 @@ def build(card_type: str, **kwargs) -> dict:
             f"unknown card type {card_type!r}; known: {', '.join(list_builders())}"
         )
     return BUILDERS[card_type](**kwargs)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Builder metadata — example, resource dependency, summary
+# ════════════════════════════════════════════════════════════════════════
+# Each entry is keyed by the same name used in BUILDERS. The validator and
+# SKILL.md generator both consume this. `card_type` is the literal `type:`
+# value the card uses (e.g. "tile" or "custom:apexcharts-card"). `resource`
+# is the canonical HACS repo URL (None for native HA cards). `example` is
+# a complete, valid card dict that can be dropped straight into a view.
+
+BUILDER_META: dict[str, dict] = {
+    "entities": {
+        "card_type": "entities",
+        "resource": None,
+        "summary": "Classic list of entity rows with toggles/state.",
+        "example": {"type": "entities", "title": "Lights",
+                      "entities": ["light.kitchen", "light.hall"]},
+    },
+    "vertical-stack": {
+        "card_type": "vertical-stack",
+        "resource": None,
+        "summary": "Stack child cards vertically.",
+        "example": {"type": "vertical-stack", "cards": [
+            {"type": "tile", "entity": "light.kitchen"},
+            {"type": "tile", "entity": "light.hall"},
+        ]},
+    },
+    "horizontal-stack": {
+        "card_type": "horizontal-stack",
+        "resource": None,
+        "summary": "Stack child cards horizontally.",
+        "example": {"type": "horizontal-stack", "cards": [
+            {"type": "tile", "entity": "light.kitchen"},
+            {"type": "tile", "entity": "light.hall"},
+        ]},
+    },
+    "grid": {
+        "card_type": "grid",
+        "resource": None,
+        "summary": "Grid of cards with `columns` and optional `square`.",
+        "example": {"type": "grid", "columns": 2, "square": False,
+                      "cards": [
+                          {"type": "tile", "entity": "light.kitchen"},
+                          {"type": "tile", "entity": "light.hall"},
+                      ]},
+    },
+    "glance": {
+        "card_type": "glance",
+        "resource": None,
+        "summary": "Compact horizontal row of entities with state.",
+        "example": {"type": "glance", "title": "Status",
+                      "entities": ["sensor.outdoor_temp",
+                                    "sensor.indoor_temp"]},
+    },
+    "gauge": {
+        "card_type": "gauge",
+        "resource": None,
+        "summary": "Numeric gauge with severity thresholds.",
+        "example": {"type": "gauge", "entity": "sensor.cpu_temp",
+                      "min": 0, "max": 100,
+                      "severity": {"green": 0, "yellow": 60, "red": 80}},
+    },
+    "tile": {
+        "card_type": "tile",
+        "resource": None,
+        "summary": "Modern HA tile — primary entity surface (recommended over button).",
+        "example": {"type": "tile", "entity": "light.kitchen",
+                      "name": "Kitchen", "icon": "mdi:silverware"},
+    },
+    "button": {
+        "card_type": "button",
+        "resource": None,
+        "summary": "Tap-action button. Prefer `tile` for entity control.",
+        "example": {"type": "button", "entity": "light.kitchen",
+                      "name": "Kitchen", "show_state": True},
+    },
+    "markdown": {
+        "card_type": "markdown",
+        "resource": None,
+        "summary": "Render markdown + Jinja templates.",
+        "example": {"type": "markdown", "title": "Hello",
+                      "content": "## Welcome, {{ user }}"},
+    },
+    "history-graph": {
+        "card_type": "history-graph",
+        "resource": None,
+        "summary": "Line graph of recent state history.",
+        "example": {"type": "history-graph", "hours_to_show": 24,
+                      "entities": ["sensor.outdoor_temp"]},
+    },
+    "statistics-graph": {
+        "card_type": "statistics-graph",
+        "resource": None,
+        "summary": "Graph of long-term-statistics (LTS) values.",
+        "example": {"type": "statistics-graph", "days_to_show": 30,
+                      "entities": ["sensor.energy"],
+                      "stat_types": ["mean", "max"]},
+    },
+    "conditional": {
+        "card_type": "conditional",
+        "resource": None,
+        "summary": "Show the inner `card` only when conditions match.",
+        "example": {"type": "conditional",
+                      "conditions": [{"entity": "binary_sensor.guest_mode",
+                                       "state": "on"}],
+                      "card": {"type": "tile",
+                                 "entity": "light.guest_room"}},
+    },
+    "picture-elements": {
+        "card_type": "picture-elements",
+        "resource": None,
+        "summary": "Background image with absolutely-positioned elements.",
+        "example": {"type": "picture-elements",
+                      "image": "/local/floorplan.png",
+                      "elements": [
+                          {"type": "state-icon", "entity": "light.kitchen",
+                            "style": {"top": "30%", "left": "40%"}},
+                      ]},
+    },
+    "iframe": {
+        "card_type": "iframe",
+        "resource": None,
+        "summary": "Embed external URL. WARNING: most sites block iframing.",
+        "example": {"type": "iframe",
+                      "url": "https://embed.windy.com/embed.html?...",
+                      "aspect_ratio": "16:9"},
+    },
+    "weather-forecast": {
+        "card_type": "weather-forecast",
+        "resource": None,
+        "summary": "Native weather forecast (daily/hourly).",
+        "example": {"type": "weather-forecast", "entity": "weather.home",
+                      "forecast_type": "daily", "show_forecast": True},
+    },
+    "mushroom-template": {
+        "card_type": "custom:mushroom-template-card",
+        "resource": "https://github.com/piitaya/lovelace-mushroom",
+        "summary": "Generic mushroom card driven by Jinja templates.",
+        "example": {"type": "custom:mushroom-template-card",
+                      "primary": "Hello {{ states('sensor.x') }}",
+                      "secondary": "subtitle",
+                      "icon": "mdi:home",
+                      "fill_container": True,
+                      "multiline_secondary": True},
+    },
+    "mushroom-light": {
+        "card_type": "custom:mushroom-light-card",
+        "resource": "https://github.com/piitaya/lovelace-mushroom",
+        "summary": "Light entity with mushroom styling + brightness/color controls.",
+        "example": {"type": "custom:mushroom-light-card",
+                      "entity": "light.kitchen", "name": "Kitchen",
+                      "show_brightness_control": True,
+                      "use_light_color": True,
+                      "fill_container": True},
+    },
+    "mushroom-person": {
+        "card_type": "custom:mushroom-person-card",
+        "resource": "https://github.com/piitaya/lovelace-mushroom",
+        "summary": "Person tracker with location and presence icon.",
+        "example": {"type": "custom:mushroom-person-card",
+                      "entity": "person.jon", "name": "Jon",
+                      "icon_type": "entity-picture",
+                      "layout": "horizontal"},
+    },
+    "mushroom-climate": {
+        "card_type": "custom:mushroom-climate-card",
+        "resource": "https://github.com/piitaya/lovelace-mushroom",
+        "summary": "Climate entity tile with HVAC mode buttons.",
+        "example": {"type": "custom:mushroom-climate-card",
+                      "entity": "climate.living_room",
+                      "hvac_modes": ["off", "heat", "cool"],
+                      "show_temperature_control": True},
+    },
+    "mushroom-chips": {
+        "card_type": "custom:mushroom-chips-card",
+        "resource": "https://github.com/piitaya/lovelace-mushroom",
+        "summary": "Horizontal row of small chips (status indicators).",
+        "example": {"type": "custom:mushroom-chips-card",
+                      "chips": [
+                          {"type": "weather", "entity": "weather.home"},
+                          {"type": "entity", "entity": "sensor.outdoor_temp"},
+                      ]},
+    },
+    "mushroom-title": {
+        "card_type": "custom:mushroom-title-card",
+        "resource": "https://github.com/piitaya/lovelace-mushroom",
+        "summary": "Heading text with optional subtitle.",
+        "example": {"type": "custom:mushroom-title-card",
+                      "title": "Living Room", "subtitle": "Always cosy"},
+    },
+    "apexcharts": {
+        "card_type": "custom:apexcharts-card",
+        "resource": "https://github.com/RomRider/apexcharts-card",
+        "summary": "Time-series charts via ApexCharts.js. Powerful but strict schema — series entries take ONLY series fields (no card_mod inside).",
+        "example": {"type": "custom:apexcharts-card",
+                      "graph_span": "24h",
+                      "header": {"show": True, "title": "Grid · 24h"},
+                      "series": [
+                          {"entity": "sensor.smart_meter_power",
+                            "name": "Grid", "type": "area"},
+                      ]},
+    },
+    "mini-graph": {
+        "card_type": "custom:mini-graph-card",
+        "resource": "https://github.com/kalkih/mini-graph-card",
+        "summary": "Compact sparkline graph for one or more sensors.",
+        "example": {"type": "custom:mini-graph-card",
+                      "entities": [{"entity": "sensor.outdoor_temp",
+                                     "name": "Outdoor"}],
+                      "hours_to_show": 24,
+                      "line_width": 3,
+                      "show": {"name": True, "state": True, "legend": False}},
+    },
+    "button-card": {
+        "card_type": "custom:button-card",
+        "resource": "https://github.com/custom-cards/button-card",
+        "summary": "Highly-customisable button with templates and state-driven styling.",
+        "example": {"type": "custom:button-card",
+                      "entity": "light.kitchen", "name": "Kitchen",
+                      "show_state": True, "color_type": "card"},
+    },
+    "bubble": {
+        "card_type": "custom:bubble-card",
+        "resource": "https://github.com/Clooos/Bubble-Card",
+        "summary": "Bubble UI cards (popup, button, separator, slider, etc).",
+        "example": {"type": "custom:bubble-card",
+                      "card_type": "button", "button_type": "switch",
+                      "entity": "light.kitchen", "name": "Kitchen"},
+    },
+    "mini-media-player": {
+        "card_type": "custom:mini-media-player",
+        "resource": "https://github.com/kalkih/mini-media-player",
+        "summary": "Compact media player with artwork, controls, shortcuts.",
+        "example": {"type": "custom:mini-media-player",
+                      "entity": "media_player.spotify",
+                      "artwork": "cover", "hide": {"power": False}},
+    },
+    "auto-entities": {
+        "card_type": "custom:auto-entities",
+        "resource": "https://github.com/thomasloven/lovelace-auto-entities",
+        "summary": "Dynamically-populated wrapper card. `filter` selects entities (include patterns are dicts, not bare strings).",
+        "example": {"type": "custom:auto-entities",
+                      "filter": {"include": [{"domain": "light"}]},
+                      "card": {"type": "entities", "title": "All lights"}},
+    },
+    "layout-card": {
+        "card_type": "custom:layout-card",
+        "resource": "https://github.com/thomasloven/lovelace-layout-card",
+        "summary": "Custom layouts (grid/horizontal/vertical/masonry) with per-card sizing.",
+        "example": {"type": "custom:layout-card", "layout_type": "grid",
+                      "cards": [{"type": "tile", "entity": "light.kitchen"}]},
+    },
+    "calendar-card-pro": {
+        "card_type": "custom:calendar-card-pro",
+        "resource": "https://github.com/alexpfau/calendar-card-pro",
+        "summary": "Calendar agenda view (compact, multi-day, color-coded).",
+        "example": {"type": "custom:calendar-card-pro",
+                      "entities": [{"entity": "calendar.personal",
+                                     "color": "#FF7A00"}],
+                      "days_to_show": 7},
+    },
+    "decluttering": {
+        "card_type": "custom:decluttering-card",
+        "resource": "https://github.com/custom-cards/decluttering-card",
+        "summary": "Reusable card template (DRY common card configs).",
+        "example": {"type": "custom:decluttering-card",
+                      "template": "room_tile",
+                      "variables": [{"entity": "light.kitchen"}]},
+    },
+    "expander": {
+        "card_type": "custom:expander-card",
+        "resource": "https://github.com/Alia5/lovelace-expander-card",
+        "summary": "Collapsible card wrapper.",
+        "example": {"type": "custom:expander-card",
+                      "title": "Details", "expanded": False,
+                      "cards": [{"type": "tile", "entity": "light.kitchen"}]},
+    },
+    "horizon": {
+        "card_type": "custom:horizon-card",
+        "resource": "https://github.com/rejuvenate/lovelace-horizon-card",
+        "summary": "Sun arc + dawn/dusk panel.",
+        "example": {"type": "custom:horizon-card",
+                      "title": "Sun",
+                      "fields": {"sunrise": True, "sunset": True,
+                                  "dawn": True, "dusk": True}},
+    },
+    "modern-circular-gauge": {
+        "card_type": "custom:modern-circular-gauge",
+        "resource": "https://github.com/selvalt7/modern-circular-gauge",
+        "summary": "Modern circular gauge (replaces deprecated round gauges).",
+        "example": {"type": "custom:modern-circular-gauge",
+                      "entity": "sensor.cpu_temp",
+                      "min": 0, "max": 100,
+                      "segments": [{"from": 0, "color": "#43A047"},
+                                    {"from": 60, "color": "#FFB300"},
+                                    {"from": 80, "color": "#E53935"}]},
+    },
+    "room-summary": {
+        "card_type": "custom:room-summary-card",
+        "resource": "https://github.com/homeassistant-extras/room-summary-card",
+        "summary": "Room-overview tile with area + auto-discovered entities.",
+        "example": {"type": "custom:room-summary-card",
+                      "area": "kitchen"},
+    },
+    "simple-swipe": {
+        "card_type": "custom:simple-swipe-card",
+        "resource": "https://github.com/nutteloost/simple-swipe-card",
+        "summary": "Swipeable carousel of cards (paged or free).",
+        "example": {"type": "custom:simple-swipe-card",
+                      "cards": [{"type": "tile", "entity": "light.kitchen"},
+                                  {"type": "tile", "entity": "light.hall"}],
+                      "swipe_direction": "horizontal"},
+    },
+    "stack-in-card": {
+        "card_type": "custom:stack-in-card",
+        "resource": "https://github.com/custom-cards/stack-in-card",
+        "summary": "Vertical/horizontal stack with shared card chrome.",
+        "example": {"type": "custom:stack-in-card", "mode": "vertical",
+                      "cards": [{"type": "tile", "entity": "light.kitchen"}]},
+    },
+    "swiss-army-knife": {
+        "card_type": "custom:swiss-army-knife-card",
+        "resource": "https://github.com/AmoebeLabs/swiss-army-knife-card",
+        "summary": "Programmable SVG card. REQUIRES yaml-mode dashboard for sak_sys_templates — not usable on storage-mode dashboards.",
+        "example": {"type": "custom:swiss-army-knife-card",
+                      "entities": [{"entity": "sensor.cpu_temp"}],
+                      "layout": {"toolsets": [
+                          {"toolset": "main", "position": {"cx": 50, "cy": 50},
+                            "tools": [
+                                {"type": "circle", "position": {"cx": 50, "cy": 50, "radius": 45}},
+                                {"type": "state", "position": {"cx": 50, "cy": 50, "entity_index": 0}},
+                            ]},
+                      ]}},
+    },
+    "weather-chart": {
+        "card_type": "custom:weather-chart-card",
+        "resource": "https://github.com/mlamberts78/weather-chart-card",
+        "summary": "Weather card with forecast chart + current conditions.",
+        "example": {"type": "custom:weather-chart-card",
+                      "entity": "weather.home",
+                      "show_main": True, "show_temperature": True,
+                      "forecast": {"type": "daily", "chart_height": 180}},
+    },
+    "simple-weather": {
+        "card_type": "custom:simple-weather-card",
+        "resource": "https://github.com/kalkih/simple-weather-card",
+        "summary": "Minimal weather chip. `primary_info`/`secondary_info` are enums.",
+        "example": {"type": "custom:simple-weather-card",
+                      "entity": "weather.home",
+                      "primary_info": "temperature",
+                      "secondary_info": "humidity"},
+    },
+    "atomic-calendar": {
+        "card_type": "custom:atomic-calendar-revive",
+        "resource": "https://github.com/totaldebug/atomic-calendar-revive",
+        "summary": "Multi-calendar agenda. `entities` are dicts (not bare strings); use `defaultMode` not `mode`.",
+        "example": {"type": "custom:atomic-calendar-revive",
+                      "entities": [{"entity": "calendar.personal",
+                                     "name": "Personal", "color": "#FF7A00"}],
+                      "defaultMode": "Event",
+                      "maxDaysToShow": 14},
+    },
+    "digital-clock": {
+        "card_type": "custom:digital-clock",
+        "resource": "https://github.com/wassy92x/lovelace-digital-clock",
+        "summary": "Digital clock card. No `border` field.",
+        "example": {"type": "custom:digital-clock",
+                      "time_format": {"hour": "2-digit", "minute": "2-digit"},
+                      "date_format": {"weekday": "long",
+                                       "day": "numeric",
+                                       "month": "long"}},
+    },
+    "flex-table": {
+        "card_type": "custom:flex-table-card",
+        "resource": "https://github.com/custom-cards/flex-table-card",
+        "summary": "Tabular view. `entities.include` are regex STRINGS (not auto-entities-style dicts).",
+        "example": {"type": "custom:flex-table-card",
+                      "entities": {"include": "sensor.*temp"},
+                      "columns": [
+                          {"name": "Entity", "data": "entity_id"},
+                          {"name": "State", "data": "state"},
+                      ]},
+    },
+}
+
+
+# SAK sub-tools are NOT standalone cards — they are tools inside a SAK card's
+# `tools` list. Keep separate metadata so the SKILL generator can show them
+# under a sub-section.
+SAK_TOOL_META: dict[str, dict] = {
+    "sak_circle":    {"summary": "SVG circle.",
+                       "example": {"type": "circle", "position": {"cx": 50, "cy": 50, "radius": 45}}},
+    "sak_ellipse":   {"summary": "SVG ellipse.",
+                       "example": {"type": "ellipse", "position": {"cx": 50, "cy": 50, "rx": 40, "ry": 25}}},
+    "sak_line":      {"summary": "SVG straight line.",
+                       "example": {"type": "line", "position": {"x1": 0, "y1": 50, "x2": 100, "y2": 50}}},
+    "sak_rectangle": {"summary": "SVG rectangle.",
+                       "example": {"type": "rectangle", "position": {"cx": 50, "cy": 50, "width": 80, "height": 30}}},
+    "sak_text":      {"summary": "SVG text label.",
+                       "example": {"type": "text", "text": "ON", "position": {"cx": 50, "cy": 50}}},
+    "sak_icon":      {"summary": "Icon for one of the card's entities.",
+                       "example": {"type": "icon", "position": {"cx": 50, "cy": 30, "entity_index": 0}}},
+    "sak_state":     {"summary": "Live state text for an entity.",
+                       "example": {"type": "state", "position": {"cx": 50, "cy": 60, "entity_index": 0}}},
+    "sak_name":      {"summary": "Friendly name text for an entity.",
+                       "example": {"type": "name", "position": {"cx": 50, "cy": 80, "entity_index": 0}}},
+    "sak_segarc":    {"summary": "Segmented arc gauge.",
+                       "example": {"type": "segarc", "position": {"cx": 50, "cy": 50, "radius": 45, "start_angle": 130, "end_angle": 410}}},
+    "sak_horseshoe": {"summary": "Horseshoe gauge.",
+                       "example": {"type": "horseshoe", "position": {"cx": 50, "cy": 50, "radius": 45}}},
+    "sak_sparkline": {"summary": "Mini sparkline graph.",
+                       "example": {"type": "sparkline", "position": {"cx": 50, "cy": 50, "width": 80, "height": 30}, "hours": 24}},
+    "sak_slider":    {"summary": "Interactive slider.",
+                       "example": {"type": "slider", "position": {"cx": 50, "cy": 50, "length": 80}}},
+    "sak_switch":    {"summary": "Toggle switch shape.",
+                       "example": {"type": "switch", "position": {"cx": 50, "cy": 50}}},
+    "sak_usersvg":   {"summary": "Inline user-supplied SVG.",
+                       "example": {"type": "usersvg", "position": {"cx": 50, "cy": 50, "width": 50, "height": 50}, "svg": "<svg>...</svg>"}},
+    "sak_circslider":{"summary": "Circular slider.",
+                       "example": {"type": "circslider", "position": {"cx": 50, "cy": 50, "radius": 40}}},
+    "sak_progpath":  {"summary": "Progress-along-path tool.",
+                       "example": {"type": "progpath", "position": {"cx": 50, "cy": 50, "width": 80, "height": 30}, "path": "M0,0 L100,100"}},
+    "sak_regpoly":   {"summary": "Regular polygon (hex, octagon, etc.).",
+                       "example": {"type": "regpoly", "position": {"cx": 50, "cy": 50, "radius": 40, "sides": 6}}},
+    "sak_rectex":    {"summary": "Extended rectangle with rounded corners.",
+                       "example": {"type": "rectex", "position": {"cx": 50, "cy": 50, "width": 80, "height": 30, "rx": 5, "ry": 5}}},
+    "sak_area":      {"summary": "Area chart filled below sparkline.",
+                       "example": {"type": "area", "position": {"cx": 50, "cy": 50, "width": 80, "height": 30, "entity_index": 0}, "hours": 24}},
+    "sak_toolset":   {"summary": "Toolset container — groups tools at a position.",
+                       "example": {"toolset": "main", "position": {"cx": 50, "cy": 50}, "tools": []}},
+}
+
+
+def builder_info(name: str) -> dict:
+    """Return metadata + example for a builder. Useful for agents that
+    want to know the schema and a working example without parsing source.
+
+    Returns ``{"name", "card_type", "resource", "summary", "example",
+                "signature"}``.
+    """
+    if name not in BUILDERS:
+        raise ValueError(f"unknown builder {name!r}; known: {', '.join(list_builders())}")
+    meta = BUILDER_META.get(name, {})
+    import inspect
+    sig = inspect.signature(BUILDERS[name])
+    return {
+        "name": name,
+        "card_type": meta.get("card_type"),
+        "resource": meta.get("resource"),
+        "summary": meta.get("summary", ""),
+        "example": meta.get("example"),
+        "signature": str(sig),
+    }
+
+
+def all_builder_info() -> list[dict]:
+    """Return ``builder_info`` for every registered builder, in stable order."""
+    return [builder_info(n) for n in list_builders()]
+
+
+def _yaml_block(obj, indent: int = 0) -> str:
+    """Tiny YAML emitter sufficient for compact card examples.
+    Avoids the PyYAML dependency."""
+    pad = "  " * indent
+    if isinstance(obj, dict):
+        out = []
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)) and v:
+                out.append(f"{pad}{k}:")
+                out.append(_yaml_block(v, indent + 1))
+            else:
+                out.append(f"{pad}{k}: {_yaml_scalar(v)}")
+        return "\n".join(out)
+    if isinstance(obj, list):
+        out = []
+        for item in obj:
+            if isinstance(item, dict):
+                first = True
+                for k, v in item.items():
+                    prefix = f"{pad}- " if first else f"{pad}  "
+                    if isinstance(v, (dict, list)) and v:
+                        out.append(f"{prefix}{k}:")
+                        out.append(_yaml_block(v, indent + 2))
+                    else:
+                        out.append(f"{prefix}{k}: {_yaml_scalar(v)}")
+                    first = False
+            else:
+                out.append(f"{pad}- {_yaml_scalar(item)}")
+        return "\n".join(out)
+    return f"{pad}{_yaml_scalar(obj)}"
+
+
+def _yaml_scalar(v) -> str:
+    if v is None: return "null"
+    if v is True: return "true"
+    if v is False: return "false"
+    if isinstance(v, (int, float)): return str(v)
+    s = str(v)
+    if any(ch in s for ch in ":#[]{}|>*&!%@`,'\"") or s != s.strip():
+        return '"' + s.replace('"', '\\"') + '"'
+    return s
+
+
+def generate_cards_reference() -> str:
+    """Build the Markdown 'Cards Reference' section for SKILL.md.
+
+    Groups builders into Native vs HACS, alphabetises within each group,
+    and emits each builder as a heading + signature + summary + YAML example.
+    """
+    native = [n for n in list_builders()
+                if BUILDER_META.get(n, {}).get("resource") is None]
+    custom = [n for n in list_builders()
+                if BUILDER_META.get(n, {}).get("resource") is not None]
+
+    lines = ["## Cards Reference",
+              "",
+              "Card builders live in `cli_anything.homeassistant.core."
+              "lovelace_card_builders`. Each builder validates its arguments "
+              "and returns a card dict ready to drop into a Lovelace view. "
+              "Common pitfalls (which fields are enums, where `card_mod` is "
+              "valid, what HACS plugin a card needs) are encoded in the "
+              "builders and surfaced below.",
+              "",
+              "```python",
+              "from cli_anything.homeassistant.core import lovelace_card_builders as cb",
+              "from cli_anything.homeassistant.core import lovelace as ll",
+              "from cli_anything.homeassistant.core import project as proj",
+              "from cli_anything.homeassistant.utils.homeassistant_backend import HomeAssistantClient",
+              "",
+              "client = HomeAssistantClient(**proj.load_config())",
+              "dash = ll.get_dashboard_config(client, 'jon-mobile')",
+              "view = dash['views'][0]",
+              "view['cards'].append(cb.tile('light.kitchen', name='Kitchen'))",
+              "ll.save_dashboard_config(client, 'jon-mobile', dash)",
+              "```",
+              ""]
+
+    def emit_section(title, names):
+        lines.append(f"### {title}")
+        lines.append("")
+        for name in names:
+            meta = BUILDER_META[name]
+            info = builder_info(name)
+            resource = meta.get("resource")
+            res_md = f" — [{resource.split('/')[-1]}]({resource})" if resource else ""
+            lines.append(f"**`{name}`** → `{meta['card_type']}`{res_md}  ")
+            lines.append(f"{meta['summary']}  ")
+            lines.append(f"Signature: `{name}{info['signature']}`")
+            lines.append("")
+            lines.append("```yaml")
+            lines.append(_yaml_block(meta["example"]))
+            lines.append("```")
+            lines.append("")
+
+    emit_section("Native cards (no HACS plugin required)", native)
+    emit_section("HACS custom cards (install via HACS Frontend first)", custom)
+
+    # SAK tools — listed separately because they're sub-tools of swiss-army-knife
+    lines.append("### Swiss Army Knife tools")
+    lines.append("")
+    lines.append("These are not standalone cards — they are tools you nest "
+                  "inside a `swiss-army-knife` card's `tools` list. Builder "
+                  "helpers (e.g. `cb.sak_circle(cx=50, cy=50, radius=45)`) "
+                  "live in the same module.")
+    lines.append("")
+    for tool_name in sorted(SAK_TOOL_META):
+        meta = SAK_TOOL_META[tool_name]
+        lines.append(f"- **`{tool_name}`** — {meta['summary']}")
+        lines.append(f"  `{meta['example']}`")
+    lines.append("")
+    return "\n".join(lines)

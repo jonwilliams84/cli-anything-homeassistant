@@ -89,6 +89,71 @@ def all_cards(cfg: dict) -> list[tuple[str, dict]]:
     return [(p, c) for p, c in _walk(cfg) if isinstance(c, dict) and "type" in c]
 
 
+# ────────────────────────────────────────────────────────────────────────
+# Card-context-aware walker
+# ────────────────────────────────────────────────────────────────────────
+# Many cards have sub-components that ALSO carry a "type" key but are NOT
+# cards: apexcharts `series[]`, mushroom-chips `chips[]`, picture-elements
+# `elements[]`, weather-chart `forecast{}`, etc. Naive recursion treats
+# those as cards and breaks (e.g. injecting card_mod into a series entry
+# triggers a config error).
+#
+# `walk_cards_strict` only enters keys that are documented card slots:
+#   - `views[]`, `sections[]`, `cards[]` (multiple)
+#   - `card`, `default`, `error_card` (single — conditional, etc.)
+
+_CARD_LIST_SLOTS = ("cards",)
+_CARD_DICT_SLOTS = ("card", "default", "error_card")
+_DESCEND_LIST_SLOTS = ("views", "sections", "cards")  # walk into, but views/sections themselves are NOT cards
+
+
+def walk_cards_strict(cfg: Any, *, with_path: bool = False):
+    """Yield every card (or (pointer, card) when ``with_path=True``) by
+    descending ONLY into documented card slots — never into series, chips,
+    elements, forecast, filter options, or other sub-component lists that
+    happen to carry a `type` key.
+
+    A node is considered a card iff it has a `type` field AND it's reached
+    via a ``cards`` list, a ``card``/``default``/``error_card`` field, or
+    is itself inside a section. View-level objects (whose type is
+    ``masonry``/``sidebar``/``panel``/``sections``) are descended into but
+    NOT yielded as cards.
+    """
+    def _go(node, path, is_card_position):
+        if isinstance(node, dict):
+            if is_card_position and isinstance(node.get("type"), str) and path:
+                yield (path, node) if with_path else node
+            for k in _DESCEND_LIST_SLOTS:
+                v = node.get(k)
+                if isinstance(v, list):
+                    # In a sections-view each `section` is itself a card
+                    # (typically a grid). `views[]` entries are layout
+                    # objects, NOT cards. `cards[]` entries are cards.
+                    child_is_card = (k in ("cards", "sections"))
+                    for i, child in enumerate(v):
+                        sub = f"{path}/{k}[{i}]" if path else f"{k}[{i}]"
+                        yield from _go(child, sub, child_is_card)
+            for k in _CARD_DICT_SLOTS:
+                v = node.get(k)
+                if isinstance(v, dict):
+                    sub = f"{path}/{k}" if path else k
+                    yield from _go(v, sub, True)
+        elif isinstance(node, list):
+            for i, child in enumerate(node):
+                yield from _go(child, f"[{i}]", is_card_position)
+    yield from _go(cfg, "", False)
+
+
+def map_cards_strict(cfg: Any, fn) -> int:
+    """Apply ``fn(card)`` in-place to every real card in `cfg`.
+    Returns the count of cards visited. See ``walk_cards_strict``."""
+    n = 0
+    for card in walk_cards_strict(cfg):
+        fn(card)
+        n += 1
+    return n
+
+
 def find_cards(
     cfg: dict,
     *,

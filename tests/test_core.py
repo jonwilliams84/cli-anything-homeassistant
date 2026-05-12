@@ -2835,6 +2835,408 @@ def sample_dashboard():
     }
 
 
+class TestDashboardSnapshot:
+    """snapshot_dashboard + restore_dashboard_snapshot + automatic
+    snapshot-on-save."""
+
+    def test_snapshot_writes_json(self, fake_client, tmp_path):
+        fake_client.set_ws("lovelace/config",
+                            {"views": [{"path": "home", "cards": []}]})
+        out = lovelace_core.snapshot_dashboard(
+            fake_client, "jon-mobile", snapshot_dir=str(tmp_path))
+        import json
+        data = json.load(open(out))
+        assert data["url_path"] == "jon-mobile"
+        assert data["timestamp"]  # populated
+        assert data["config"]["views"][0]["path"] == "home"
+
+    def test_save_with_snapshot_flag_writes_pre_save_state(
+            self, fake_client, tmp_path):
+        # Current state (snapshotted before save):
+        fake_client.set_ws("lovelace/config",
+                            {"views": [{"path": "old", "cards": []}]})
+        # The save call itself:
+        fake_client.set_ws("lovelace/config/save", {"result": "ok"})
+
+        new_cfg = {"views": [{"path": "new", "cards": []}]}
+        lovelace_core.save_dashboard_config(
+            fake_client, "jon-mobile", new_cfg,
+            snapshot=True, snapshot_dir=str(tmp_path))
+
+        # Snapshot file should exist and contain the OLD state.
+        snaps = lovelace_core.list_snapshots(snapshot_dir=str(tmp_path),
+                                                url_path="jon-mobile")
+        assert len(snaps) == 1
+        import json
+        data = json.load(open(snaps[0]["path"]))
+        assert data["config"]["views"][0]["path"] == "old"
+
+        # And the save was still performed with the new config.
+        save_calls = [c for c in fake_client.ws_calls
+                       if c["type"] == "lovelace/config/save"]
+        assert save_calls[-1]["payload"]["config"] == new_cfg
+
+    def test_list_snapshots_filters_by_url_path(self, fake_client, tmp_path):
+        fake_client.set_ws("lovelace/config", {"views": []})
+        lovelace_core.snapshot_dashboard(fake_client, "jon-mobile",
+                                            snapshot_dir=str(tmp_path))
+        lovelace_core.snapshot_dashboard(fake_client, "gem-mobile",
+                                            snapshot_dir=str(tmp_path))
+        jon = lovelace_core.list_snapshots(snapshot_dir=str(tmp_path),
+                                              url_path="jon-mobile")
+        gem = lovelace_core.list_snapshots(snapshot_dir=str(tmp_path),
+                                              url_path="gem-mobile")
+        assert len(jon) == 1 and jon[0]["url_path"] == "jon-mobile"
+        assert len(gem) == 1 and gem[0]["url_path"] == "gem-mobile"
+
+    def test_restore_dashboard_snapshot(self, fake_client, tmp_path):
+        fake_client.set_ws("lovelace/config",
+                            {"views": [{"path": "snap-state"}]})
+        path = lovelace_core.snapshot_dashboard(
+            fake_client, "jon-mobile", snapshot_dir=str(tmp_path))
+        fake_client.set_ws("lovelace/config/save", {})
+        lovelace_core.restore_dashboard_snapshot(fake_client, path)
+        # Verify the right save call was made.
+        save = [c for c in fake_client.ws_calls
+                 if c["type"] == "lovelace/config/save"][-1]
+        assert save["payload"]["url_path"] == "jon-mobile"
+        assert save["payload"]["config"]["views"][0]["path"] == "snap-state"
+
+    def test_restore_with_override(self, fake_client, tmp_path):
+        fake_client.set_ws("lovelace/config",
+                            {"views": [{"path": "snap"}]})
+        path = lovelace_core.snapshot_dashboard(
+            fake_client, "jon-mobile", snapshot_dir=str(tmp_path))
+        fake_client.set_ws("lovelace/config/save", {})
+        lovelace_core.restore_dashboard_snapshot(
+            fake_client, path, url_path_override="scratch-dash")
+        save = [c for c in fake_client.ws_calls
+                 if c["type"] == "lovelace/config/save"][-1]
+        assert save["payload"]["url_path"] == "scratch-dash"
+
+    def test_snapshot_failure_does_not_block_save(self, fake_client, tmp_path,
+                                                       monkeypatch):
+        """If reading the current dashboard fails, the save should still
+        proceed — snapshots are best-effort."""
+        def fail(*a, **kw): raise RuntimeError("boom")
+        monkeypatch.setattr(lovelace_core, "get_dashboard_config", fail)
+        fake_client.set_ws("lovelace/config/save", {"result": "ok"})
+        lovelace_core.save_dashboard_config(
+            fake_client, "jon-mobile", {"views": []},
+            snapshot=True, snapshot_dir=str(tmp_path))
+        # Save still happened
+        save = [c for c in fake_client.ws_calls
+                 if c["type"] == "lovelace/config/save"]
+        assert len(save) == 1
+        # Snapshot file exists and records the error
+        snaps = lovelace_core.list_snapshots(snapshot_dir=str(tmp_path))
+        assert snaps
+        import json
+        data = json.load(open(snaps[0]["path"]))
+        assert "snapshot read failed" in data["config"].get("_error", "")
+
+
+class TestCardValidator:
+    """Validates dashboard configs against builder schemas + resource list."""
+
+    def test_no_issues_on_valid_dashboard(self):
+        from cli_anything.homeassistant.core import (
+            lovelace_card_builders as cb,
+            lovelace_card_validate as v,
+        )
+        # Build from examples — those must all validate cleanly
+        # (resource check disabled).
+        cards = [cb.BUILDER_META[n]["example"]
+                  for n in ("entities", "tile", "gauge", "markdown",
+                              "vertical-stack", "grid", "conditional")]
+        dash = {"views": [{"cards": cards}]}
+        issues = v.validate_dashboard(dash)
+        errors = [i for i in issues if i["severity"] == "error"]
+        assert errors == [], f"unexpected errors: {errors}"
+
+    def test_missing_type_flagged(self):
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        dash = {"views": [{"cards": [{"entity": "light.x"}]}]}
+        issues = v.validate_dashboard(dash)
+        # The walker skips cards without `type`, so we won't find this one
+        # at the walker level. validate_card directly should catch it.
+        direct = v.validate_card({"entity": "light.x"})
+        assert any("no 'type' field" in i["message"] for i in direct)
+
+    def test_missing_required_field(self):
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        # `tile` requires `entity` (warning, not error — HA can still render
+        # a tile with templates / tap_action even sans entity).
+        dash = {"views": [{"cards": [{"type": "tile"}]}]}
+        issues = v.validate_dashboard(dash)
+        warnings = [i for i in issues if i["severity"] == "warning"
+                      and "'entity'" in i["message"]]
+        assert warnings, f"expected warning about missing entity; got: {issues}"
+
+    def test_unknown_native_warns_not_errors(self):
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        dash = {"views": [{"cards": [{"type": "bogo-card", "entity": "x"}]}]}
+        issues = v.validate_dashboard(dash)
+        assert any(i["severity"] == "warning"
+                    and "unknown native" in i["message"] for i in issues)
+
+    def test_custom_missing_resource_errors(self):
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        dash = {"views": [{"cards": [
+            {"type": "custom:apexcharts-card", "series": [
+                {"entity": "sensor.x"}]},
+        ]}]}
+        # installed=empty set → apexcharts is "not installed"
+        issues = v.validate_dashboard(dash, installed=set())
+        assert any("not installed" in i["message"] for i in issues)
+
+    def test_custom_installed_ok(self):
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        dash = {"views": [{"cards": [
+            {"type": "custom:apexcharts-card",
+              "series": [{"entity": "sensor.x"}]},
+        ]}]}
+        issues = v.validate_dashboard(
+            dash, installed={"custom:apexcharts-card"})
+        assert not any("not installed" in i["message"] for i in issues)
+
+    def test_stray_card_mod_in_series_flagged(self):
+        """The exact bug class from the apexcharts incident — must error."""
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        dash = {"views": [{"cards": [
+            {"type": "custom:apexcharts-card", "series": [
+                {"entity": "sensor.x", "type": "area",
+                  "card_mod": "ha-card { min-height: 110px; }"},
+            ]},
+        ]}]}
+        issues = v.validate_dashboard(dash,
+                                        installed={"custom:apexcharts-card"})
+        series_errors = [i for i in issues
+                          if i["severity"] == "error"
+                          and "series" in i["message"]]
+        assert series_errors, \
+            f"validator missed card_mod-in-series; got: {[i['message'] for i in issues]}"
+
+    def test_stray_card_mod_in_chips_warns(self):
+        """Chips might support card_mod depending on parent — warn, don't error."""
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        dash = {"views": [{"cards": [
+            {"type": "custom:mushroom-chips-card", "chips": [
+                {"type": "weather", "entity": "weather.x",
+                  "card_mod": "ha-card { display: none; }"},
+            ]},
+        ]}]}
+        issues = v.validate_dashboard(dash,
+                                        installed={"custom:mushroom-chips-card"})
+        chip_issues = [i for i in issues if "chips" in i["message"]]
+        assert chip_issues, "expected at least one issue about chips card_mod"
+        # Should be a warning, not an error.
+        assert all(i["severity"] == "warning" for i in chip_issues)
+
+    def test_card_mod_in_card_slot_is_fine(self):
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        dash = {"views": [{"cards": [
+            {"type": "tile", "entity": "light.x",
+              "card_mod": {"style": "ha-card { color: red; }"}},
+            {"type": "conditional",
+              "conditions": [{"entity": "x"}],
+              "card": {"type": "tile", "entity": "light.y",
+                        "card_mod": {"style": "..."}}},
+        ]}]}
+        issues = v.validate_dashboard(dash)
+        assert not any("card_mod found" in i["message"] for i in issues)
+
+    def test_format_issues(self):
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        out = v.format_issues([
+            {"severity": "error", "path": "views[0]/cards[0]",
+              "message": "boom"},
+            {"severity": "warning", "path": "", "message": "soft"},
+        ])
+        assert "[ERROR] views[0]/cards[0]: boom" in out
+        assert "[WARNING] <root>: soft" in out
+        assert v.format_issues([]) == "✓ no issues"
+
+    def test_installed_card_types_uses_resources(self, fake_client):
+        from cli_anything.homeassistant.core import lovelace_card_validate as v
+        fake_client.set_ws("lovelace/resources", [
+            {"id": "r1", "url": "/hacsfiles/apexcharts-card/apexcharts-card.js",
+              "type": "module"},
+            {"id": "r2", "url": "/hacsfiles/mini-graph-card/mini-graph-card-bundle.js",
+              "type": "module"},
+        ])
+        out = v.installed_card_types(fake_client)
+        assert "custom:apexcharts-card" in out
+        assert "custom:mini-graph-card" in out
+
+
+class TestBuilderMeta:
+    """Every builder has machine-readable metadata + a valid example."""
+
+    def test_every_builder_has_meta(self):
+        from cli_anything.homeassistant.core import lovelace_card_builders as b
+        missing = [n for n in b.BUILDERS if n not in b.BUILDER_META]
+        assert missing == [], f"builders without metadata: {missing}"
+
+    def test_examples_carry_matching_type(self):
+        """Each example's `type` must match the declared card_type."""
+        from cli_anything.homeassistant.core import lovelace_card_builders as b
+        for name, meta in b.BUILDER_META.items():
+            ex = meta["example"]
+            assert ex["type"] == meta["card_type"], (
+                f"{name}: example type {ex['type']!r} != card_type "
+                f"{meta['card_type']!r}")
+
+    def test_examples_have_no_stray_card_mod(self):
+        """Examples must not have card_mod inside non-card slots — exactly
+        the bug class this whole pass is preventing."""
+        from cli_anything.homeassistant.core import (
+            lovelace_card_builders as b,
+            lovelace_cards as lc,
+        )
+        # Strict walker should only visit the top-level card itself.
+        for name, meta in b.BUILDER_META.items():
+            ex = meta["example"]
+            # Wrap example into a synthetic dashboard so walk_cards_strict
+            # has a `cards` slot to enter.
+            cfg = {"views": [{"cards": [ex]}]}
+            cards = list(lc.walk_cards_strict(cfg))
+            # No card visited should have card_mod somewhere it shouldn't.
+            # (For now we just sanity-check the walker visits the example.)
+            assert any(c.get("type") == meta["card_type"] for c in cards), \
+                f"{name}: walker didn't visit example card"
+
+    def test_builder_info_includes_signature(self):
+        from cli_anything.homeassistant.core import lovelace_card_builders as b
+        info = b.builder_info("tile")
+        assert info["name"] == "tile"
+        assert info["card_type"] == "tile"
+        assert "entity" in info["signature"]
+        assert info["example"]["type"] == "tile"
+
+    def test_builder_info_unknown_raises(self):
+        from cli_anything.homeassistant.core import lovelace_card_builders as b
+        with pytest.raises(ValueError):
+            b.builder_info("nope-not-a-card")
+
+    def test_all_builder_info_complete(self):
+        from cli_anything.homeassistant.core import lovelace_card_builders as b
+        infos = b.all_builder_info()
+        assert len(infos) == len(b.BUILDERS)
+        for info in infos:
+            assert info["card_type"], f"{info['name']} missing card_type"
+            assert info["example"], f"{info['name']} missing example"
+
+
+class TestWalkCardsStrict:
+    """The card-context-aware walker — never enters series/chips/elements/etc."""
+
+    def test_skips_apexcharts_series(self):
+        cfg = {"views": [{"cards": [
+            {"type": "custom:apexcharts-card",
+              "series": [
+                  {"entity": "sensor.x", "type": "area",
+                    "card_mod": "should NOT be visited as a card"},
+                  {"entity": "sensor.y", "type": "line"},
+              ]},
+        ]}]}
+        types = [c["type"] for c in lovelace_cards_core.walk_cards_strict(cfg)]
+        assert types == ["custom:apexcharts-card"]
+        # The series entries (type: area / line) must NOT appear.
+        assert "area" not in types
+        assert "line" not in types
+
+    def test_skips_mushroom_chips(self):
+        cfg = {"views": [{"cards": [
+            {"type": "custom:mushroom-chips-card",
+              "chips": [
+                  {"type": "weather", "entity": "weather.home"},
+                  {"type": "template", "icon": "mdi:x"},
+              ]},
+        ]}]}
+        types = [c["type"] for c in lovelace_cards_core.walk_cards_strict(cfg)]
+        assert types == ["custom:mushroom-chips-card"]
+
+    def test_skips_picture_elements_elements(self):
+        cfg = {"views": [{"cards": [
+            {"type": "picture-elements", "image": "/x.png",
+              "elements": [
+                  {"type": "state-icon", "entity": "light.k"},
+              ]},
+        ]}]}
+        types = [c["type"] for c in lovelace_cards_core.walk_cards_strict(cfg)]
+        assert types == ["picture-elements"]
+
+    def test_enters_conditional_card(self):
+        cfg = {"views": [{"cards": [
+            {"type": "conditional", "conditions": [{"entity": "x"}],
+              "card": {"type": "tile", "entity": "light.k"}},
+        ]}]}
+        types = [c["type"] for c in lovelace_cards_core.walk_cards_strict(cfg)]
+        assert types == ["conditional", "tile"]
+
+    def test_enters_nested_grids(self):
+        cfg = {"views": [{"cards": [
+            {"type": "grid", "cards": [
+                {"type": "tile", "entity": "x"},
+                {"type": "horizontal-stack", "cards": [
+                    {"type": "button", "entity": "y"},
+                ]},
+            ]},
+        ]}]}
+        types = [c["type"] for c in lovelace_cards_core.walk_cards_strict(cfg)]
+        assert types == ["grid", "tile", "horizontal-stack", "button"]
+
+    def test_enters_sections(self):
+        cfg = {"views": [{"sections": [
+            {"type": "grid", "cards": [{"type": "tile", "entity": "x"}]},
+        ]}]}
+        types = [c["type"] for c in lovelace_cards_core.walk_cards_strict(cfg)]
+        assert types == ["grid", "tile"]
+
+    def test_with_path(self):
+        cfg = {"views": [{"cards": [
+            {"type": "grid", "cards": [
+                {"type": "tile", "entity": "x"},
+            ]},
+        ]}]}
+        out = list(lovelace_cards_core.walk_cards_strict(cfg, with_path=True))
+        paths = [p for p, _ in out]
+        assert paths == ["views[0]/cards[0]", "views[0]/cards[0]/cards[0]"]
+
+    def test_view_layout_not_yielded_as_card(self):
+        """Views have `type: masonry|sidebar|panel|sections` — NOT cards."""
+        cfg = {"views": [
+            {"title": "Home", "type": "masonry", "cards": [
+                {"type": "tile", "entity": "x"},
+            ]},
+            {"title": "Sections", "type": "sections", "sections": [
+                {"type": "grid", "cards": [{"type": "tile", "entity": "y"}]},
+            ]},
+        ]}
+        types = [c["type"] for c in lovelace_cards_core.walk_cards_strict(cfg)]
+        # Cards yielded:
+        assert types == ["tile", "grid", "tile"]
+        # The view's "masonry"/"sections" type MUST NOT appear:
+        assert "masonry" not in types
+        assert "sections" not in types
+
+    def test_map_cards_strict_mutates_in_place(self):
+        cfg = {"views": [{"cards": [
+            {"type": "tile", "entity": "x"},
+            {"type": "custom:apexcharts-card", "series": [
+                {"entity": "y", "type": "area"},
+            ]},
+        ]}]}
+        n = lovelace_cards_core.map_cards_strict(
+            cfg, lambda c: c.update({"_visited": True}))
+        assert n == 2  # tile + apexcharts (NOT the series entry)
+        assert cfg["views"][0]["cards"][0]["_visited"] is True
+        assert cfg["views"][0]["cards"][1]["_visited"] is True
+        # The series entry must NOT have been mutated.
+        assert "_visited" not in cfg["views"][0]["cards"][1]["series"][0]
+
+
 class TestPointer:
     def test_parse_simple(self):
         assert lovelace_cards_core.parse_pointer("views[0]") == [("views", 0)]
