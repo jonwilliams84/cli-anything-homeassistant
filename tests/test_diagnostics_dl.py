@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
+import warnings
 
 import pytest
 
@@ -13,43 +12,51 @@ from cli_anything.homeassistant.core import diagnostics_dl
 
 class TestDiagnosticsDl:
     # ── download_config_entry_diagnostics ──────────────────────────────────
+    # Route is /api/diagnostics/config_entry/{entry_id} (NO domain segment).
+    # The buggy old form /api/diagnostics/config_entry/{domain}/{entry_id}
+    # returned 404 in production — what this module fixes.
 
     def test_download_config_entry_happy(self, fake_client):
         payload = {"home_assistant": {}, "data": {"key": "value"}}
-        fake_client.set(
-            "GET",
-            "diagnostics/config_entry/hue/abc123",
-            payload,
-        )
+        fake_client.set("GET", "diagnostics/config_entry/abc123", payload)
         result = diagnostics_dl.download_config_entry_diagnostics(
-            fake_client, domain="hue", entry_id="abc123"
+            fake_client, entry_id="abc123",
         )
         assert result == payload
         last = fake_client.calls[-1]
         assert last["verb"] == "GET"
-        assert last["path"] == "diagnostics/config_entry/hue/abc123"
-
-    def test_download_config_entry_empty_domain(self, fake_client):
-        with pytest.raises(ValueError, match="domain"):
-            diagnostics_dl.download_config_entry_diagnostics(
-                fake_client, domain="", entry_id="abc123"
-            )
+        # The correct URL — no domain segment.
+        assert last["path"] == "diagnostics/config_entry/abc123"
 
     def test_download_config_entry_empty_entry_id(self, fake_client):
         with pytest.raises(ValueError, match="entry_id"):
             diagnostics_dl.download_config_entry_diagnostics(
-                fake_client, domain="hue", entry_id=""
+                fake_client, entry_id="",
             )
+
+    def test_download_config_entry_legacy_domain_warns(self, fake_client):
+        """The legacy `domain` kwarg is accepted but emits DeprecationWarning."""
+        fake_client.set("GET", "diagnostics/config_entry/eid-999",
+                          {"ok": True})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = diagnostics_dl.download_config_entry_diagnostics(
+                fake_client, domain="zwave_js", entry_id="eid-999",
+            )
+        assert result == {"ok": True}
+        # URL must NOT include the domain — even when passed.
+        assert fake_client.calls[-1]["path"] == "diagnostics/config_entry/eid-999"
+        assert any(
+            issubclass(w.category, DeprecationWarning)
+            and "domain" in str(w.message)
+            for w in caught
+        )
 
     def test_download_config_entry_return_shape(self, fake_client):
         payload = {"home_assistant": {"version": "2024.1.0"}, "data": {}}
-        fake_client.set(
-            "GET",
-            "diagnostics/config_entry/zwave_js/eid-999",
-            payload,
-        )
+        fake_client.set("GET", "diagnostics/config_entry/eid-999", payload)
         result = diagnostics_dl.download_config_entry_diagnostics(
-            fake_client, domain="zwave_js", entry_id="eid-999"
+            fake_client, entry_id="eid-999",
         )
         assert isinstance(result, dict)
         assert "home_assistant" in result
@@ -59,45 +66,55 @@ class TestDiagnosticsDl:
     def test_download_device_happy(self, fake_client):
         payload = {"home_assistant": {}, "data": {"device": "info"}}
         fake_client.set(
-            "GET",
-            "diagnostics/config_entry/hue/abc123/device/dev-456",
-            payload,
+            "GET", "diagnostics/config_entry/abc123/device/dev-456", payload,
         )
         result = diagnostics_dl.download_device_diagnostics(
-            fake_client, domain="hue", entry_id="abc123", device_id="dev-456"
+            fake_client, entry_id="abc123", device_id="dev-456",
         )
         assert result == payload
-        last = fake_client.calls[-1]
-        assert last["verb"] == "GET"
-        assert last["path"] == "diagnostics/config_entry/hue/abc123/device/dev-456"
-
-    def test_download_device_empty_domain(self, fake_client):
-        with pytest.raises(ValueError, match="domain"):
-            diagnostics_dl.download_device_diagnostics(
-                fake_client, domain="", entry_id="abc123", device_id="dev-456"
-            )
+        assert fake_client.calls[-1]["path"] == (
+            "diagnostics/config_entry/abc123/device/dev-456"
+        )
 
     def test_download_device_empty_entry_id(self, fake_client):
         with pytest.raises(ValueError, match="entry_id"):
             diagnostics_dl.download_device_diagnostics(
-                fake_client, domain="hue", entry_id="", device_id="dev-456"
+                fake_client, entry_id="", device_id="dev-456",
             )
 
     def test_download_device_empty_device_id(self, fake_client):
         with pytest.raises(ValueError, match="device_id"):
             diagnostics_dl.download_device_diagnostics(
-                fake_client, domain="hue", entry_id="abc123", device_id=""
+                fake_client, entry_id="abc123", device_id="",
             )
 
-    def test_download_device_return_shape(self, fake_client):
-        payload = {"home_assistant": {"version": "2024.1.0"}, "data": {"serial": "X1"}}
+    def test_download_device_legacy_domain_warns(self, fake_client):
         fake_client.set(
-            "GET",
-            "diagnostics/config_entry/matter/eid-1/device/dv-1",
-            payload,
+            "GET", "diagnostics/config_entry/eid-1/device/dv-1",
+            {"data": {"serial": "X1"}},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = diagnostics_dl.download_device_diagnostics(
+                fake_client, domain="matter", entry_id="eid-1",
+                device_id="dv-1",
+            )
+        assert "data" in result
+        assert fake_client.calls[-1]["path"] == (
+            "diagnostics/config_entry/eid-1/device/dv-1"
+        )
+        assert any(
+            issubclass(w.category, DeprecationWarning) for w in caught
+        )
+
+    def test_download_device_return_shape(self, fake_client):
+        payload = {"home_assistant": {"version": "2024.1.0"},
+                     "data": {"serial": "X1"}}
+        fake_client.set(
+            "GET", "diagnostics/config_entry/eid-1/device/dv-1", payload,
         )
         result = diagnostics_dl.download_device_diagnostics(
-            fake_client, domain="matter", entry_id="eid-1", device_id="dv-1"
+            fake_client, entry_id="eid-1", device_id="dv-1",
         )
         assert isinstance(result, dict)
         assert "data" in result
@@ -129,6 +146,5 @@ class TestDiagnosticsDl:
         out = tmp_path / "pretty.json"
         diagnostics_dl.save_diagnostics_to_file(data, str(out))
         text = out.read_text()
-        # Pretty-printed JSON contains newlines and indentation
         assert "\n" in text
         assert "  " in text
