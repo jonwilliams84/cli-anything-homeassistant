@@ -4418,10 +4418,23 @@ class TestBuildersExtraCustom:
         c = builders.room_summary_card(
             "kitchen", entity="light.kitchen",
             entities=[{"entity": "sensor.kitchen_temp"}],
-            features={"hide_climate_label": True},
+            features=["hide_climate_label", "show_entity_labels"],
+            sensor_classes=["temperature", "humidity"],
         )
-        assert c["features"]["hide_climate_label"] is True
+        assert c["features"] == ["hide_climate_label", "show_entity_labels"]
         assert c["entity"] == "light.kitchen"
+        assert c["sensor_classes"] == ["temperature", "humidity"]
+
+    def test_room_summary_rejects_features_dict(self):
+        """Old-style dict for features must raise a clear error."""
+        with pytest.raises(ValueError, match="LIST"):
+            builders.room_summary_card(
+                "kitchen", features={"hide_climate_label": True},
+            )
+
+    def test_room_summary_rejects_unknown_feature(self):
+        with pytest.raises(ValueError, match="unknown feature"):
+            builders.room_summary_card("kitchen", features=["frobnicate"])
 
     # ─── expander ─────────────────────────────────────────────────────
     def test_expander_minimal(self):

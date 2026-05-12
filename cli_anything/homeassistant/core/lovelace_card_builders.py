@@ -1262,31 +1262,93 @@ def weather_chart_card(entity: str, *,
 
 # ─────────────────────────────────────────────────── Room Summary Card
 
-def room_summary_card(area: str, *,
-                         entity: str | None = None,
-                         entities: list[str | dict] | None = None,
-                         features: dict | None = None,
-                         background: dict | None = None,
-                         occupancy: dict | None = None,
-                         thresholds: dict | None = None) -> dict:
-    """`custom:room-summary-card` (homeassistant-extras).
+_ROOM_SUMMARY_FEATURES = {
+    "hide_climate_label",
+    "hide_area_stats",
+    "show_entity_labels",
+    "exclude_default_entities",
+    # Newer additions in homeassistant-extras/room-summary-card:
+    "hide_room_stats", "hide_sensor_icons", "skip_climate_styles",
+    "skip_entity_styles", "skip_styles",
+}
 
-    `area` is the area_id (required). `entities` lets you override the
-    auto-discovered entity list. `features`, `background`, `occupancy`,
-    `thresholds` carry advanced presentation options.
+
+def room_summary_card(area: str, *,
+                         entity: str | dict | None = None,
+                         entities: list[str | dict] | None = None,
+                         features: list[str] | None = None,
+                         background: dict | None = None,
+                         sensor_classes: list[str] | None = None,
+                         problem_entities: list[str] | None = None) -> dict:
+    """`custom:room-summary-card` (homeassistant-extras/room-summary-card).
+
+    `area` — HA area_id (required, e.g. "living_room").
+
+    `entity` — primary entity. Bare entity_id string OR a dict like
+        ``{"entity_id": "light.foo", "icon": "mdi:sofa", "tap_action": {...}}``.
+        Defaults to the area's main light/climate.
+
+    `entities` — additional entities to surface as chips. Each item is a
+        bare entity_id OR a dict with `entity_id` + optional `icon` /
+        `tap_action`.
+
+    `features` — list of feature flag names (NOT a dict):
+        ``hide_climate_label``, ``hide_area_stats``, ``show_entity_labels``,
+        ``exclude_default_entities``, ``hide_room_stats``,
+        ``hide_sensor_icons``, ``skip_climate_styles``, ``skip_entity_styles``,
+        ``skip_styles``. Each flag is on when present, off when absent.
+
+    `background` — dict, e.g. ``{"image": "/local/lounge.jpg",
+                                 "opacity": 30, "options": "fade"}``.
+
+    `sensor_classes` — list of `device_class` names to filter which sensors
+        from the area get surfaced (e.g. ``["temperature", "humidity"]``).
+
+    `problem_entities` — list of entity_ids whose `on`/non-zero state should
+        light up the card's problem indicator.
+
+    The card auto-detects:
+      - Lights / climate / media_player in the area
+      - Motion / occupancy via the area's binary_sensors
+      - Temperature / humidity sensors via device_class
+
+    NOTE: this builder used to accept a `features` DICT, plus made-up
+    `occupancy` / `thresholds` kwargs that are NOT in the upstream schema.
+    Those caused "Configuration error" in HA. Use the correct list form
+    above. If you pass a dict for `features`, ValueError tells you what to
+    do instead.
     """
     if not area:
         raise ValueError("area required")
+
+    # Guard against the legacy dict form so callers get a clear error
+    # instead of an opaque HA "Configuration error".
+    if isinstance(features, dict):
+        raise ValueError(
+            "features must be a LIST of feature-flag names (e.g. "
+            "['show_entity_labels']), not a dict. The upstream "
+            "room-summary-card schema changed from dict to list."
+        )
+    if features is not None:
+        if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
+            raise ValueError("features must be a list of strings")
+        unknown = [f for f in features if f not in _ROOM_SUMMARY_FEATURES]
+        if unknown:
+            raise ValueError(
+                f"unknown feature flags {unknown}; valid: "
+                f"{sorted(_ROOM_SUMMARY_FEATURES)}"
+            )
+
     card: dict[str, Any] = {
         "type": "custom:room-summary-card",
         "area": area,
     }
-    if entity is not None: card["entity"] = entity
-    if entities is not None: card["entities"] = entities
-    if features is not None: card["features"] = features
-    if background is not None: card["background"] = background
-    if occupancy is not None: card["occupancy"] = occupancy
-    if thresholds is not None: card["thresholds"] = thresholds
+    if entity is not None:        card["entity"] = entity
+    if entities is not None:      card["entities"] = entities
+    if features is not None:      card["features"] = features
+    if background is not None:    card["background"] = background
+    if sensor_classes is not None: card["sensor_classes"] = sensor_classes
+    if problem_entities is not None: card["problem_entities"] = problem_entities
     return card
 
 
