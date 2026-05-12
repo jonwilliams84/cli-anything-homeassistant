@@ -897,6 +897,34 @@ These are not standalone cards — they are tools you nest inside a `swiss-army-
 - **`sak_usersvg`** — Inline user-supplied SVG.
   `{'type': 'usersvg', 'position': {'cx': 50, 'cy': 50, 'width': 50, 'height': 50}, 'svg': '<svg>...</svg>'}`
 
+## v1.21–1.23 — Extended WS coverage
+
+Modules added in the v1.21 → v1.23 sprint (import as
+`from cli_anything.homeassistant.core import <module>`):
+
+| Module | WS / REST coverage |
+|---|---|
+| `statistics_admin` | `recorder/adjust_sum_statistics`, `change_statistics_unit`, `validate_statistics`, `update_statistics_issues`, `update_statistics_metadata`, `import_statistics` |
+| `trace_debug` | `trace/list`, `trace/get`, `trace/contexts` |
+| `diagnostics_dl` | REST `/api/diagnostics/config_entry/{domain}/{entry_id}[/device/{device_id}]` + `save_diagnostics_to_file()` helper |
+| `system_log` | WS `system_log/list`, service `system_log/clear`, `system_log/write` |
+| `todos` | WS `todo/item/list`, `todo/item/move`, service `todo/add_item`, `update_item`, `remove_item`, `remove_completed_items` |
+| `state_stream` | `subscribe_events`, `subscribe_state_changed`, `subscribe_trigger`, `collect_events` (synchronous wait-for-N-events) |
+| `lovelace_sections_ext` | `with_section_options()`, `hero_section()`, `spacer_section()`, `divider_section()` |
+| `service_shortcuts` | `notify`, `mqtt_publish`, `lock_lock/unlock/open`, `alarm_arm_away/home/night/disarm`, `persistent_notification_create/dismiss` |
+| `blueprints` | `blueprint/list`, `import`, `save`, `delete`, `substitute` (+ `show()` convenience) |
+| `categories` | `config/category_registry/list/create/update/delete` + `categories_by_name()` |
+| `frontend_prefs` | WS `frontend/get_user_data`, `set_user_data`, REST `template`, WS `template/start_preview` |
+| `hardware_info` | WS `hardware/info`, `hardware/subscribe_system_status` + `board_info()`, `cpu_info()` convenience |
+| `conversation_advanced` | WS `conversation/process`, `agent/list`, `sentences/list`, `agent/homeassistant/debug`, `assist_pipeline/pipeline_debug/list/get`, `language/list`, `device/list`, `device/capture` |
+| `energy_advanced` | WS `energy/validate`, `solar_forecast`, `fossil_energy_consumption`, `save_prefs` (kwargs form) |
+| `auth_tokens` | WS `auth/current_user`, `refresh_tokens`, `long_lived_access_token`, `delete_refresh_token`, `delete_all_refresh_tokens`, `refresh_token_set_expiry`, `sign_path` |
+| `backup_advanced` | WS `backup/details`, `delete`, `restore`, `generate_with_automatic_settings`, `agents/info`, `config/info`, `config/update`, `can_decrypt_on_download` |
+| `mobile_app` | WS `mobile_app/push_notification_channel`, `push_notification_confirm` |
+| `weather_advanced` | WS `weather/convertible_units`, `weather/subscribe_forecast`, service `weather/get_forecasts` |
+
+Coverage jumped from ~33% to ~70% of HA's user-facing WS surface. Test count: 985 unit tests.
+
 ## Notes & Caveats
 
 - The CLI is **stateless across invocations** — only the connection profile
