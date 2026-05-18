@@ -2764,6 +2764,555 @@ def helpers_input_select_create(ctx, name, options, icon, initial):
     ))
 
 
+# ──────────────────────────────────────────────────────────────────────── helpers — input_boolean
+
+@helpers.group("input-boolean")
+def helpers_input_boolean():
+    """input_boolean (toggle) helper operations."""
+
+
+@helpers_input_boolean.command("list")
+@click.pass_context
+def helpers_input_boolean_list(ctx):
+    """List every input_boolean helper (UI-managed)."""
+    for h in helpers_core.input_boolean_list(make_client(ctx)) or []:
+        emit(ctx, h)
+
+
+@helpers_input_boolean.command("create")
+@click.option("--name", required=True, help="Display name (also drives the entity slug)")
+@click.option("--icon", default=None, help="mdi:xxx icon")
+@click.option("--initial/--no-initial", "initial", default=None,
+              help="Initial on/off state (omit to leave HA default)")
+@click.pass_context
+def helpers_input_boolean_create(ctx, name, icon, initial):
+    """Create a NEW input_boolean. Persists across restart."""
+    emit(ctx, helpers_core.input_boolean_create(
+        make_client(ctx), name=name, icon=icon, initial=initial))
+
+
+@helpers_input_boolean.command("update")
+@click.argument("entity_id")
+@click.option("--name", default=None)
+@click.option("--icon", default=None)
+@click.option("--initial/--no-initial", "initial", default=None)
+@click.pass_context
+def helpers_input_boolean_update(ctx, entity_id, name, icon, initial):
+    """Update an existing input_boolean (storage-mode only)."""
+    emit(ctx, helpers_core.input_boolean_update(
+        make_client(ctx), entity_id, name=name, icon=icon, initial=initial))
+
+
+@helpers_input_boolean.command("delete")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_boolean_delete(ctx, entity_id):
+    """Remove an input_boolean registration."""
+    emit(ctx, {"deleted": entity_id,
+               "result": helpers_core.input_boolean_delete(make_client(ctx), entity_id)})
+
+
+@helpers_input_boolean.command("turn-on")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_boolean_turn_on(ctx, entity_id):
+    emit(ctx, helpers_core.input_boolean_turn_on(make_client(ctx), entity_id))
+
+
+@helpers_input_boolean.command("turn-off")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_boolean_turn_off(ctx, entity_id):
+    emit(ctx, helpers_core.input_boolean_turn_off(make_client(ctx), entity_id))
+
+
+@helpers_input_boolean.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_boolean_toggle(ctx, entity_id):
+    emit(ctx, helpers_core.input_boolean_toggle(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────────────────────── helpers — input_button
+
+@helpers.group("input-button")
+def helpers_input_button():
+    """input_button (momentary press) helper operations."""
+
+
+@helpers_input_button.command("list")
+@click.pass_context
+def helpers_input_button_list(ctx):
+    for h in helpers_core.input_button_list(make_client(ctx)) or []:
+        emit(ctx, h)
+
+
+@helpers_input_button.command("create")
+@click.option("--name", required=True)
+@click.option("--icon", default=None)
+@click.pass_context
+def helpers_input_button_create(ctx, name, icon):
+    emit(ctx, helpers_core.input_button_create(make_client(ctx), name=name, icon=icon))
+
+
+@helpers_input_button.command("update")
+@click.argument("entity_id")
+@click.option("--name", default=None)
+@click.option("--icon", default=None)
+@click.pass_context
+def helpers_input_button_update(ctx, entity_id, name, icon):
+    emit(ctx, helpers_core.input_button_update(
+        make_client(ctx), entity_id, name=name, icon=icon))
+
+
+@helpers_input_button.command("delete")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_button_delete(ctx, entity_id):
+    emit(ctx, {"deleted": entity_id,
+               "result": helpers_core.input_button_delete(make_client(ctx), entity_id)})
+
+
+@helpers_input_button.command("press")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_button_press(ctx, entity_id):
+    """Fire a press event on the input_button."""
+    emit(ctx, helpers_core.input_button_press(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────────────────────── helpers — input_number
+
+@helpers.group("input-number")
+def helpers_input_number():
+    """input_number (slider/box) helper operations."""
+
+
+@helpers_input_number.command("list")
+@click.pass_context
+def helpers_input_number_list(ctx):
+    for h in helpers_core.input_number_list(make_client(ctx)) or []:
+        emit(ctx, h)
+
+
+@helpers_input_number.command("create")
+@click.option("--name", required=True)
+@click.option("--min", "min_", type=float, required=True)
+@click.option("--max", "max_", type=float, required=True)
+@click.option("--step", type=float, default=1.0)
+@click.option("--mode", type=click.Choice(["slider", "box"]), default="slider")
+@click.option("--unit", "unit_of_measurement", default=None)
+@click.option("--icon", default=None)
+@click.option("--initial", type=float, default=None)
+@click.pass_context
+def helpers_input_number_create(ctx, name, min_, max_, step, mode,
+                                 unit_of_measurement, icon, initial):
+    emit(ctx, helpers_core.input_number_create(
+        make_client(ctx), name=name, min=min_, max=max_, step=step, mode=mode,
+        unit_of_measurement=unit_of_measurement, icon=icon, initial=initial))
+
+
+@helpers_input_number.command("update")
+@click.argument("entity_id")
+@click.option("--name", default=None)
+@click.option("--min", "min_", type=float, default=None)
+@click.option("--max", "max_", type=float, default=None)
+@click.option("--step", type=float, default=None)
+@click.option("--mode", type=click.Choice(["slider", "box"]), default=None)
+@click.option("--unit", "unit_of_measurement", default=None)
+@click.option("--icon", default=None)
+@click.option("--initial", type=float, default=None)
+@click.pass_context
+def helpers_input_number_update(ctx, entity_id, name, min_, max_, step, mode,
+                                 unit_of_measurement, icon, initial):
+    emit(ctx, helpers_core.input_number_update(
+        make_client(ctx), entity_id, name=name, min=min_, max=max_, step=step,
+        mode=mode, unit_of_measurement=unit_of_measurement, icon=icon, initial=initial))
+
+
+@helpers_input_number.command("delete")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_number_delete(ctx, entity_id):
+    emit(ctx, {"deleted": entity_id,
+               "result": helpers_core.input_number_delete(make_client(ctx), entity_id)})
+
+
+@helpers_input_number.command("set-value")
+@click.argument("entity_id")
+@click.argument("value", type=float)
+@click.pass_context
+def helpers_input_number_set_value(ctx, entity_id, value):
+    emit(ctx, helpers_core.input_number_set_value(make_client(ctx), entity_id, value))
+
+
+@helpers_input_number.command("increment")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_number_increment(ctx, entity_id):
+    emit(ctx, helpers_core.input_number_increment(make_client(ctx), entity_id))
+
+
+@helpers_input_number.command("decrement")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_number_decrement(ctx, entity_id):
+    emit(ctx, helpers_core.input_number_decrement(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────────────────────── helpers — input_text
+
+@helpers.group("input-text")
+def helpers_input_text():
+    """input_text (free string) helper operations."""
+
+
+@helpers_input_text.command("list")
+@click.pass_context
+def helpers_input_text_list(ctx):
+    for h in helpers_core.input_text_list(make_client(ctx)) or []:
+        emit(ctx, h)
+
+
+@helpers_input_text.command("create")
+@click.option("--name", required=True)
+@click.option("--min", "min_", type=int, default=0)
+@click.option("--max", "max_", type=int, default=100)
+@click.option("--pattern", default=None, help="Regex the value must match")
+@click.option("--mode", type=click.Choice(["text", "password"]), default="text")
+@click.option("--icon", default=None)
+@click.option("--initial", default=None)
+@click.pass_context
+def helpers_input_text_create(ctx, name, min_, max_, pattern, mode, icon, initial):
+    emit(ctx, helpers_core.input_text_create(
+        make_client(ctx), name=name, min=min_, max=max_, pattern=pattern,
+        mode=mode, icon=icon, initial=initial))
+
+
+@helpers_input_text.command("update")
+@click.argument("entity_id")
+@click.option("--name", default=None)
+@click.option("--min", "min_", type=int, default=None)
+@click.option("--max", "max_", type=int, default=None)
+@click.option("--pattern", default=None)
+@click.option("--mode", type=click.Choice(["text", "password"]), default=None)
+@click.option("--icon", default=None)
+@click.option("--initial", default=None)
+@click.pass_context
+def helpers_input_text_update(ctx, entity_id, name, min_, max_, pattern,
+                               mode, icon, initial):
+    emit(ctx, helpers_core.input_text_update(
+        make_client(ctx), entity_id, name=name, min=min_, max=max_,
+        pattern=pattern, mode=mode, icon=icon, initial=initial))
+
+
+@helpers_input_text.command("delete")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_text_delete(ctx, entity_id):
+    emit(ctx, {"deleted": entity_id,
+               "result": helpers_core.input_text_delete(make_client(ctx), entity_id)})
+
+
+@helpers_input_text.command("set-value")
+@click.argument("entity_id")
+@click.argument("value")
+@click.pass_context
+def helpers_input_text_set_value(ctx, entity_id, value):
+    emit(ctx, helpers_core.input_text_set_value(make_client(ctx), entity_id, value))
+
+
+# ──────────────────────────────────────────────────────────────────────── helpers — input_datetime
+
+@helpers.group("input-datetime")
+def helpers_input_datetime():
+    """input_datetime (date/time/datetime) helper operations."""
+
+
+@helpers_input_datetime.command("list")
+@click.pass_context
+def helpers_input_datetime_list(ctx):
+    for h in helpers_core.input_datetime_list(make_client(ctx)) or []:
+        emit(ctx, h)
+
+
+@helpers_input_datetime.command("create")
+@click.option("--name", required=True)
+@click.option("--has-date/--no-has-date", "has_date", default=True)
+@click.option("--has-time/--no-has-time", "has_time", default=True)
+@click.option("--icon", default=None)
+@click.option("--initial", default=None,
+              help="Initial value: YYYY-MM-DD, HH:MM:SS, or YYYY-MM-DD HH:MM:SS")
+@click.pass_context
+def helpers_input_datetime_create(ctx, name, has_date, has_time, icon, initial):
+    emit(ctx, helpers_core.input_datetime_create(
+        make_client(ctx), name=name, has_date=has_date, has_time=has_time,
+        icon=icon, initial=initial))
+
+
+@helpers_input_datetime.command("update")
+@click.argument("entity_id")
+@click.option("--name", default=None)
+@click.option("--has-date/--no-has-date", "has_date", default=None)
+@click.option("--has-time/--no-has-time", "has_time", default=None)
+@click.option("--icon", default=None)
+@click.option("--initial", default=None)
+@click.pass_context
+def helpers_input_datetime_update(ctx, entity_id, name, has_date, has_time,
+                                   icon, initial):
+    emit(ctx, helpers_core.input_datetime_update(
+        make_client(ctx), entity_id, name=name, has_date=has_date,
+        has_time=has_time, icon=icon, initial=initial))
+
+
+@helpers_input_datetime.command("delete")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_input_datetime_delete(ctx, entity_id):
+    emit(ctx, {"deleted": entity_id,
+               "result": helpers_core.input_datetime_delete(make_client(ctx), entity_id)})
+
+
+@helpers_input_datetime.command("set")
+@click.argument("entity_id")
+@click.option("--date", default=None, help="YYYY-MM-DD")
+@click.option("--time", default=None, help="HH:MM:SS")
+@click.option("--datetime", "datetime_", default=None, help="YYYY-MM-DD HH:MM:SS")
+@click.pass_context
+def helpers_input_datetime_set(ctx, entity_id, date, time, datetime_):
+    emit(ctx, helpers_core.input_datetime_set(
+        make_client(ctx), entity_id, date=date, time=time, datetime=datetime_))
+
+
+# ──────────────────────────────────────────────────────────────────────── helpers — counter / timer / schedule
+
+@helpers.group("counter")
+def helpers_counter():
+    """counter (integer that increments) helper operations."""
+
+
+@helpers_counter.command("list")
+@click.pass_context
+def helpers_counter_list(ctx):
+    for h in helpers_core.counter_list(make_client(ctx)) or []:
+        emit(ctx, h)
+
+
+@helpers_counter.command("create")
+@click.option("--name", required=True)
+@click.option("--initial", type=int, default=0)
+@click.option("--step", type=int, default=1)
+@click.option("--min", "minimum", type=int, default=None)
+@click.option("--max", "maximum", type=int, default=None)
+@click.option("--restore/--no-restore", default=True,
+              help="Keep value across HA restart")
+@click.option("--icon", default=None)
+@click.pass_context
+def helpers_counter_create(ctx, name, initial, step, minimum, maximum, restore, icon):
+    emit(ctx, helpers_core.counter_create(
+        make_client(ctx), name=name, initial=initial, step=step,
+        minimum=minimum, maximum=maximum, restore=restore, icon=icon))
+
+
+@helpers_counter.command("update")
+@click.argument("entity_id")
+@click.option("--name", default=None)
+@click.option("--initial", type=int, default=None)
+@click.option("--step", type=int, default=None)
+@click.option("--min", "minimum", type=int, default=None)
+@click.option("--max", "maximum", type=int, default=None)
+@click.option("--restore/--no-restore", default=None)
+@click.option("--icon", default=None)
+@click.pass_context
+def helpers_counter_update(ctx, entity_id, name, initial, step, minimum,
+                            maximum, restore, icon):
+    emit(ctx, helpers_core.counter_update(
+        make_client(ctx), entity_id, name=name, initial=initial, step=step,
+        minimum=minimum, maximum=maximum, restore=restore, icon=icon))
+
+
+@helpers_counter.command("delete")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_counter_delete(ctx, entity_id):
+    emit(ctx, {"deleted": entity_id,
+               "result": helpers_core.counter_delete(make_client(ctx), entity_id)})
+
+
+@helpers_counter.command("increment")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_counter_increment(ctx, entity_id):
+    emit(ctx, helpers_core.counter_increment(make_client(ctx), entity_id))
+
+
+@helpers_counter.command("decrement")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_counter_decrement(ctx, entity_id):
+    emit(ctx, helpers_core.counter_decrement(make_client(ctx), entity_id))
+
+
+@helpers_counter.command("reset")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_counter_reset(ctx, entity_id):
+    emit(ctx, helpers_core.counter_reset(make_client(ctx), entity_id))
+
+
+@helpers_counter.command("set-value")
+@click.argument("entity_id")
+@click.argument("value", type=int)
+@click.pass_context
+def helpers_counter_set_value(ctx, entity_id, value):
+    emit(ctx, helpers_core.counter_set_value(make_client(ctx), entity_id, value))
+
+
+@helpers.group("timer")
+def helpers_timer():
+    """timer (countdown) helper operations."""
+
+
+@helpers_timer.command("list")
+@click.pass_context
+def helpers_timer_list(ctx):
+    for h in helpers_core.timer_list(make_client(ctx)) or []:
+        emit(ctx, h)
+
+
+@helpers_timer.command("create")
+@click.option("--name", required=True)
+@click.option("--duration", default="00:00:00", help="HH:MM:SS")
+@click.option("--restore/--no-restore", default=False)
+@click.option("--icon", default=None)
+@click.pass_context
+def helpers_timer_create(ctx, name, duration, restore, icon):
+    emit(ctx, helpers_core.timer_create(
+        make_client(ctx), name=name, duration=duration,
+        restore=restore, icon=icon))
+
+
+@helpers_timer.command("update")
+@click.argument("entity_id")
+@click.option("--name", default=None)
+@click.option("--duration", default=None)
+@click.option("--restore/--no-restore", default=None)
+@click.option("--icon", default=None)
+@click.pass_context
+def helpers_timer_update(ctx, entity_id, name, duration, restore, icon):
+    emit(ctx, helpers_core.timer_update(
+        make_client(ctx), entity_id, name=name, duration=duration,
+        restore=restore, icon=icon))
+
+
+@helpers_timer.command("delete")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_timer_delete(ctx, entity_id):
+    emit(ctx, {"deleted": entity_id,
+               "result": helpers_core.timer_delete(make_client(ctx), entity_id)})
+
+
+@helpers_timer.command("start")
+@click.argument("entity_id")
+@click.option("--duration", default=None, help="Override default duration (HH:MM:SS)")
+@click.pass_context
+def helpers_timer_start(ctx, entity_id, duration):
+    emit(ctx, helpers_core.timer_start(make_client(ctx), entity_id, duration=duration))
+
+
+@helpers_timer.command("pause")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_timer_pause(ctx, entity_id):
+    emit(ctx, helpers_core.timer_pause(make_client(ctx), entity_id))
+
+
+@helpers_timer.command("cancel")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_timer_cancel(ctx, entity_id):
+    emit(ctx, helpers_core.timer_cancel(make_client(ctx), entity_id))
+
+
+@helpers_timer.command("finish")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_timer_finish(ctx, entity_id):
+    emit(ctx, helpers_core.timer_finish(make_client(ctx), entity_id))
+
+
+@helpers_timer.command("change")
+@click.argument("entity_id")
+@click.argument("duration")
+@click.pass_context
+def helpers_timer_change(ctx, entity_id, duration):
+    """Add (positive) or subtract (negative) HH:MM:SS from a running timer."""
+    emit(ctx, helpers_core.timer_change(make_client(ctx), entity_id, duration))
+
+
+@helpers.group("schedule")
+def helpers_schedule():
+    """schedule (weekly on/off windows) helper operations."""
+
+
+@helpers_schedule.command("list")
+@click.pass_context
+def helpers_schedule_list(ctx):
+    for h in helpers_core.schedule_list(make_client(ctx)) or []:
+        emit(ctx, h)
+
+
+@helpers_schedule.command("delete")
+@click.argument("entity_id")
+@click.pass_context
+def helpers_schedule_delete(ctx, entity_id):
+    emit(ctx, {"deleted": entity_id,
+               "result": helpers_core.schedule_delete(make_client(ctx), entity_id)})
+
+
+# Schedule create/update take per-day window lists which are awkward as CLI
+# flags. Expose a --from-file path that takes the whole config as JSON, so
+# callers can build the structure in whatever language they prefer.
+
+@helpers_schedule.command("create")
+@click.option("--name", required=True)
+@click.option("--from-file", type=click.Path(exists=True, dir_okay=False), required=True,
+              help='JSON file with optional keys: monday..sunday (each a list of '
+                   '{from,to} windows), and optional "icon".')
+@click.pass_context
+def helpers_schedule_create(ctx, name, from_file):
+    cfg = json.loads(open(from_file).read())
+    if not isinstance(cfg, dict):
+        click.echo("error: --from-file must contain a JSON object", err=True)
+        sys.exit(1)
+    emit(ctx, helpers_core.schedule_create(make_client(ctx), name=name, **cfg))
+
+
+@helpers_schedule.command("update")
+@click.argument("entity_id")
+@click.option("--from-file", type=click.Path(exists=True, dir_okay=False), required=True)
+@click.option("--name", default=None)
+@click.pass_context
+def helpers_schedule_update(ctx, entity_id, from_file, name):
+    cfg = json.loads(open(from_file).read())
+    if not isinstance(cfg, dict):
+        click.echo("error: --from-file must contain a JSON object", err=True)
+        sys.exit(1)
+    emit(ctx, helpers_core.schedule_update(
+        make_client(ctx), entity_id, name=name, **cfg))
+
+
+@helpers.command("list-all")
+@click.option("--no-config-flow", is_flag=True,
+              help="Skip the config-flow helpers (derivative, template, group, ...)")
+@click.pass_context
+def helpers_list_all(ctx, no_config_flow):
+    """Enumerate every helper across every type, grouped by type."""
+    emit(ctx, helpers_core.list_all_helpers(
+        make_client(ctx), include_config_flow=not no_config_flow))
+
+
 # ──────────────────────────────────────────────────────────────────────── lovelace backup / diff
 
 @cli.group("lovelace-tools")
