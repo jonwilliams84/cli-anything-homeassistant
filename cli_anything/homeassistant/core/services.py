@@ -21,6 +21,26 @@ def list_domains(client) -> list[str]:
     return sorted({d.get("domain") for d in data if d.get("domain")})
 
 
+def get_service(client, domain: str, service: str) -> dict | None:
+    """Return the registry entry for one specific service (`<domain>.<service>`).
+
+    The entry shape is the same one HA's `/api/services` returns per
+    domain: ``{"domain": ..., "services": {<name>: {"name", "description",
+    "fields": {...}, "response": ...}}}`` — this helper unwraps to just
+    the inner per-service descriptor, since that's what callers actually
+    want when debugging "what does this service accept?".
+
+    Returns ``None`` if the domain or service isn't registered.
+    """
+    if not domain or not service:
+        raise ValueError("domain and service are required")
+    for entry in list_services(client, domain=domain):
+        services = entry.get("services") or {}
+        if service in services:
+            return services[service]
+    return None
+
+
 def call_service(
     client,
     domain: str,

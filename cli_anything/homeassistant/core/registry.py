@@ -15,6 +15,21 @@ def list_devices(client) -> list[dict]:
     return list(data) if isinstance(data, list) else []
 
 
+def get_device(client, device_id: str) -> dict | None:
+    """Return one device record by id, or None if no such device.
+
+    HA's device_registry WS surface has no "get-one" endpoint, only
+    `list`. Rather than make every caller iterate the full list, this
+    helper does it once and returns the single record.
+    """
+    if not device_id:
+        raise ValueError("device_id is required")
+    for d in list_devices(client):
+        if d.get("id") == device_id:
+            return d
+    return None
+
+
 def list_entities(client) -> list[dict]:
     data = client.ws_call("config/entity_registry/list")
     return list(data) if isinstance(data, list) else []

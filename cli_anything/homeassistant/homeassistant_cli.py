@@ -623,6 +623,26 @@ def service_domains(ctx):
     emit(ctx, services_core.list_domains(make_client(ctx)))
 
 
+@service.command("describe")
+@click.argument("domain_arg")
+@click.argument("service_arg")
+@click.pass_context
+def service_describe(ctx, domain_arg, service_arg):
+    """Show the registered schema for one service.
+
+    Useful when a `service call` returns 400 and you need to see which
+    fields the service accepts, which are required, and their selector
+    types — e.g. `service describe notify alexa_media` or
+    `service describe ai_task generate_data`.
+    """
+    info = services_core.get_service(make_client(ctx), domain_arg, service_arg)
+    if info is None:
+        click.echo(f"error: {domain_arg}.{service_arg} not in service registry",
+                   err=True)
+        sys.exit(1)
+    emit(ctx, info)
+
+
 @service.command("call")
 @click.argument("domain_arg")
 @click.argument("service_arg")
@@ -770,6 +790,24 @@ def area_list(ctx):
 @cli.group()
 def device():
     """Device registry (WebSocket)."""
+
+
+@device.command("get")
+@click.argument("device_id")
+@click.pass_context
+def device_get(ctx, device_id):
+    """Fetch one device registry record by device_id.
+
+    HA's device-registry WS surface has no "get-one" endpoint, so this
+    grabs the full list and returns just the matching record — easier
+    than piping `device list` through grep when you have the id from
+    e.g. `entity inspect`.
+    """
+    dev = registry_core.get_device(make_client(ctx), device_id)
+    if dev is None:
+        click.echo(f"error: device {device_id!r} not found", err=True)
+        sys.exit(1)
+    emit(ctx, dev)
 
 
 @device.command("list")
@@ -1272,10 +1310,57 @@ def automation_reload(ctx):
 
 @automation.command("traces")
 @click.argument("entity_id")
+@click.option("--limit", "-n", type=int, default=None,
+              help="Return only the most-recent N traces. Default: all "
+                   "(HA keeps up to 5 per automation).")
+@click.option("--since", default=None,
+              help="Only return traces whose start time is within the "
+                   "given window. Accepts a duration like '30s', '5m', "
+                   "'2h', '1d', or an ISO-8601 timestamp.")
 @click.pass_context
-def automation_traces(ctx, entity_id):
+def automation_traces(ctx, entity_id, limit, since):
     """List recent execution traces for an automation (most recent last)."""
-    emit(ctx, automation_core.list_traces(make_client(ctx), entity_id))
+    traces = automation_core.list_traces(make_client(ctx), entity_id) or []
+    if since:
+        cutoff = _resolve_since(since)
+        traces = [t for t in traces
+                  if _trace_start(t) and _trace_start(t) >= cutoff]
+    if limit is not None and limit >= 0:
+        traces = traces[-limit:]
+    emit(ctx, traces)
+
+
+def _resolve_since(value: str):
+    """Parse '30s'/'5m'/'2h'/'1d' or an ISO-8601 timestamp into an aware datetime."""
+    import re
+    from datetime import datetime, timedelta, timezone
+    m = re.fullmatch(r"\s*(\d+)\s*([smhdSMHD])\s*", value)
+    if m:
+        n, unit = int(m.group(1)), m.group(2).lower()
+        delta = {"s": timedelta(seconds=n), "m": timedelta(minutes=n),
+                 "h": timedelta(hours=n),   "d": timedelta(days=n)}[unit]
+        return datetime.now(timezone.utc) - delta
+    # ISO-8601 fallback. Accept trailing 'Z' as +00:00.
+    iso = value.strip().replace("Z", "+00:00")
+    dt = datetime.fromisoformat(iso)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _trace_start(trace: dict):
+    """Return the trace's start time as an aware datetime, or None."""
+    from datetime import datetime, timezone
+    ts = ((trace.get("timestamp") or {}).get("start"))
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 @automation.command("trace")
