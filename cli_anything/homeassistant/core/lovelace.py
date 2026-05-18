@@ -16,6 +16,68 @@ def list_dashboards(client) -> list[dict]:
     return list(data) if isinstance(data, list) else []
 
 
+def create_dashboard(
+    client,
+    url_path: str,
+    title: str,
+    *,
+    mode: str = "storage",
+    icon: str | None = None,
+    show_in_sidebar: bool = True,
+    require_admin: bool = False,
+    filename: str | None = None,
+) -> Any:
+    """Register a new Lovelace dashboard in the user-managed registry.
+
+    `mode='yaml'` requires `filename`. Integration-registered dashboards
+    (e.g. UI Lovelace Minimalist side panels) live outside this registry;
+    update those via the owning integration's options flow instead.
+    """
+    if not url_path:
+        raise ValueError("url_path is required")
+    if not title:
+        raise ValueError("title is required")
+    payload: dict[str, Any] = {
+        "url_path": url_path,
+        "title": title,
+        "mode": mode,
+        "show_in_sidebar": show_in_sidebar,
+        "require_admin": require_admin,
+    }
+    if icon:
+        payload["icon"] = icon
+    if filename:
+        payload["filename"] = filename
+    return client.ws_call("lovelace/dashboards/create", payload)
+
+
+def update_dashboard(client, dashboard_id: str, **fields: Any) -> Any:
+    """Partial update of a Lovelace dashboard's registry entry.
+
+    Only fields explicitly supplied (i.e. not None) are sent.
+    """
+    if not dashboard_id:
+        raise ValueError("dashboard_id is required")
+    allowed = {"title", "icon", "show_in_sidebar", "require_admin", "url_path"}
+    payload: dict[str, Any] = {"dashboard_id": dashboard_id}
+    for k, v in fields.items():
+        if k in allowed and v is not None:
+            payload[k] = v
+    if len(payload) == 1:
+        raise ValueError("at least one updatable field required")
+    return client.ws_call("lovelace/dashboards/update", payload)
+
+
+def delete_dashboard(client, dashboard_id: str) -> Any:
+    """Remove a Lovelace dashboard registration by id."""
+    if not dashboard_id:
+        raise ValueError("dashboard_id is required")
+    return client.ws_call(
+        "lovelace/dashboards/delete",
+        {"dashboard_id": dashboard_id},
+    )
+
+
 def get_dashboard_config(client, url_path: str | None = None) -> dict:
     """Return the full Lovelace config for a dashboard.
 

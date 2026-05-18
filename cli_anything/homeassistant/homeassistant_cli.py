@@ -1790,6 +1790,69 @@ def lovelace_dashboards_list(ctx):
     emit(ctx, lovelace_core.list_dashboards(make_client(ctx)))
 
 
+@lovelace_dashboards.command("create")
+@click.argument("url_path")
+@click.argument("title")
+@click.option("--mode", default="storage",
+              type=click.Choice(["storage", "yaml"]),
+              help="Dashboard mode (default storage)")
+@click.option("--icon", default=None, help="MDI icon, e.g. mdi:bird")
+@click.option("--filename", default=None,
+              help="Required for --mode yaml; path under /config")
+@click.option("--show-in-sidebar/--no-show-in-sidebar", default=True)
+@click.option("--require-admin/--no-require-admin", default=False)
+@click.pass_context
+def lovelace_dashboards_create(ctx, url_path, title, mode, icon, filename,
+                                show_in_sidebar, require_admin):
+    """Register a new Lovelace dashboard.
+
+    NOTE: integration-registered dashboards (e.g. UI Lovelace Minimalist
+    side panels) aren't in this registry — update them via the owning
+    integration's options flow instead.
+    """
+    emit(ctx, lovelace_core.create_dashboard(
+        make_client(ctx), url_path, title,
+        mode=mode, icon=icon, filename=filename,
+        show_in_sidebar=show_in_sidebar, require_admin=require_admin,
+    ))
+
+
+@lovelace_dashboards.command("update")
+@click.argument("dashboard_id")
+@click.option("--title", default=None)
+@click.option("--icon", default=None)
+@click.option("--url-path", default=None,
+              help="Change the URL path under which the dashboard is served")
+@click.option("--show-in-sidebar/--no-show-in-sidebar", "show_in_sidebar",
+              default=None)
+@click.option("--require-admin/--no-require-admin", "require_admin",
+              default=None)
+@click.pass_context
+def lovelace_dashboards_update(ctx, dashboard_id, title, icon, url_path,
+                                show_in_sidebar, require_admin):
+    """Update a Lovelace dashboard's registry entry (storage-mode only).
+
+    Supply only the fields you want to change. The dashboard_id is the
+    `id` field from `lovelace dashboards list`.
+    """
+    emit(ctx, lovelace_core.update_dashboard(
+        make_client(ctx), dashboard_id,
+        title=title, icon=icon, url_path=url_path,
+        show_in_sidebar=show_in_sidebar, require_admin=require_admin,
+    ))
+
+
+@lovelace_dashboards.command("delete")
+@click.argument("dashboard_id")
+@click.pass_context
+def lovelace_dashboards_delete(ctx, dashboard_id):
+    """Remove a Lovelace dashboard registration by id."""
+    emit(ctx, {
+        "deleted": dashboard_id,
+        "result": lovelace_core.delete_dashboard(make_client(ctx), dashboard_id),
+    })
+
+
 @lovelace.group("config")
 def lovelace_config():
     """Read or write a dashboard's full config."""
