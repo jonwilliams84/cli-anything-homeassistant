@@ -64,6 +64,20 @@ overrides also work: `CLI_HA_URL`, `CLI_HA_TOKEN`, etc.
 | `auth` | Users, long-lived tokens, whoami |
 | `event subscribe` / `state watch` | Live tails — agent-friendly until-state-X loops |
 | `entity-references` | Find every UI-managed automation/template/lovelace that mentions an entity_id |
+| `scene` | List, activate (with `--transition`), apply ad-hoc states, snapshot to a new scene, reload |
+| `weather` | List `weather.*` entities, convertible units, one-shot `forecast`, WS `forecast-subscribe` |
+| `shopping-list` | Default HA shopping list — list / add / update / remove / clear-completed / reorder |
+| `todo` | Any `todo.*` integration — list / add / update / complete / remove / move / clear-completed |
+| `lock` | `lock.*` shortcuts: `lock` / `unlock` / `open` (garage-door style) |
+| `alarm` | `alarm_control_panel.*` — `arm-away` / `arm-home` / `arm-night` / `arm-vacation` / `disarm` |
+| `search` | `search/related` — every automation/scene/script/dashboard tied to an entity, device, area, … |
+| `entity expose` | Per-assistant expose flags + new-entity defaults (cloud.alexa / cloud.google_assistant) |
+| `camera` | `camera.*` capabilities, HLS stream URL, prefs, WebRTC client config |
+| `device-automation` | List a device's available triggers, conditions, actions — what the HA UI's automation editor shows |
+| `assist agents` / `sentences` / `debug` / `satellites` / `languages` | Conversation pipeline introspection + sentence-matching debugger |
+| `assist-satellite` | `assist_satellite.*` — current config, set wake words, test connection |
+| `mobile-app` | Companion app push delivery receipts |
+| `media` | media_source browse / resolve to URL / local file remove |
 
 ## Quick examples
 

@@ -355,3 +355,162 @@ tests/test_full_e2e.py::TestCLISubprocess::test_state_list_ids_only PASSED
 - HA `2025.1.4` is the last release supporting Python 3.12; newer HA versions
   require Python 3.13+. The CLI itself supports Python 3.10+.
 
+---
+
+## Refine pass — daily-driver action shortcuts
+
+This pass exposed orphan core modules that were already implemented but not
+wired into the CLI, plus added a new `scenes` core module.
+
+### New CLI groups wired
+
+| Group              | Backing core module(s)                 | New tests added |
+|--------------------|-----------------------------------------|-----------------|
+| `scene`            | new `core/scenes.py`                    | unit + wiring + 2 live E2E |
+| `weather`          | `core/weather_advanced.py`              | wiring + 1 live E2E |
+| `shopping-list`    | `core/shopping_list.py`                 | wiring |
+| `todo`             | `core/todos.py`                         | wiring |
+| `lock`             | `core/service_shortcuts.py`             | wiring |
+| `alarm`            | `core/service_shortcuts.py` (+`alarm_arm_vacation`) | unit + wiring |
+| `search`           | `core/singletons.py::search_related`    | wiring + 1 live E2E |
+| `entity expose`    | `core/expose_entity.py`                 | wiring + 1 live E2E |
+
+### New / extended functions
+
+- `core/scenes.py` (new): `list_scenes`, `activate`, `apply`, `create`,
+  `reload`.
+- `core/service_shortcuts.py`: added `alarm_arm_vacation`.
+
+### Test results — refine pass
+
+```
+$ python3 -m pytest tests/ -q --tb=no --ignore=tests/test_full_e2e.py
+1511 passed in 1.14s
+
+$ python3 -m pytest tests/test_full_e2e.py -q --tb=no
+39 passed in 7.45s
+```
+
+- **Before refine:** ~733 unit tests, 33 live E2E.
+- **After refine:** 1,511 unit + 39 live E2E (added ~778 unit + 6 live tests).
+- **Regressions:** 0.
+
+The new tests live in:
+
+- `tests/test_scenes.py` — unit tests for the new `core/scenes.py` module.
+- `tests/test_cli_refine_wiring.py` — Click `CliRunner` wiring tests for all
+  eight new groups; uses `make_client` monkey-patch to inject `FakeClient`.
+- `tests/test_service_shortcuts.py` — three new tests for `alarm_arm_vacation`.
+- `tests/test_full_e2e.py::TestCLISubprocess` — six new live tests:
+  `test_scene_create_and_activate`, `test_scene_apply_adhoc`,
+  `test_search_related_entity`, `test_entity_expose_list`,
+  `test_weather_list_filters_to_domain`, `test_help_lists_new_groups`.
+
+---
+
+## Refine pass v2 — voice & multi-modal
+
+This pass wired six more orphan modules into the CLI.
+
+### New CLI groups wired
+
+| Group              | Backing core module(s)                  | Tests added |
+|--------------------|------------------------------------------|-------------|
+| `camera`           | `core/camera_ws.py`                      | wiring (8)  |
+| `device-automation`| `core/device_automation.py`              | wiring (4)  |
+| `assist` (extensions: `agents`, `sentences`, `debug`, `satellites`, `languages`) | `core/conversation_advanced.py` | wiring (6) + 3 live (skip on older HA) |
+| `assist-satellite` | `core/assist_satellite.py`               | wiring (4)  |
+| `mobile-app`       | `core/mobile_app.py`                     | wiring (1)  |
+| `media`            | `core/media_source.py`                   | wiring (5) + 1 live |
+
+### Test config change
+
+To exercise the new groups against a live HA boot, `tests/conftest.py` now
+loads two more lightweight integrations into the test config:
+
+- `conversation:` — required for the `assist` group's WS commands
+- `media_source:` — required for `media browse`/`resolve`/`remove`
+
+`assist_pipeline:` was NOT added (it pulls heavy STT/TTS dependencies).
+The three live tests that need `assist_pipeline/*` WS commands or the
+newer `conversation/agent/list` (introduced in HA versions after 2025.1.4)
+skip cleanly via `_skip_if_unknown_command` rather than fail.
+
+### Test results — refine pass v2
+
+```
+$ python3 -m pytest tests/ -q --ignore=tests/test_full_e2e.py
+1539 passed in 1.19s
+
+$ python3 -m pytest tests/test_full_e2e.py -q
+41 passed, 3 skipped in 8.73s
+```
+
+- **Before pass v2:** 1,511 unit + 39 live E2E.
+- **After pass v2:** 1,539 unit + 41 live E2E (+ 3 conditional skips).
+- **Regressions:** 0.
+
+The new tests live in:
+
+- `tests/test_cli_refine_wiring_v2.py` — 28 CliRunner wiring tests covering
+  camera, device-automation, assist extensions, assist-satellite, mobile-app,
+  media.
+- `tests/test_full_e2e.py::TestCLISubprocess` — 5 new live tests:
+  `test_help_lists_v2_groups`, `test_media_browse_root_live`,
+  `test_assist_languages_live`, `test_assist_satellites_live`,
+  `test_assist_agents_live` (the last three skip on HA builds that don't
+  ship the corresponding WS command).
+
+---
+
+## Refine pass v3 — sysadmin & auth
+
+This pass wired the operations-and-auth orphans: per-integration WS log
+control, refresh-token administration, full user CRUD with credentials,
+category registry, integration manifests, analytics, OAuth application
+credentials, repairs issue introspection, USB / Zigbee discovery, hardware
+info, and the runtime error log.
+
+### New CLI groups/subgroups wired
+
+| Surface                       | Backing module        | Tests added |
+|-------------------------------|-----------------------|-------------|
+| `auth me`, `auth sign-path`   | `core/auth_tokens.py` | wiring (2) + 2 live |
+| `auth tokens` extensions      | `core/auth_tokens.py` | wiring (6) + 1 live |
+| `auth user` subgroup          | `core/user_admin.py`  | wiring (7) |
+| `category`                    | `core/categories.py`  | wiring (6) + 1 live |
+| `logger info-ws / level-get / level-set` | `core/logger_ws.py` | wiring (4) + 1 live |
+| `system manifest`             | `core/system_ops.py`  | wiring (2) + 1 live |
+| `system analytics`            | `core/system_ops.py`  | wiring (3) + 1 live |
+| `system app-credentials`      | `core/system_ops.py`  | wiring (2) |
+| `system issue`                | `core/system_ops.py`  | wiring (3) |
+| `system usb-scan`, `zha-permit-join` | `core/singletons.py` | wiring (2) |
+| `system hardware-info / board-info / cpu-info` | `core/hardware_info.py` | wiring (3) |
+| `system log errors / clear / write` | `core/system_log.py` | wiring (4) + 1 live |
+
+### Test results — refine pass v3
+
+```
+$ python3 -m pytest tests/ -q --ignore=tests/test_full_e2e.py
+1583 passed in 1.25s
+
+$ python3 -m pytest tests/test_full_e2e.py -q
+50 passed, 3 skipped in 11.26s
+```
+
+- **Before pass v3:** 1,539 unit + 41 live E2E.
+- **After pass v3:** 1,583 unit + 50 live E2E.
+- **Regressions:** 0.
+
+New tests in:
+
+- `tests/test_cli_refine_wiring_v3.py` — 44 CliRunner wiring tests across
+  auth core extensions, auth tokens, auth user, category, logger WS variants,
+  system extensions, and the system_log subgroup.
+- `tests/test_full_e2e.py::TestCLISubprocess` — 9 new live tests:
+  `test_help_lists_v3_groups`, `test_auth_me_live`, `test_auth_sign_path_live`,
+  `test_auth_tokens_list_live`, `test_logger_info_ws_live`,
+  `test_system_manifest_list_live`, `test_system_log_errors_live`,
+  `test_system_analytics_get_live`, `test_category_list_live`. Each `WS`-
+  backed one skips cleanly via `_skip_if_unknown_command` on older HA builds.
+

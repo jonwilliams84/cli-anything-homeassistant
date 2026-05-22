@@ -310,6 +310,30 @@ class TestServiceShortcuts:
             service_shortcuts.alarm_arm_night(fake_client, "input_boolean.alarm")
 
     # ────────────────────────────────────────────────────────────────────────
+    # alarm_arm_vacation
+    # ────────────────────────────────────────────────────────────────────────
+
+    def test_alarm_arm_vacation_minimal(self, fake_client):
+        service_shortcuts.alarm_arm_vacation(fake_client, "alarm_control_panel.home")
+        assert fake_client.calls[-1]["path"] == "services/alarm_control_panel/alarm_arm_vacation"
+        assert fake_client.calls[-1]["payload"] == {
+            "entity_id": "alarm_control_panel.home"
+        }
+
+    def test_alarm_arm_vacation_with_code(self, fake_client):
+        service_shortcuts.alarm_arm_vacation(fake_client,
+                                             "alarm_control_panel.home",
+                                             code="4242")
+        assert fake_client.calls[-1]["payload"] == {
+            "entity_id": "alarm_control_panel.home",
+            "code": "4242",
+        }
+
+    def test_alarm_arm_vacation_invalid_entity_raises(self, fake_client):
+        with pytest.raises(ValueError, match="expected alarm_control_panel.*"):
+            service_shortcuts.alarm_arm_vacation(fake_client, "lock.front")
+
+    # ────────────────────────────────────────────────────────────────────────
     # alarm_disarm
     # ────────────────────────────────────────────────────────────────────────
 

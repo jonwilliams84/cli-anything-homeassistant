@@ -330,3 +330,249 @@ class TestCLISubprocess:
         data = json.loads(result.stdout)
         assert isinstance(data, list)
         assert all(isinstance(x, str) and x.startswith("sensor.") for x in data if x)
+
+    # ─────────────────────── refine pass: new groups (live)
+
+    def test_scene_create_and_activate(self, hass_instance):
+        """End-to-end: seed a sensor state, create a scene from it, activate it,
+        then confirm the scene.* entity now appears in `scene list`."""
+        # Seed an entity HA can include in a scene snapshot.
+        self._run(
+            ["state", "set", "input_boolean.refine_seed", "off"],
+            hass_instance,
+        )
+        # Create a scene from the live state.
+        r = self._run(
+            ["--json", "scene", "create", "cli_refine_seed",
+             "--snapshot", "input_boolean.refine_seed"],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+        # The scene service returns [] when no state changes resulted, which is fine.
+        json.loads(r.stdout)
+
+        # Activate it — HA should accept the call even if no entities mutate.
+        r = self._run(
+            ["--json", "scene", "activate", "scene.cli_refine_seed"],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+
+        # And it should now show up in the list.
+        r = self._run(["--json", "scene", "list"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        scenes_list = json.loads(r.stdout)
+        ids = {s.get("entity_id") for s in scenes_list}
+        assert "scene.cli_refine_seed" in ids
+
+    def test_scene_apply_adhoc(self, hass_instance):
+        """`scene apply` with an ad-hoc entity map must round-trip via HA."""
+        self._run(
+            ["state", "set", "input_boolean.refine_apply", "off"],
+            hass_instance,
+        )
+        r = self._run(
+            ["--json", "scene", "apply",
+             "--entity", "input_boolean.refine_apply=on"],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+        # Apply returns a (possibly empty) list of state changes.
+        json.loads(r.stdout)
+
+    def test_search_related_entity(self, hass_instance):
+        """search/related must return a dict (may be empty) for a real entity."""
+        # Use the state we created earlier in the same session.
+        self._run(["state", "set", "sensor.refine_search_probe", "1"],
+                  hass_instance)
+        r = self._run(
+            ["--json", "search", "entity", "sensor.refine_search_probe"],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        # search/related returns either {} or a domain → ids mapping.
+        assert isinstance(data, dict)
+
+    def test_entity_expose_list(self, hass_instance):
+        """expose_entity/list is a WS read that always returns a dict (may be empty)."""
+        r = self._run(["--json", "entity", "expose", "list"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, dict)
+
+    def test_weather_list_filters_to_domain(self, hass_instance):
+        """`weather list` returns a list (no weather entities expected → empty)."""
+        r = self._run(["--json", "weather", "list"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)
+        assert all(s.get("entity_id", "").startswith("weather.") for s in data)
+
+    def test_help_lists_new_groups(self, hass_instance):
+        """The refine pass added these top-level groups — they must appear in --help."""
+        r = self._run(["--help"], hass_instance)
+        assert r.returncode == 0
+        for grp in ("scene", "weather", "shopping-list", "todo",
+                    "lock", "alarm", "search"):
+            assert grp in r.stdout, f"missing {grp!r} in --help output"
+
+    # ─────────────────────── refine pass v2: voice & multi-modal (live)
+
+    def test_help_lists_v2_groups(self, hass_instance):
+        """Second refine pass added these groups — verify --help on a live boot."""
+        r = self._run(["--help"], hass_instance)
+        assert r.returncode == 0
+        for grp in ("camera", "device-automation", "assist-satellite",
+                    "mobile-app", "media"):
+            assert grp in r.stdout, f"missing {grp!r} in --help output"
+
+    def test_media_browse_root_live(self, hass_instance):
+        """`media browse` must return a dict from a live HA (root has children)."""
+        r = self._run(["--json", "media", "browse"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        # root browse always returns a dict-shaped node
+        assert isinstance(data, dict)
+
+    def _skip_if_unknown_command(self, result, cmd_name):
+        """Skip when the running HA build doesn't ship this WS command.
+
+        Some WS endpoints (`conversation/agent/list`,
+        `assist_pipeline/language/list`, `assist_pipeline/device/list`)
+        only exist in newer HA versions. The CLI wiring is verified by
+        the CliRunner tests; here we only assert success when the API
+        endpoint actually exists.
+        """
+        if result.returncode != 0 and "unknown_command" in (result.stderr or ""):
+            pytest.skip(
+                f"{cmd_name} not registered in this HA build "
+                "(expected on HA versions older than the WS command landed)"
+            )
+
+    def test_assist_languages_live(self, hass_instance):
+        """assist_pipeline/language/list — skip on builds that don't ship it."""
+        r = self._run(["--json", "assist", "languages"], hass_instance,
+                      check=False)
+        self._skip_if_unknown_command(r, "assist_pipeline/language/list")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, (dict, list))
+
+    def test_assist_satellites_live(self, hass_instance):
+        """assist_pipeline/device/list — skip on builds that don't ship it."""
+        r = self._run(["--json", "assist", "satellites"], hass_instance,
+                      check=False)
+        self._skip_if_unknown_command(r, "assist_pipeline/device/list")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)
+
+    def test_assist_agents_live(self, hass_instance):
+        """conversation/agent/list — skip on builds that don't ship it."""
+        r = self._run(["--json", "assist", "agents"], hass_instance,
+                      check=False)
+        self._skip_if_unknown_command(r, "conversation/agent/list")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, (dict, list))
+
+    # ─────────────────────── refine pass v3: sysadmin & auth (live)
+
+    def test_help_lists_v3_groups(self, hass_instance):
+        """Third refine pass added these groups/subgroups — verify --help."""
+        r = self._run(["--help"], hass_instance)
+        assert r.returncode == 0
+        for grp in ("category",):
+            assert grp in r.stdout, f"missing {grp!r} in --help output"
+        # system subgroups
+        r = self._run(["system", "--help"], hass_instance)
+        for sub in ("manifest", "analytics", "app-credentials", "issue",
+                    "usb-scan", "zha-permit-join", "hardware-info",
+                    "board-info", "cpu-info", "log"):
+            assert sub in r.stdout, f"missing system {sub!r}"
+        # auth subgroups
+        r = self._run(["auth", "--help"], hass_instance)
+        for sub in ("me", "sign-path", "user"):
+            assert sub in r.stdout, f"missing auth {sub!r}"
+        # logger subgroups
+        r = self._run(["logger", "--help"], hass_instance)
+        for sub in ("info-ws", "level-get", "level-set"):
+            assert sub in r.stdout, f"missing logger {sub!r}"
+
+    def test_auth_me_live(self, hass_instance):
+        """`auth me` returns the active user's record via WS auth/current_user."""
+        r = self._run(["--json", "auth", "me"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "id" in data and "name" in data
+
+    def test_auth_sign_path_live(self, hass_instance):
+        """`auth sign-path` returns a signed URL for a /api/... path."""
+        r = self._run(["--json", "auth", "sign-path", "/api/", "--expires", "10"],
+                      hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        # HA returns either {"path": "..."} or the signed URL string.
+        assert isinstance(data, dict) and ("path" in data or "url" in data)
+
+    def test_auth_tokens_list_live(self, hass_instance):
+        """`auth tokens list` returns the refresh tokens for the active user."""
+        r = self._run(["--json", "auth", "tokens", "list"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)
+        # The token created in the test fixture must be in the list.
+        assert any("id" in t for t in data)
+
+    def test_logger_info_ws_live(self, hass_instance):
+        """`logger info-ws` returns per-component levels."""
+        r = self._run(["--json", "logger", "info-ws"], hass_instance,
+                      check=False)
+        self._skip_if_unknown_command(r, "logger/log_info")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        # Either a list of {domain, level} or a dict — accept either shape.
+        assert isinstance(data, (list, dict))
+
+    def test_system_manifest_list_live(self, hass_instance):
+        """`system manifest list` returns metadata for every loaded integration."""
+        r = self._run(["--json", "system", "manifest", "list"], hass_instance,
+                      check=False)
+        self._skip_if_unknown_command(r, "manifest/list")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        # manifest/list returns either dict-of-domain or list of manifests.
+        assert isinstance(data, (dict, list))
+
+    def test_system_log_errors_live(self, hass_instance):
+        """`system log errors` returns the WARNING+ entries HA has logged."""
+        # Inject a synthetic warning so the list is non-empty regardless of
+        # whatever else has happened during the boot.
+        self._run(["system", "log", "write", "cli-refine-v3 probe",
+                   "--level", "warning"], hass_instance)
+        r = self._run(["--json", "system", "log", "errors"], hass_instance,
+                      check=False)
+        self._skip_if_unknown_command(r, "system_log_list")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)
+
+    def test_system_analytics_get_live(self, hass_instance):
+        """`system analytics get` returns preferences + onboarded flag."""
+        r = self._run(["--json", "system", "analytics", "get"], hass_instance,
+                      check=False)
+        self._skip_if_unknown_command(r, "analytics")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, dict)
+        assert "preferences" in data or "onboarded" in data
+
+    def test_category_list_live(self, hass_instance):
+        """`category list automation` always returns a list (may be empty)."""
+        r = self._run(["--json", "category", "list", "automation"], hass_instance,
+                      check=False)
+        self._skip_if_unknown_command(r, "config/category_registry/list")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)

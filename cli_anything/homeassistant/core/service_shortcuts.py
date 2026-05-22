@@ -147,6 +147,22 @@ def alarm_arm_night(client, entity_id: str, *, code: str | None = None) -> dict:
     return client.post("services/alarm_control_panel/alarm_arm_night", payload)
 
 
+def alarm_arm_vacation(client, entity_id: str, *, code: str | None = None) -> dict:
+    """Arm alarm in vacation mode.
+
+    POST services/alarm_control_panel/alarm_arm_vacation.
+    Validates entity_id starts with "alarm_control_panel.".
+    """
+    if not entity_id.startswith("alarm_control_panel."):
+        raise ValueError(f"expected alarm_control_panel.* entity_id, got {entity_id!r}")
+
+    payload: dict = {"entity_id": entity_id}
+    if code is not None:
+        payload["code"] = code
+
+    return client.post("services/alarm_control_panel/alarm_arm_vacation", payload)
+
+
 def alarm_disarm(client, entity_id: str, *, code: str | None = None) -> dict:
     """Disarm alarm.
 

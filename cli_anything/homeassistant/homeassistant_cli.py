@@ -6,9 +6,25 @@ import json
 import shlex
 import sys
 import threading
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 
 import click
+
+
+def _resolve_version() -> str:
+    """Single source of truth: read from installed package metadata.
+
+    Falls back to "0.0.0+unknown" when running from an uninstalled checkout
+    (no `pip install -e .`) so the REPL still launches.
+    """
+    try:
+        return _pkg_version("cli-anything-homeassistant")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
+__version__ = _resolve_version()
 
 from cli_anything.homeassistant.core import auth as auth_core
 from cli_anything.homeassistant.core import automation as automation_core
@@ -55,12 +71,32 @@ from cli_anything.homeassistant.core import registry as registry_core
 from cli_anything.homeassistant.core import script as script_core
 from cli_anything.homeassistant.core import services as services_core
 from cli_anything.homeassistant.core import states as states_core
-from cli_anything.homeassistant.core import recorder as recorder_core
-from cli_anything.homeassistant.core import subentries as subentries_core
+from cli_anything.homeassistant.core import assist_satellite as assist_satellite_core
+from cli_anything.homeassistant.core import auth_tokens as auth_tokens_core
+from cli_anything.homeassistant.core import camera_ws as camera_ws_core
+from cli_anything.homeassistant.core import categories as categories_core
+from cli_anything.homeassistant.core import conversation_advanced as conversation_advanced_core
+from cli_anything.homeassistant.core import device_automation as device_automation_core
+from cli_anything.homeassistant.core import expose_entity as expose_entity_core
 from cli_anything.homeassistant.core import hacs as hacs_core
+from cli_anything.homeassistant.core import hardware_info as hardware_info_core
+from cli_anything.homeassistant.core import logger_ws as logger_ws_core
+from cli_anything.homeassistant.core import media_source as media_source_core
+from cli_anything.homeassistant.core import mobile_app as mobile_app_core
+from cli_anything.homeassistant.core import recorder as recorder_core
+from cli_anything.homeassistant.core import scenes as scenes_core
+from cli_anything.homeassistant.core import service_shortcuts as service_shortcuts_core
+from cli_anything.homeassistant.core import shopping_list as shopping_list_core
+from cli_anything.homeassistant.core import singletons as singletons_core
+from cli_anything.homeassistant.core import subentries as subentries_core
 from cli_anything.homeassistant.core import system as system_core
+from cli_anything.homeassistant.core import system_log as system_log_core
+from cli_anything.homeassistant.core import system_ops as system_ops_core
 from cli_anything.homeassistant.core import template as template_core
 from cli_anything.homeassistant.core import template_helpers as template_helpers_core
+from cli_anything.homeassistant.core import todos as todos_core
+from cli_anything.homeassistant.core import user_admin as user_admin_core
+from cli_anything.homeassistant.core import weather_advanced as weather_advanced_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
     HomeAssistantError,
@@ -202,7 +238,7 @@ def main():
 @click.pass_context
 def repl(ctx):
     """Interactive REPL."""
-    skin = ReplSkin("homeassistant", version="1.4.0")
+    skin = ReplSkin("homeassistant", version=__version__)
     skin.print_banner()
 
     url = ctx.obj["url"]
@@ -5204,6 +5240,1157 @@ def recorder_purge_entities(ctx, entity_ids, domains, entity_globs, days):
         make_client(ctx),
         entity_ids=list(entity_ids), domains=list(domains),
         entity_globs=list(entity_globs), days=days,
+    ))
+
+
+# ──────────────────────────────────────────────────────── scene
+
+@cli.group()
+def scene():
+    """Activate / create / apply scenes (scene.* entities)."""
+
+
+@scene.command("list")
+@click.pass_context
+def scene_list(ctx):
+    """List every scene.* entity registered."""
+    emit(ctx, scenes_core.list_scenes(make_client(ctx)))
+
+
+@scene.command("activate")
+@click.argument("entity_id")
+@click.option("--transition", type=float, default=None,
+              help="Fade duration in seconds")
+@click.pass_context
+def scene_activate(ctx, entity_id, transition):
+    """Activate a stored scene by entity_id."""
+    emit(ctx, scenes_core.activate(make_client(ctx), entity_id,
+                                   transition=transition))
+
+
+@scene.command("apply")
+@click.option("--entity", "entity_pairs", multiple=True, required=True,
+              help="entity_id=state or entity_id=<json-object> (repeatable)")
+@click.option("--transition", type=float, default=None,
+              help="Fade duration in seconds")
+@click.pass_context
+def scene_apply(ctx, entity_pairs, transition):
+    """Apply an ad-hoc set of states without persisting a scene.
+
+    Example:
+      scene apply --entity light.kitchen=on \\
+                  --entity 'light.lamp={"state":"on","brightness":120}'
+    """
+    entities = parse_kv_pairs(entity_pairs)
+    emit(ctx, scenes_core.apply(make_client(ctx),
+                                entities=entities,
+                                transition=transition))
+
+
+@scene.command("create")
+@click.argument("scene_id")
+@click.option("--entity", "entity_pairs", multiple=True,
+              help="Explicit entity_id=state pair (repeatable)")
+@click.option("--snapshot", "snapshot", multiple=True,
+              help="entity_id whose current state will be captured (repeatable)")
+@click.pass_context
+def scene_create(ctx, scene_id, entity_pairs, snapshot):
+    """Persist a new scene from explicit states and/or live snapshots."""
+    entities = parse_kv_pairs(entity_pairs) if entity_pairs else None
+    snap = list(snapshot) if snapshot else None
+    if not entities and not snap:
+        _abort("provide --entity and/or --snapshot")
+    emit(ctx, scenes_core.create(make_client(ctx), scene_id=scene_id,
+                                 entities=entities, snapshot_entities=snap))
+
+
+@scene.command("reload")
+@click.pass_context
+def scene_reload(ctx):
+    """Reload scenes from configuration.yaml."""
+    emit(ctx, scenes_core.reload(make_client(ctx)))
+
+
+# ──────────────────────────────────────────────────────── weather
+
+@cli.group()
+def weather():
+    """Weather entities — list, forecast, unit conversions."""
+
+
+@weather.command("list")
+@click.pass_context
+def weather_list(ctx):
+    """List weather.* entities."""
+    states = make_client(ctx).get("states")
+    rows = [s for s in (states or []) if isinstance(s, dict)
+            and (s.get("entity_id") or "").startswith("weather.")]
+    emit(ctx, rows)
+
+
+@weather.command("units")
+@click.pass_context
+def weather_units(ctx):
+    """Show convertible units per measurement type (temperature, speed, ...)."""
+    emit(ctx, weather_advanced_core.convertible_units(make_client(ctx)))
+
+
+@weather.command("forecast")
+@click.argument("entity_id")
+@click.option("--type", "forecast_type", default="daily",
+              type=click.Choice(["daily", "hourly", "twice_daily"]),
+              help="Forecast resolution (default: daily)")
+@click.pass_context
+def weather_forecast(ctx, entity_id, forecast_type):
+    """Fetch a one-shot forecast for a weather entity via the service API."""
+    emit(ctx, weather_advanced_core.get_forecasts(
+        make_client(ctx), entity_id=entity_id, forecast_type=forecast_type,
+    ))
+
+
+@weather.command("forecast-subscribe")
+@click.argument("entity_id")
+@click.option("--type", "forecast_type", default="daily",
+              type=click.Choice(["daily", "hourly", "twice_daily"]))
+@click.pass_context
+def weather_forecast_subscribe(ctx, entity_id, forecast_type):
+    """Issue a WS subscribe for forecast updates (one-shot subscribe ack)."""
+    emit(ctx, weather_advanced_core.subscribe_forecast(
+        make_client(ctx), entity_id=entity_id, forecast_type=forecast_type,
+    ))
+
+
+# ──────────────────────────────────────────────────────── shopping-list
+
+@cli.group("shopping-list")
+def shopping_list_grp():
+    """Default shopping_list integration (the built-in HA list)."""
+
+
+@shopping_list_grp.command("list")
+@click.pass_context
+def shopping_list_list(ctx):
+    """List every shopping list item (id / name / complete)."""
+    emit(ctx, shopping_list_core.list_items(make_client(ctx)))
+
+
+@shopping_list_grp.command("add")
+@click.argument("name")
+@click.pass_context
+def shopping_list_add(ctx, name):
+    """Add a new item."""
+    emit(ctx, shopping_list_core.add_item(make_client(ctx), name=name))
+
+
+@shopping_list_grp.command("update")
+@click.argument("item_id")
+@click.option("--name", default=None, help="Rename the item")
+@click.option("--complete/--incomplete", "complete", default=None,
+              help="Mark complete / incomplete")
+@click.pass_context
+def shopping_list_update(ctx, item_id, name, complete):
+    """Update an item (rename and/or set complete state)."""
+    if name is None and complete is None:
+        _abort("provide --name and/or --complete/--incomplete")
+    emit(ctx, shopping_list_core.update_item(
+        make_client(ctx), item_id=item_id, name=name, complete=complete,
+    ))
+
+
+@shopping_list_grp.command("remove")
+@click.argument("item_id")
+@click.pass_context
+def shopping_list_remove(ctx, item_id):
+    """Remove an item by id."""
+    emit(ctx, shopping_list_core.remove_item(
+        make_client(ctx), item_id=item_id,
+    ))
+
+
+@shopping_list_grp.command("clear-completed")
+@click.pass_context
+def shopping_list_clear(ctx):
+    """Remove every item with complete=True."""
+    emit(ctx, shopping_list_core.clear_completed(make_client(ctx)))
+
+
+@shopping_list_grp.command("reorder")
+@click.argument("item_ids", nargs=-1, required=True)
+@click.pass_context
+def shopping_list_reorder(ctx, item_ids):
+    """Reorder items by passing the ids in the new order."""
+    emit(ctx, shopping_list_core.reorder_items(
+        make_client(ctx), item_ids=list(item_ids),
+    ))
+
+
+# ──────────────────────────────────────────────────────── todo
+
+@cli.group()
+def todo():
+    """todo.* entities (any HA todo integration — Google Tasks, local, ...)."""
+
+
+@todo.command("list")
+@click.argument("entity_id")
+@click.pass_context
+def todo_list(ctx, entity_id):
+    """List items in a todo list."""
+    emit(ctx, todos_core.list_items(make_client(ctx), entity_id))
+
+
+@todo.command("add")
+@click.argument("entity_id")
+@click.argument("summary")
+@click.option("--due", default=None, help="ISO date or datetime")
+@click.option("--description", default=None, help="Free-text note")
+@click.pass_context
+def todo_add(ctx, entity_id, summary, due, description):
+    """Add a new todo item."""
+    emit(ctx, todos_core.add_item(make_client(ctx), entity_id,
+                                  summary=summary, due=due,
+                                  description=description))
+
+
+@todo.command("update")
+@click.argument("entity_id")
+@click.argument("item")
+@click.option("--rename", default=None, help="New summary text")
+@click.option("--status", default=None,
+              type=click.Choice(["needs_action", "completed"]))
+@click.option("--due", default=None)
+@click.option("--description", default=None)
+@click.pass_context
+def todo_update(ctx, entity_id, item, rename, status, due, description):
+    """Update a todo item (`item` may be its summary or uid)."""
+    if rename is None and status is None and due is None and description is None:
+        _abort("provide --rename / --status / --due / --description")
+    emit(ctx, todos_core.update_item(
+        make_client(ctx), entity_id,
+        item=item, rename=rename, status=status,
+        due=due, description=description,
+    ))
+
+
+@todo.command("complete")
+@click.argument("entity_id")
+@click.argument("item")
+@click.pass_context
+def todo_complete(ctx, entity_id, item):
+    """Convenience: mark an item completed."""
+    emit(ctx, todos_core.update_item(
+        make_client(ctx), entity_id, item=item, status="completed",
+    ))
+
+
+@todo.command("remove")
+@click.argument("entity_id")
+@click.argument("items", nargs=-1, required=True)
+@click.pass_context
+def todo_remove(ctx, entity_id, items):
+    """Remove one or more items by uid or summary."""
+    target: str | list[str] = items[0] if len(items) == 1 else list(items)
+    emit(ctx, todos_core.remove_item(
+        make_client(ctx), entity_id, item=target,
+    ))
+
+
+@todo.command("move")
+@click.argument("entity_id")
+@click.argument("uid")
+@click.option("--after", "previous_uid", default=None,
+              help="uid that should precede the moved item (omit = move to top)")
+@click.pass_context
+def todo_move(ctx, entity_id, uid, previous_uid):
+    """Move an item to a new position."""
+    emit(ctx, todos_core.move_item(make_client(ctx), entity_id,
+                                   uid=uid, previous_uid=previous_uid))
+
+
+@todo.command("clear-completed")
+@click.argument("entity_id")
+@click.pass_context
+def todo_clear_completed(ctx, entity_id):
+    """Remove every completed item from a todo list."""
+    emit(ctx, todos_core.remove_completed_items(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────── lock
+
+@cli.group()
+def lock():
+    """lock.* entities — lock / unlock / open (for garage-door-style locks)."""
+
+
+@lock.command("lock")
+@click.argument("entity_id")
+@click.option("--code", default=None, help="Optional unlock code")
+@click.pass_context
+def lock_lock(ctx, entity_id, code):
+    emit(ctx, service_shortcuts_core.lock_lock(
+        make_client(ctx), entity_id, code=code,
+    ))
+
+
+@lock.command("unlock")
+@click.argument("entity_id")
+@click.option("--code", default=None, help="Optional unlock code")
+@click.pass_context
+def lock_unlock(ctx, entity_id, code):
+    emit(ctx, service_shortcuts_core.lock_unlock(
+        make_client(ctx), entity_id, code=code,
+    ))
+
+
+@lock.command("open")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.pass_context
+def lock_open(ctx, entity_id, code):
+    """Open the lock (used by garage doors and a few smart locks)."""
+    emit(ctx, service_shortcuts_core.lock_open(
+        make_client(ctx), entity_id, code=code,
+    ))
+
+
+# ──────────────────────────────────────────────────────── alarm
+
+@cli.group()
+def alarm():
+    """alarm_control_panel.* entities — arm / disarm shortcuts."""
+
+
+@alarm.command("arm-away")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.pass_context
+def alarm_arm_away(ctx, entity_id, code):
+    emit(ctx, service_shortcuts_core.alarm_arm_away(
+        make_client(ctx), entity_id, code=code,
+    ))
+
+
+@alarm.command("arm-home")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.pass_context
+def alarm_arm_home(ctx, entity_id, code):
+    emit(ctx, service_shortcuts_core.alarm_arm_home(
+        make_client(ctx), entity_id, code=code,
+    ))
+
+
+@alarm.command("arm-night")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.pass_context
+def alarm_arm_night(ctx, entity_id, code):
+    emit(ctx, service_shortcuts_core.alarm_arm_night(
+        make_client(ctx), entity_id, code=code,
+    ))
+
+
+@alarm.command("arm-vacation")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.pass_context
+def alarm_arm_vacation(ctx, entity_id, code):
+    emit(ctx, service_shortcuts_core.alarm_arm_vacation(
+        make_client(ctx), entity_id, code=code,
+    ))
+
+
+@alarm.command("disarm")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.pass_context
+def alarm_disarm(ctx, entity_id, code):
+    emit(ctx, service_shortcuts_core.alarm_disarm(
+        make_client(ctx), entity_id, code=code,
+    ))
+
+
+# ──────────────────────────────────────────────────────── search
+
+@cli.command("search")
+@click.argument("item_type",
+                type=click.Choice([
+                    "automation", "config_entry", "area", "device", "entity",
+                    "floor", "group", "label", "person", "scene", "script",
+                ]))
+@click.argument("item_id")
+@click.pass_context
+def search(ctx, item_type, item_id):
+    """Find everything related to a given entity / device / area / etc.
+
+    Example:
+      search entity light.kitchen
+      search device 1a2b3c4d5e6f7g
+      search area kitchen
+    """
+    emit(ctx, singletons_core.search_related(
+        make_client(ctx), item_type=item_type, item_id=item_id,
+    ))
+
+
+# ──────────────────────────────────────────────────────── entity expose
+
+@entity.group("expose")
+def entity_expose():
+    """Manage which entities are exposed to voice assistants (Alexa / Google / cloud)."""
+
+
+@entity_expose.command("list")
+@click.option("--assistant", default=None,
+              help="Filter to one assistant (e.g. cloud.alexa, cloud.google_assistant)")
+@click.pass_context
+def entity_expose_list(ctx, assistant):
+    """List the expose flags per entity (optionally one assistant)."""
+    emit(ctx, expose_entity_core.list_exposed(
+        make_client(ctx), assistant=assistant,
+    ))
+
+
+@entity_expose.command("set")
+@click.option("--assistant", "assistants", multiple=True, required=True,
+              help="Assistant id (repeatable). e.g. cloud.alexa")
+@click.option("--entity", "entity_ids", multiple=True, required=True,
+              help="Entity id (repeatable)")
+@click.option("--expose/--hide", "should_expose", default=True,
+              help="Expose (default) or hide the entities")
+@click.pass_context
+def entity_expose_set(ctx, assistants, entity_ids, should_expose):
+    """Expose/hide one or more entities from one or more assistants."""
+    emit(ctx, expose_entity_core.expose_entity(
+        make_client(ctx),
+        assistants=list(assistants),
+        entity_ids=list(entity_ids),
+        should_expose=should_expose,
+    ))
+
+
+@entity_expose.command("new-default-get")
+@click.argument("assistant")
+@click.pass_context
+def entity_expose_new_get(ctx, assistant):
+    """Show whether new entities are auto-exposed to this assistant."""
+    emit(ctx, {
+        "assistant": assistant,
+        "expose_new": expose_entity_core.get_expose_new_entities(
+            make_client(ctx), assistant=assistant,
+        ),
+    })
+
+
+@entity_expose.command("new-default-set")
+@click.argument("assistant")
+@click.option("--expose/--no-expose", "expose_new", default=True,
+              help="Auto-expose new entities to this assistant (default: yes)")
+@click.pass_context
+def entity_expose_new_set(ctx, assistant, expose_new):
+    emit(ctx, expose_entity_core.set_expose_new_entities(
+        make_client(ctx), assistant=assistant, expose_new=expose_new,
+    ))
+
+
+# ──────────────────────────────────────────────────────── camera
+
+@cli.group()
+def camera():
+    """camera.* entities — stream URLs, capabilities, prefs, WebRTC config."""
+
+
+@camera.command("capabilities")
+@click.argument("entity_id")
+@click.pass_context
+def camera_capabilities(ctx, entity_id):
+    """Get camera capabilities (supported stream types, etc.)."""
+    emit(ctx, camera_ws_core.capabilities(make_client(ctx), entity_id=entity_id))
+
+
+@camera.command("stream")
+@click.argument("entity_id")
+@click.option("--format", "stream_format", default="hls",
+              type=click.Choice(["hls"]),
+              help="Stream container format (only 'hls' is supported by HA today)")
+@click.pass_context
+def camera_stream(ctx, entity_id, stream_format):
+    """Request an HLS stream URL for a camera entity."""
+    emit(ctx, camera_ws_core.stream(make_client(ctx),
+                                    entity_id=entity_id,
+                                    format=stream_format))
+
+
+@camera.command("prefs-get")
+@click.argument("entity_id")
+@click.pass_context
+def camera_prefs_get(ctx, entity_id):
+    """Show current stream preferences for a camera entity."""
+    emit(ctx, camera_ws_core.get_prefs(make_client(ctx), entity_id=entity_id))
+
+
+@camera.command("prefs-set")
+@click.argument("entity_id")
+@click.option("--preload-stream/--no-preload-stream", "preload_stream",
+              default=None, help="Preload the stream on frontend load")
+@click.option("--orientation", type=int, default=None,
+              help="EXIF orientation code (1-8)")
+@click.pass_context
+def camera_prefs_set(ctx, entity_id, preload_stream, orientation):
+    """Update camera stream preferences."""
+    if preload_stream is None and orientation is None:
+        _abort("provide --preload-stream/--no-preload-stream and/or --orientation")
+    emit(ctx, camera_ws_core.update_prefs(
+        make_client(ctx), entity_id=entity_id,
+        preload_stream=preload_stream, orientation=orientation,
+    ))
+
+
+@camera.command("webrtc-config")
+@click.argument("entity_id")
+@click.pass_context
+def camera_webrtc_config(ctx, entity_id):
+    """Get WebRTC client config (ICE servers, etc.) for a camera entity."""
+    emit(ctx, camera_ws_core.webrtc_get_client_config(
+        make_client(ctx), entity_id=entity_id,
+    ))
+
+
+# ──────────────────────────────────────────────────────── device-automation
+
+@cli.group("device-automation")
+def device_automation_grp():
+    """List a device's available triggers, conditions and actions.
+
+    These are the dropdown options the HA UI shows in the automation editor —
+    surfaced as JSON so agents can build automations programmatically.
+    """
+
+
+@device_automation_grp.command("triggers")
+@click.argument("device_id")
+@click.pass_context
+def device_automation_triggers(ctx, device_id):
+    """List trigger options for a device."""
+    emit(ctx, device_automation_core.list_triggers(
+        make_client(ctx), device_id=device_id,
+    ))
+
+
+@device_automation_grp.command("conditions")
+@click.argument("device_id")
+@click.pass_context
+def device_automation_conditions(ctx, device_id):
+    """List condition options for a device."""
+    emit(ctx, device_automation_core.list_conditions(
+        make_client(ctx), device_id=device_id,
+    ))
+
+
+@device_automation_grp.command("actions")
+@click.argument("device_id")
+@click.pass_context
+def device_automation_actions(ctx, device_id):
+    """List action options for a device."""
+    emit(ctx, device_automation_core.list_actions(
+        make_client(ctx), device_id=device_id,
+    ))
+
+
+@device_automation_grp.command("summary")
+@click.argument("device_id")
+@click.pass_context
+def device_automation_summary(ctx, device_id):
+    """One-shot: triggers + conditions + actions for a device."""
+    emit(ctx, device_automation_core.summarise_device(
+        make_client(ctx), device_id=device_id,
+    ))
+
+
+# ──────────────────────────────────────────────────────── assist (extensions)
+
+@assist.command("agents")
+@click.option("--country", default=None, help="ISO country code")
+@click.option("--language", default=None, help="Language tag, e.g. en, fr")
+@click.pass_context
+def assist_agents(ctx, country, language):
+    """List available conversation agents (Home Assistant + LLM plugins)."""
+    emit(ctx, conversation_advanced_core.list_agents(
+        make_client(ctx), country=country, language=language,
+    ))
+
+
+@assist.command("sentences")
+@click.argument("language")
+@click.pass_context
+def assist_sentences(ctx, language):
+    """List the built-in sentence templates the default agent matches."""
+    emit(ctx, conversation_advanced_core.list_sentences(
+        make_client(ctx), language=language,
+    ))
+
+
+@assist.command("debug")
+@click.argument("sentence")
+@click.option("--language", default="en", help="Language code (default: en)")
+@click.pass_context
+def assist_debug(ctx, sentence, language):
+    """Show how the default agent would match a sentence (intent / slots)."""
+    emit(ctx, conversation_advanced_core.debug_agent(
+        make_client(ctx), sentence=sentence, language=language,
+    ))
+
+
+@assist.command("satellites")
+@click.pass_context
+def assist_satellites(ctx):
+    """List satellite (voice puck) devices known to the assist pipeline."""
+    emit(ctx, conversation_advanced_core.list_satellite_devices(make_client(ctx)))
+
+
+@assist.command("languages")
+@click.pass_context
+def assist_languages(ctx):
+    """List which languages each pipeline component (STT/TTS/intent) supports."""
+    emit(ctx, conversation_advanced_core.list_pipeline_languages(make_client(ctx)))
+
+
+# ──────────────────────────────────────────────────────── assist-satellite
+
+@cli.group("assist-satellite")
+def assist_satellite_grp():
+    """assist_satellite.* entities — wake word config + connection test."""
+
+
+@assist_satellite_grp.command("config")
+@click.argument("entity_id")
+@click.pass_context
+def assist_satellite_config(ctx, entity_id):
+    """Show the satellite's current configuration (active wake words, etc.)."""
+    emit(ctx, assist_satellite_core.get_configuration(
+        make_client(ctx), entity_id=entity_id,
+    ))
+
+
+@assist_satellite_grp.command("wake-words-set")
+@click.argument("entity_id")
+@click.argument("wake_word_ids", nargs=-1, required=True)
+@click.pass_context
+def assist_satellite_wake_words(ctx, entity_id, wake_word_ids):
+    """Set the active wake word ids for a satellite."""
+    emit(ctx, assist_satellite_core.set_wake_words(
+        make_client(ctx), entity_id=entity_id,
+        wake_word_ids=list(wake_word_ids),
+    ))
+
+
+@assist_satellite_grp.command("test-connection")
+@click.argument("entity_id")
+@click.pass_context
+def assist_satellite_test(ctx, entity_id):
+    """Trigger a satellite connection test (round-trip a tone over the pipeline)."""
+    emit(ctx, assist_satellite_core.test_connection(
+        make_client(ctx), entity_id=entity_id,
+    ))
+
+
+# ──────────────────────────────────────────────────────── mobile-app
+
+@cli.group("mobile-app")
+def mobile_app_grp():
+    """Home Assistant Companion app integrations."""
+
+
+@mobile_app_grp.command("confirm-push")
+@click.argument("webhook_id")
+@click.argument("confirm_id")
+@click.pass_context
+def mobile_app_confirm_push(ctx, webhook_id, confirm_id):
+    """Acknowledge receipt of a push notification (delivery-receipt API)."""
+    emit(ctx, mobile_app_core.confirm_push_notification(
+        make_client(ctx), webhook_id=webhook_id, confirm_id=confirm_id,
+    ))
+
+
+# ──────────────────────────────────────────────────────── media (browse/resolve)
+
+@cli.group()
+def media():
+    """Browse and resolve HA media sources (local media, TTS cache, integrations)."""
+
+
+@media.command("browse")
+@click.option("--media-content-id", "media_content_id", default=None,
+              help="Drill into a specific media path (omit for root)")
+@click.pass_context
+def media_browse(ctx, media_content_id):
+    """Browse the media library tree (returns children of the given node)."""
+    emit(ctx, media_source_core.browse_media(
+        make_client(ctx), media_content_id=media_content_id,
+    ))
+
+
+@media.command("resolve")
+@click.argument("media_content_id")
+@click.pass_context
+def media_resolve(ctx, media_content_id):
+    """Resolve a media_content_id to a playable URL + mime type."""
+    emit(ctx, media_source_core.resolve_media(
+        make_client(ctx), media_content_id=media_content_id,
+    ))
+
+
+@media.command("remove")
+@click.argument("media_content_id")
+@click.confirmation_option(prompt="Delete this local media item?")
+@click.pass_context
+def media_remove(ctx, media_content_id):
+    """Delete a locally-stored media item (only works for media_source/local)."""
+    emit(ctx, media_source_core.local_source_remove(
+        make_client(ctx), media_content_id=media_content_id,
+    ))
+
+
+# ──────────────────────────────────────────────────────── auth extensions
+
+@auth.command("me")
+@click.pass_context
+def auth_me(ctx):
+    """Show the active user (id, name, is_admin, group_ids)."""
+    emit(ctx, auth_tokens_core.current_user(make_client(ctx)))
+
+
+@auth.command("sign-path")
+@click.argument("path")
+@click.option("--expires", type=int, default=30,
+              help="Seconds until the signed URL expires (default 30)")
+@click.pass_context
+def auth_sign_path(ctx, path, expires):
+    """Sign a /api/... path so it can be fetched without an Authorization header.
+
+    Useful for download URLs (snapshots, camera stills) that can be safely
+    passed to other tooling.
+    """
+    emit(ctx, auth_tokens_core.sign_path(
+        make_client(ctx), path=path, expires=expires,
+    ))
+
+
+@auth_tokens.command("list")
+@click.pass_context
+def auth_tokens_list(ctx):
+    """List every refresh token issued for the active user."""
+    emit(ctx, auth_tokens_core.list_refresh_tokens(make_client(ctx)))
+
+
+@auth_tokens.command("delete")
+@click.argument("refresh_token_id")
+@click.confirmation_option(prompt="Revoke this refresh token?")
+@click.pass_context
+def auth_tokens_delete(ctx, refresh_token_id):
+    """Revoke a specific refresh token by id."""
+    emit(ctx, auth_tokens_core.delete_refresh_token(
+        make_client(ctx), refresh_token_id=refresh_token_id,
+    ))
+
+
+@auth_tokens.command("delete-all")
+@click.option("--delete-current/--keep-current", "delete_current", default=False,
+              help="Also revoke the token used by this CLI (will sign you out!)")
+@click.option("--token-type", "token_type", default=None,
+              type=click.Choice(["normal", "system", "long_lived_access_token"]),
+              help="Restrict to one token kind (default: all kinds)")
+@click.confirmation_option(prompt="Revoke ALL refresh tokens?")
+@click.pass_context
+def auth_tokens_delete_all(ctx, delete_current, token_type):
+    """Revoke every refresh token (use --delete-current to log this CLI out too)."""
+    emit(ctx, auth_tokens_core.delete_all_refresh_tokens(
+        make_client(ctx),
+        delete_current_token=delete_current,
+        token_type=token_type,
+    ))
+
+
+@auth_tokens.command("set-expiry")
+@click.argument("refresh_token_id")
+@click.option("--expiry/--no-expiry", "enable_expiry", default=True,
+              help="Enable expiry (default) or disable it (long-lived)")
+@click.pass_context
+def auth_tokens_set_expiry(ctx, refresh_token_id, enable_expiry):
+    """Toggle expiry on a refresh token."""
+    emit(ctx, auth_tokens_core.set_refresh_token_expiry(
+        make_client(ctx), refresh_token_id=refresh_token_id,
+        enable_expiry=enable_expiry,
+    ))
+
+
+@auth.group("user")
+def auth_user():
+    """User admin — create / update users, manage credentials, change password."""
+
+
+@auth_user.command("create")
+@click.argument("name")
+@click.option("--group", "group_ids", multiple=True,
+              help="Group id (e.g. 'system-admin', 'system-users'). Repeatable.")
+@click.option("--local-only/--remote-allowed", "local_only", default=None,
+              help="Restrict to local-network logins")
+@click.pass_context
+def auth_user_create(ctx, name, group_ids, local_only):
+    """Create a new HA user."""
+    emit(ctx, user_admin_core.create_user(
+        make_client(ctx), name=name,
+        group_ids=list(group_ids) or None,
+        local_only=local_only,
+    ))
+
+
+@auth_user.command("update")
+@click.argument("user_id")
+@click.option("--name", default=None)
+@click.option("--group", "group_ids", multiple=True,
+              help="Replace group membership (repeatable)")
+@click.option("--local-only/--remote-allowed", "local_only", default=None)
+@click.option("--active/--inactive", "is_active", default=None)
+@click.pass_context
+def auth_user_update(ctx, user_id, name, group_ids, local_only, is_active):
+    """Update an existing user (any combination of fields)."""
+    if (name is None and not group_ids and local_only is None
+            and is_active is None):
+        _abort("provide at least one of --name/--group/--local-only/--active")
+    emit(ctx, user_admin_core.update_user(
+        make_client(ctx), user_id=user_id,
+        name=name, group_ids=list(group_ids) or None,
+        local_only=local_only, is_active=is_active,
+    ))
+
+
+@auth_user.command("credential-create")
+@click.argument("user_id")
+@click.argument("username")
+@click.option("--password", required=True, prompt=True, hide_input=True,
+              confirmation_prompt=True)
+@click.pass_context
+def auth_user_credential_create(ctx, user_id, username, password):
+    """Attach a homeassistant-provider login (username + password) to a user."""
+    emit(ctx, user_admin_core.create_credential(
+        make_client(ctx), user_id=user_id, username=username, password=password,
+    ))
+
+
+@auth_user.command("credential-delete")
+@click.argument("username")
+@click.confirmation_option(prompt="Delete this credential?")
+@click.pass_context
+def auth_user_credential_delete(ctx, username):
+    """Delete a homeassistant-provider credential by username."""
+    emit(ctx, user_admin_core.delete_credential(
+        make_client(ctx), username=username,
+    ))
+
+
+@auth_user.command("change-password")
+@click.option("--current-password", required=True, prompt=True, hide_input=True)
+@click.option("--new-password", required=True, prompt=True, hide_input=True,
+              confirmation_prompt=True)
+@click.pass_context
+def auth_user_change_password(ctx, current_password, new_password):
+    """Change the active user's password."""
+    emit(ctx, user_admin_core.change_password(
+        make_client(ctx),
+        current_password=current_password,
+        new_password=new_password,
+    ))
+
+
+# ──────────────────────────────────────────────────────── category
+
+@cli.group()
+def category():
+    """Category registry — cross-cutting tags scoped to a collection.
+
+    Categories are like labels but scoped (per automation / script / todo / ...).
+    Most useful for grouping automations by purpose ("alerts", "lighting", ...).
+    """
+
+
+@category.command("list")
+@click.argument("scope")
+@click.pass_context
+def category_list(ctx, scope):
+    """List categories in a scope (e.g. 'automation', 'script', 'todo')."""
+    emit(ctx, categories_core.list_categories(make_client(ctx), scope=scope))
+
+
+@category.command("create")
+@click.argument("scope")
+@click.argument("name")
+@click.option("--icon", default=None, help="e.g. mdi:tag")
+@click.pass_context
+def category_create(ctx, scope, name, icon):
+    """Create a new category in a scope."""
+    emit(ctx, categories_core.create_category(
+        make_client(ctx), scope=scope, name=name, icon=icon,
+    ))
+
+
+@category.command("update")
+@click.argument("scope")
+@click.argument("category_id")
+@click.option("--name", default=None)
+@click.option("--icon", default=None)
+@click.pass_context
+def category_update(ctx, scope, category_id, name, icon):
+    """Rename or re-icon an existing category."""
+    if name is None and icon is None:
+        _abort("provide --name and/or --icon")
+    emit(ctx, categories_core.update_category(
+        make_client(ctx), scope=scope, category_id=category_id,
+        name=name, icon=icon,
+    ))
+
+
+@category.command("delete")
+@click.argument("scope")
+@click.argument("category_id")
+@click.confirmation_option(prompt="Delete this category?")
+@click.pass_context
+def category_delete(ctx, scope, category_id):
+    emit(ctx, categories_core.delete_category(
+        make_client(ctx), scope=scope, category_id=category_id,
+    ))
+
+
+@category.command("by-name")
+@click.argument("scope")
+@click.pass_context
+def category_by_name(ctx, scope):
+    """Return a {name → record} mapping for the scope (handy for lookups)."""
+    emit(ctx, categories_core.categories_by_name(make_client(ctx), scope=scope))
+
+
+# ──────────────────────────────────────────────────────── logger (WS variants)
+
+@logger.command("info-ws")
+@click.pass_context
+def logger_info_ws(ctx):
+    """Show the WS-side per-component log levels (raw integer levels).
+
+    Distinct from `logger default/set` which use the REST/service path.
+    """
+    emit(ctx, logger_ws_core.log_info(make_client(ctx)))
+
+
+@logger.command("level-get")
+@click.option("--integration", default=None,
+              help="Integration domain (mutually exclusive with --namespace)")
+@click.option("--namespace", default=None,
+              help="Python module namespace (mutually exclusive with --integration)")
+@click.pass_context
+def logger_level_get(ctx, integration, namespace):
+    """Get the active log level for an integration or module namespace."""
+    if not integration and not namespace:
+        _abort("provide --integration or --namespace")
+    emit(ctx, logger_ws_core.log_level(
+        make_client(ctx), integration=integration, namespace=namespace,
+    ))
+
+
+@logger.command("level-set")
+@click.argument("integration")
+@click.argument("level",
+                type=click.Choice(["debug", "info", "warning", "error",
+                                   "critical", "fatal", "notset"],
+                                  case_sensitive=False))
+@click.option("--persistence", default="none",
+              type=click.Choice(["none", "once", "always"]),
+              help="Whether the change survives a restart")
+@click.pass_context
+def logger_level_set(ctx, integration, level, persistence):
+    """Set an integration's log level via WS (with optional persistence)."""
+    emit(ctx, logger_ws_core.integration_log_level(
+        make_client(ctx), integration=integration, level=level.lower(),
+        persistence=persistence,
+    ))
+
+
+# ──────────────────────────────────────────────────────── system extensions
+
+@system.group("manifest")
+def system_manifest():
+    """Integration manifests (the metadata files HA uses to load integrations)."""
+
+
+@system_manifest.command("list")
+@click.pass_context
+def system_manifest_list(ctx):
+    """List manifests for every loaded integration."""
+    emit(ctx, system_ops_core.list_manifests(make_client(ctx)))
+
+
+@system_manifest.command("get")
+@click.argument("integration")
+@click.pass_context
+def system_manifest_get(ctx, integration):
+    """Show the manifest for one integration (version, requirements, …)."""
+    emit(ctx, system_ops_core.get_manifest(
+        make_client(ctx), integration=integration,
+    ))
+
+
+@system.group("analytics")
+def system_analytics():
+    """HA telemetry/analytics — opt-in tracking preferences."""
+
+
+@system_analytics.command("get")
+@click.pass_context
+def system_analytics_get(ctx):
+    """Show current analytics preferences and onboarded status."""
+    emit(ctx, system_ops_core.get_analytics(make_client(ctx)))
+
+
+@system_analytics.command("set")
+@click.argument("preferences_json")
+@click.pass_context
+def system_analytics_set(ctx, preferences_json):
+    """Update analytics preferences from a JSON object (see HA docs for keys)."""
+    try:
+        prefs = json.loads(preferences_json)
+    except json.JSONDecodeError as exc:
+        _abort(f"preferences must be valid JSON: {exc}")
+    emit(ctx, system_ops_core.set_analytics_preferences(
+        make_client(ctx), preferences=prefs,
+    ))
+
+
+@system.group("app-credentials")
+def system_app_credentials():
+    """OAuth application credentials (Google Calendar, Spotify, …)."""
+
+
+@system_app_credentials.command("config")
+@click.pass_context
+def system_app_credentials_config(ctx):
+    """List integration domains that support OAuth application credentials."""
+    emit(ctx, system_ops_core.application_credentials_config(make_client(ctx)))
+
+
+@system_app_credentials.command("entry")
+@click.argument("config_entry_id")
+@click.pass_context
+def system_app_credentials_entry(ctx, config_entry_id):
+    """Show the OAuth credentials wired to a specific config entry."""
+    emit(ctx, system_ops_core.application_credentials_config_entry(
+        make_client(ctx), config_entry_id=config_entry_id,
+    ))
+
+
+@system.group("issue")
+def system_issue():
+    """The Repairs issue feed (per-issue data + ignore toggle)."""
+
+
+@system_issue.command("get-data")
+@click.argument("domain")
+@click.argument("issue_id")
+@click.pass_context
+def system_issue_get_data(ctx, domain, issue_id):
+    """Fetch the structured issue_data for a Repairs issue."""
+    emit(ctx, system_ops_core.get_issue_data(
+        make_client(ctx), domain=domain, issue_id=issue_id,
+    ))
+
+
+@system_issue.command("ignore")
+@click.argument("domain")
+@click.argument("issue_id")
+@click.option("--unignore", "ignore_flag", flag_value=False, default=True,
+              help="Un-ignore the issue (default action is to ignore)")
+@click.pass_context
+def system_issue_ignore(ctx, domain, issue_id, ignore_flag):
+    emit(ctx, system_ops_core.ignore_issue(
+        make_client(ctx), domain=domain, issue_id=issue_id,
+        ignore=ignore_flag,
+    ))
+
+
+@system.command("usb-scan")
+@click.pass_context
+def system_usb_scan(ctx):
+    """Trigger a USB hardware rescan (picks up newly-plugged dongles)."""
+    emit(ctx, singletons_core.usb_scan(make_client(ctx)))
+
+
+@system.command("zha-permit-join")
+@click.option("--duration", type=int, default=60,
+              help="Permit window in seconds (1-254, default 60)")
+@click.option("--ieee", default=None,
+              help="Restrict permit to a specific device IEEE address")
+@click.pass_context
+def system_zha_permit_join(ctx, duration, ieee):
+    """Open the ZHA Zigbee network for new device joins."""
+    emit(ctx, singletons_core.zha_devices_permit(
+        make_client(ctx), duration=duration, ieee=ieee,
+    ))
+
+
+@system.command("hardware-info")
+@click.pass_context
+def system_hardware_info(ctx):
+    """Show hardware info (model, hostname, OS) via the hardware integration."""
+    emit(ctx, hardware_info_core.info(make_client(ctx)))
+
+
+@system.command("board-info")
+@click.pass_context
+def system_board_info(ctx):
+    """Show known board info entries."""
+    emit(ctx, hardware_info_core.board_info(make_client(ctx)))
+
+
+@system.command("cpu-info")
+@click.pass_context
+def system_cpu_info(ctx):
+    """Show CPU info reported by HA's hardware integration."""
+    emit(ctx, hardware_info_core.cpu_info(make_client(ctx)))
+
+
+@system.group("log")
+def system_log_grp():
+    """system_log.* — runtime error log management (WS-backed)."""
+
+
+@system_log_grp.command("errors")
+@click.pass_context
+def system_log_errors(ctx):
+    """List the structured errors HA has logged at WARNING+ level."""
+    emit(ctx, system_log_core.list_errors(make_client(ctx)))
+
+
+@system_log_grp.command("clear")
+@click.confirmation_option(prompt="Clear the system error log?")
+@click.pass_context
+def system_log_clear(ctx):
+    """Wipe HA's runtime error log."""
+    emit(ctx, system_log_core.clear(make_client(ctx)))
+
+
+@system_log_grp.command("write")
+@click.argument("message")
+@click.option("--level", default="error",
+              type=click.Choice(["debug", "info", "warning", "error",
+                                 "critical"], case_sensitive=False))
+@click.option("--logger-name", default=None,
+              help="Synthetic logger name (defaults to homeassistant.components)")
+@click.pass_context
+def system_log_write(ctx, message, level, logger_name):
+    """Inject a synthetic log entry (useful for testing log-driven automations)."""
+    emit(ctx, system_log_core.write(
+        make_client(ctx),
+        message=message,
+        level=level.lower(),
+        logger=logger_name,
     ))
 
 

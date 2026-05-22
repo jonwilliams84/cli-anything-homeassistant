@@ -112,12 +112,28 @@ stderr and return a non-zero exit code.
 | `template`   | Render Jinja2 templates (`render`)                                  |
 | `area`       | Area registry (WS) (`list`)                                         |
 | `device`     | Device registry (WS) (`list`)                                       |
-| `entity`     | Entity registry (WS) (`list`)                                       |
+| `entity`     | Entity registry (WS) (`list` + `expose` subgroup)                   |
 | `automation` | Automations (`list`/`trigger`/`toggle`/`reload`)                    |
 | `script`     | Scripts (`list`/`run`)                                              |
 | `domain`     | Helpers per domain (`list`/`turn-on`/`turn-off`/`toggle`)           |
 | `history`    | Historical state changes                                            |
 | `logbook`    | Logbook entries                                                     |
+| `scene`      | `list`/`activate`/`apply`/`create`/`reload` for `scene.*` entities  |
+| `weather`    | `list`/`units`/`forecast`/`forecast-subscribe` for `weather.*`      |
+| `shopping-list` | Default HA shopping list CRUD (WS-backed)                        |
+| `todo`       | `todo.*` lists — CRUD + move + complete shortcut                    |
+| `lock`       | `lock.*` shortcuts (`lock`/`unlock`/`open`)                         |
+| `alarm`      | `alarm_control_panel.*` arm/disarm shortcuts                        |
+| `search`     | `search/related` — find entities/devices/areas tied to an item      |
+| `camera`     | `camera.*` — capabilities / stream URL / prefs / WebRTC config      |
+| `device-automation` | List a device's available triggers/conditions/actions        |
+| `assist-satellite` | `assist_satellite.*` — wake-word config + test-connection     |
+| `mobile-app` | Companion app push delivery receipts                                |
+| `media`      | `media_source` browse / resolve / remove                            |
+| `category`   | Category registry CRUD (scope-bound tags for automations/scripts/…) |
+| `auth` (extensions) | `me`, `sign-path`, refresh token CRUD, full user admin       |
+| `logger` (extensions) | WS-side per-component log levels (`info-ws`/`level-get`/`level-set`) |
+| `system` (extensions) | manifest / analytics / app-credentials / issue / usb-scan / zha-permit-join / hardware-info / log |
 
 ### State Model
 
@@ -151,6 +167,28 @@ is fetched on demand. This means:
 | List what's loaded                    | `system components`                                              |
 | Inspect device/area/entity registry   | `area list` / `device list` / `entity list`                      |
 | See recent logbook                    | `logbook --hours 1`                                              |
+| Activate a scene                      | `scene activate scene.movie_night --transition 2`                |
+| Snapshot the current state into a scene | `scene create movie_now --snapshot light.kitchen --snapshot light.island` |
+| Get the upcoming forecast             | `weather forecast weather.home --type daily`                     |
+| Add a household shopping item         | `shopping-list add "Sourdough"`                                  |
+| Mark a Google Tasks item done         | `todo complete todo.errands "Pick up dry cleaning"`              |
+| Lock the front door                   | `lock lock lock.front_door --code 1234`                          |
+| Arm the alarm                         | `alarm arm-vacation alarm_control_panel.home`                    |
+| Find everything tied to a light       | `search entity light.kitchen --json`                             |
+| Hide an entity from Alexa             | `entity expose set --assistant cloud.alexa --entity light.bedroom --hide` |
+| Grab an HLS URL for a camera          | `camera stream camera.front_door --json`                         |
+| What triggers/conditions/actions does a device expose? | `device-automation summary <device_id> --json` |
+| How would Assist parse a sentence?    | `assist debug "turn off the lights"`                             |
+| Switch a satellite's wake word        | `assist-satellite wake-words-set assist_satellite.kitchen okay_nabu` |
+| Browse the media library              | `media browse --json`                                            |
+| Who am I right now                    | `auth me --json`                                                 |
+| Audit & revoke refresh tokens         | `auth tokens list --json` / `auth tokens delete <id> --yes`      |
+| Sign a one-shot URL for download      | `auth sign-path /api/camera_proxy/camera.front --expires 300`    |
+| Crank an integration to DEBUG live    | `logger level-set mqtt debug --persistence once`                 |
+| Pull integration manifests / analytics | `system manifest list --json` / `system analytics get --json`   |
+| Ignore a repairs issue                | `system issue ignore homeassistant <issue_id>`                   |
+| Rescan USB / open Zigbee join         | `system usb-scan` / `system zha-permit-join --duration 120`      |
+| Tag automations by purpose            | `category create automation Alerts --icon mdi:alert`             |
 
 ## Testing
 

@@ -266,6 +266,8 @@ def hass_instance() -> Iterator[dict]:
         "logbook:\n"
         "history:\n"
         "persistent_notification:\n"
+        "conversation:\n"
+        "media_source:\n"
         "automation: !include automations.yaml\n"
         "script: !include scripts.yaml\n"
         f"http:\n  server_port: {port}\n  server_host: 127.0.0.1\n"
