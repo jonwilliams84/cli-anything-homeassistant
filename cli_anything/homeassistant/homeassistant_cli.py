@@ -86,6 +86,7 @@ from cli_anything.homeassistant.core import mobile_app as mobile_app_core
 from cli_anything.homeassistant.core import recorder as recorder_core
 from cli_anything.homeassistant.core import scenes as scenes_core
 from cli_anything.homeassistant.core import service_shortcuts as service_shortcuts_core
+from cli_anything.homeassistant.core import entity_control as entity_control_core
 from cli_anything.homeassistant.core import shopping_list as shopping_list_core
 from cli_anything.homeassistant.core import singletons as singletons_core
 from cli_anything.homeassistant.core import subentries as subentries_core
@@ -6391,6 +6392,1079 @@ def system_log_write(ctx, message, level, logger_name):
         message=message,
         level=level.lower(),
         logger=logger_name,
+    ))
+
+
+# ──────────────────────────────────────────────────────── light
+
+@cli.group()
+def light():
+    """light.* entities — brightness, color, kelvin, effect shortcuts."""
+
+
+@light.command("on")
+@click.argument("entity_id")
+@click.option("--brightness", type=int, default=None, help="0..255")
+@click.option("--brightness-pct", "brightness_pct", type=float, default=None,
+              help="0..100")
+@click.option("--kelvin", type=int, default=None)
+@click.option("--color-temp-kelvin", "color_temp_kelvin", type=int,
+              default=None)
+@click.option("--rgb", "rgb_color", default=None,
+              help="Comma-separated r,g,b (e.g. 255,128,0)")
+@click.option("--rgbw", "rgbw_color", default=None,
+              help="Comma-separated r,g,b,w")
+@click.option("--rgbww", "rgbww_color", default=None,
+              help="Comma-separated r,g,b,cw,ww")
+@click.option("--xy", "xy_color", default=None,
+              help="Comma-separated x,y")
+@click.option("--hs", "hs_color", default=None,
+              help="Comma-separated hue,saturation")
+@click.option("--color-name", "color_name", default=None)
+@click.option("--effect", default=None)
+@click.option("--flash", default=None,
+              type=click.Choice(["short", "long"], case_sensitive=False))
+@click.option("--transition", type=float, default=None)
+@click.option("--profile", default=None)
+@click.option("--white", type=int, default=None,
+              help="White-channel value 0..255")
+@click.pass_context
+def light_on(ctx, entity_id, brightness, brightness_pct, kelvin,
+             color_temp_kelvin, rgb_color, rgbw_color, rgbww_color,
+             xy_color, hs_color, color_name, effect, flash,
+             transition, profile, white):
+    """Turn a light on (with optional brightness/color/kelvin/effect)."""
+    def _parse_list(raw, cast):
+        if raw is None:
+            return None
+        return [cast(p.strip()) for p in raw.split(",")]
+
+    emit(ctx, entity_control_core.light_turn_on(
+        make_client(ctx), entity_id,
+        brightness=brightness,
+        brightness_pct=brightness_pct,
+        kelvin=kelvin,
+        color_temp_kelvin=color_temp_kelvin,
+        rgb_color=_parse_list(rgb_color, int),
+        rgbw_color=_parse_list(rgbw_color, int),
+        rgbww_color=_parse_list(rgbww_color, int),
+        xy_color=_parse_list(xy_color, float),
+        hs_color=_parse_list(hs_color, float),
+        color_name=color_name,
+        effect=effect,
+        flash=flash.lower() if flash else None,
+        transition=transition,
+        profile=profile,
+        white=white,
+    ))
+
+
+@light.command("off")
+@click.argument("entity_id")
+@click.option("--transition", type=float, default=None)
+@click.option("--flash", default=None,
+              type=click.Choice(["short", "long"], case_sensitive=False))
+@click.pass_context
+def light_off(ctx, entity_id, transition, flash):
+    """Turn a light off."""
+    emit(ctx, entity_control_core.light_turn_off(
+        make_client(ctx), entity_id,
+        transition=transition,
+        flash=flash.lower() if flash else None,
+    ))
+
+
+@light.command("toggle")
+@click.argument("entity_id")
+@click.option("--brightness", type=int, default=None)
+@click.option("--brightness-pct", "brightness_pct", type=float, default=None)
+@click.option("--kelvin", type=int, default=None)
+@click.option("--rgb", "rgb_color", default=None)
+@click.option("--transition", type=float, default=None)
+@click.pass_context
+def light_toggle_cmd(ctx, entity_id, brightness, brightness_pct, kelvin,
+                     rgb_color, transition):
+    """Toggle a light."""
+    rgb_parsed = ([int(p.strip()) for p in rgb_color.split(",")]
+                  if rgb_color else None)
+    emit(ctx, entity_control_core.light_toggle(
+        make_client(ctx), entity_id,
+        brightness=brightness,
+        brightness_pct=brightness_pct,
+        kelvin=kelvin,
+        rgb_color=rgb_parsed,
+        transition=transition,
+    ))
+
+
+# ──────────────────────────────────────────────────────── media-player
+
+@cli.group("media-player")
+def media_player_grp():
+    """media_player.* entities — playback, volume, source, play-media."""
+
+
+@media_player_grp.command("play")
+@click.argument("entity_id")
+@click.pass_context
+def mp_play(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_play(make_client(ctx), entity_id))
+
+
+@media_player_grp.command("pause")
+@click.argument("entity_id")
+@click.pass_context
+def mp_pause(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_pause(make_client(ctx), entity_id))
+
+
+@media_player_grp.command("stop")
+@click.argument("entity_id")
+@click.pass_context
+def mp_stop(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_stop(make_client(ctx), entity_id))
+
+
+@media_player_grp.command("play-pause")
+@click.argument("entity_id")
+@click.pass_context
+def mp_play_pause(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_play_pause(make_client(ctx),
+                                                          entity_id))
+
+
+@media_player_grp.command("next")
+@click.argument("entity_id")
+@click.pass_context
+def mp_next(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_next(make_client(ctx), entity_id))
+
+
+@media_player_grp.command("previous")
+@click.argument("entity_id")
+@click.pass_context
+def mp_previous(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_previous(make_client(ctx),
+                                                        entity_id))
+
+
+@media_player_grp.command("volume-set")
+@click.argument("entity_id")
+@click.argument("volume", type=float)
+@click.pass_context
+def mp_volume_set(ctx, entity_id, volume):
+    """Set absolute volume (0.0..1.0)."""
+    emit(ctx, entity_control_core.media_player_volume_set(
+        make_client(ctx), entity_id, volume=volume,
+    ))
+
+
+@media_player_grp.command("volume-up")
+@click.argument("entity_id")
+@click.pass_context
+def mp_volume_up(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_volume_up(make_client(ctx),
+                                                         entity_id))
+
+
+@media_player_grp.command("volume-down")
+@click.argument("entity_id")
+@click.pass_context
+def mp_volume_down(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_volume_down(make_client(ctx),
+                                                           entity_id))
+
+
+@media_player_grp.command("mute")
+@click.argument("entity_id")
+@click.option("--off", "off", is_flag=True, default=False,
+              help="Unmute (default action: mute)")
+@click.pass_context
+def mp_mute(ctx, entity_id, off):
+    emit(ctx, entity_control_core.media_player_mute(
+        make_client(ctx), entity_id, mute=not off,
+    ))
+
+
+@media_player_grp.command("select-source")
+@click.argument("entity_id")
+@click.argument("source")
+@click.pass_context
+def mp_select_source(ctx, entity_id, source):
+    emit(ctx, entity_control_core.media_player_select_source(
+        make_client(ctx), entity_id, source=source,
+    ))
+
+
+@media_player_grp.command("select-sound-mode")
+@click.argument("entity_id")
+@click.argument("sound_mode")
+@click.pass_context
+def mp_select_sound_mode(ctx, entity_id, sound_mode):
+    emit(ctx, entity_control_core.media_player_select_sound_mode(
+        make_client(ctx), entity_id, sound_mode=sound_mode,
+    ))
+
+
+@media_player_grp.command("play-media")
+@click.argument("entity_id")
+@click.argument("media_content_id")
+@click.argument("media_content_type")
+@click.option("--enqueue", default=None,
+              help="play|add|next|replace, or true/false")
+@click.option("--announce/--no-announce", default=None,
+              help="Use the announce surface where supported")
+@click.option("--extra", default=None, help="JSON-encoded extra payload")
+@click.pass_context
+def mp_play_media(ctx, entity_id, media_content_id, media_content_type,
+                  enqueue, announce, extra):
+    parsed_extra = json.loads(extra) if extra else None
+    emit(ctx, entity_control_core.media_player_play_media(
+        make_client(ctx), entity_id,
+        media_content_id=media_content_id,
+        media_content_type=media_content_type,
+        enqueue=enqueue,
+        announce=announce,
+        extra=parsed_extra,
+    ))
+
+
+@media_player_grp.command("shuffle")
+@click.argument("entity_id")
+@click.option("--off", "off", is_flag=True, default=False,
+              help="Turn shuffle off (default: on)")
+@click.pass_context
+def mp_shuffle(ctx, entity_id, off):
+    emit(ctx, entity_control_core.media_player_shuffle(
+        make_client(ctx), entity_id, shuffle=not off,
+    ))
+
+
+@media_player_grp.command("repeat")
+@click.argument("entity_id")
+@click.argument("mode", type=click.Choice(["off", "all", "one"],
+                                          case_sensitive=False))
+@click.pass_context
+def mp_repeat(ctx, entity_id, mode):
+    emit(ctx, entity_control_core.media_player_repeat(
+        make_client(ctx), entity_id, repeat=mode.lower(),
+    ))
+
+
+@media_player_grp.command("clear-playlist")
+@click.argument("entity_id")
+@click.pass_context
+def mp_clear_playlist(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_clear_playlist(
+        make_client(ctx), entity_id,
+    ))
+
+
+@media_player_grp.command("turn-on")
+@click.argument("entity_id")
+@click.pass_context
+def mp_turn_on(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_turn_on(make_client(ctx),
+                                                       entity_id))
+
+
+@media_player_grp.command("turn-off")
+@click.argument("entity_id")
+@click.pass_context
+def mp_turn_off(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_turn_off(make_client(ctx),
+                                                        entity_id))
+
+
+@media_player_grp.command("join")
+@click.argument("entity_id")
+@click.option("--member", "members", multiple=True, required=True,
+              help="Group member entity_id (repeatable)")
+@click.pass_context
+def mp_join(ctx, entity_id, members):
+    emit(ctx, entity_control_core.media_player_join(
+        make_client(ctx), entity_id, group_members=list(members),
+    ))
+
+
+@media_player_grp.command("unjoin")
+@click.argument("entity_id")
+@click.pass_context
+def mp_unjoin(ctx, entity_id):
+    emit(ctx, entity_control_core.media_player_unjoin(make_client(ctx),
+                                                      entity_id))
+
+
+# ──────────────────────────────────────────────────────── climate
+
+@cli.group()
+def climate():
+    """climate.* entities — temperature, hvac mode, fan/preset/swing mode."""
+
+
+@climate.command("set-temperature")
+@click.argument("entity_id")
+@click.option("--temperature", "-t", type=float, default=None)
+@click.option("--high", "target_temp_high", type=float, default=None)
+@click.option("--low", "target_temp_low", type=float, default=None)
+@click.option("--hvac-mode", "hvac_mode", default=None,
+              help="Optional hvac_mode to set atomically")
+@click.pass_context
+def climate_set_temp(ctx, entity_id, temperature, target_temp_high,
+                     target_temp_low, hvac_mode):
+    emit(ctx, entity_control_core.climate_set_temperature(
+        make_client(ctx), entity_id,
+        temperature=temperature,
+        target_temp_high=target_temp_high,
+        target_temp_low=target_temp_low,
+        hvac_mode=hvac_mode,
+    ))
+
+
+@climate.command("set-hvac-mode")
+@click.argument("entity_id")
+@click.argument("hvac_mode")
+@click.pass_context
+def climate_set_hvac(ctx, entity_id, hvac_mode):
+    """Common modes: off, auto, heat, cool, heat_cool, dry, fan_only."""
+    emit(ctx, entity_control_core.climate_set_hvac_mode(
+        make_client(ctx), entity_id, hvac_mode=hvac_mode,
+    ))
+
+
+@climate.command("set-fan-mode")
+@click.argument("entity_id")
+@click.argument("fan_mode")
+@click.pass_context
+def climate_set_fan(ctx, entity_id, fan_mode):
+    emit(ctx, entity_control_core.climate_set_fan_mode(
+        make_client(ctx), entity_id, fan_mode=fan_mode,
+    ))
+
+
+@climate.command("set-preset")
+@click.argument("entity_id")
+@click.argument("preset_mode")
+@click.pass_context
+def climate_set_preset(ctx, entity_id, preset_mode):
+    emit(ctx, entity_control_core.climate_set_preset_mode(
+        make_client(ctx), entity_id, preset_mode=preset_mode,
+    ))
+
+
+@climate.command("set-humidity")
+@click.argument("entity_id")
+@click.argument("humidity", type=int)
+@click.pass_context
+def climate_set_hum(ctx, entity_id, humidity):
+    emit(ctx, entity_control_core.climate_set_humidity(
+        make_client(ctx), entity_id, humidity=humidity,
+    ))
+
+
+@climate.command("set-swing")
+@click.argument("entity_id")
+@click.argument("swing_mode")
+@click.pass_context
+def climate_set_swing(ctx, entity_id, swing_mode):
+    emit(ctx, entity_control_core.climate_set_swing_mode(
+        make_client(ctx), entity_id, swing_mode=swing_mode,
+    ))
+
+
+@climate.command("turn-on")
+@click.argument("entity_id")
+@click.pass_context
+def climate_on(ctx, entity_id):
+    emit(ctx, entity_control_core.climate_turn_on(make_client(ctx), entity_id))
+
+
+@climate.command("turn-off")
+@click.argument("entity_id")
+@click.pass_context
+def climate_off(ctx, entity_id):
+    emit(ctx, entity_control_core.climate_turn_off(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────── cover
+
+@cli.group()
+def cover():
+    """cover.* entities — open / close / stop / set-position / set-tilt."""
+
+
+@cover.command("open")
+@click.argument("entity_id")
+@click.pass_context
+def cover_open_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.cover_open(make_client(ctx), entity_id))
+
+
+@cover.command("close")
+@click.argument("entity_id")
+@click.pass_context
+def cover_close_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.cover_close(make_client(ctx), entity_id))
+
+
+@cover.command("stop")
+@click.argument("entity_id")
+@click.pass_context
+def cover_stop_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.cover_stop(make_client(ctx), entity_id))
+
+
+@cover.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def cover_toggle_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.cover_toggle(make_client(ctx), entity_id))
+
+
+@cover.command("set-position")
+@click.argument("entity_id")
+@click.argument("position", type=int)
+@click.pass_context
+def cover_set_pos(ctx, entity_id, position):
+    """Position 0 (closed) .. 100 (open)."""
+    emit(ctx, entity_control_core.cover_set_position(
+        make_client(ctx), entity_id, position=position,
+    ))
+
+
+@cover.command("set-tilt")
+@click.argument("entity_id")
+@click.argument("tilt_position", type=int)
+@click.pass_context
+def cover_set_tilt_cmd(ctx, entity_id, tilt_position):
+    emit(ctx, entity_control_core.cover_set_tilt(
+        make_client(ctx), entity_id, tilt_position=tilt_position,
+    ))
+
+
+@cover.command("open-tilt")
+@click.argument("entity_id")
+@click.pass_context
+def cover_open_tilt_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.cover_open_tilt(make_client(ctx), entity_id))
+
+
+@cover.command("close-tilt")
+@click.argument("entity_id")
+@click.pass_context
+def cover_close_tilt_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.cover_close_tilt(make_client(ctx), entity_id))
+
+
+@cover.command("stop-tilt")
+@click.argument("entity_id")
+@click.pass_context
+def cover_stop_tilt_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.cover_stop_tilt(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────── fan
+
+@cli.group()
+def fan():
+    """fan.* entities — percentage / preset / direction / oscillate."""
+
+
+@fan.command("turn-on")
+@click.argument("entity_id")
+@click.option("--percentage", type=int, default=None)
+@click.option("--preset", "preset_mode", default=None)
+@click.pass_context
+def fan_on_cmd(ctx, entity_id, percentage, preset_mode):
+    emit(ctx, entity_control_core.fan_turn_on(
+        make_client(ctx), entity_id,
+        percentage=percentage,
+        preset_mode=preset_mode,
+    ))
+
+
+@fan.command("turn-off")
+@click.argument("entity_id")
+@click.pass_context
+def fan_off_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.fan_turn_off(make_client(ctx), entity_id))
+
+
+@fan.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def fan_toggle_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.fan_toggle(make_client(ctx), entity_id))
+
+
+@fan.command("set-percentage")
+@click.argument("entity_id")
+@click.argument("percentage", type=int)
+@click.pass_context
+def fan_set_pct(ctx, entity_id, percentage):
+    emit(ctx, entity_control_core.fan_set_percentage(
+        make_client(ctx), entity_id, percentage=percentage,
+    ))
+
+
+@fan.command("set-preset")
+@click.argument("entity_id")
+@click.argument("preset_mode")
+@click.pass_context
+def fan_set_preset_cmd(ctx, entity_id, preset_mode):
+    emit(ctx, entity_control_core.fan_set_preset(
+        make_client(ctx), entity_id, preset_mode=preset_mode,
+    ))
+
+
+@fan.command("set-direction")
+@click.argument("entity_id")
+@click.argument("direction",
+                type=click.Choice(["forward", "reverse"], case_sensitive=False))
+@click.pass_context
+def fan_set_dir(ctx, entity_id, direction):
+    emit(ctx, entity_control_core.fan_set_direction(
+        make_client(ctx), entity_id, direction=direction.lower(),
+    ))
+
+
+@fan.command("oscillate")
+@click.argument("entity_id")
+@click.option("--off", "off", is_flag=True, default=False,
+              help="Stop oscillation (default: start)")
+@click.pass_context
+def fan_osc(ctx, entity_id, off):
+    emit(ctx, entity_control_core.fan_oscillate(
+        make_client(ctx), entity_id, oscillating=not off,
+    ))
+
+
+@fan.command("increase")
+@click.argument("entity_id")
+@click.option("--step", "percentage_step", type=int, default=None)
+@click.pass_context
+def fan_inc(ctx, entity_id, percentage_step):
+    emit(ctx, entity_control_core.fan_increase(
+        make_client(ctx), entity_id, percentage_step=percentage_step,
+    ))
+
+
+@fan.command("decrease")
+@click.argument("entity_id")
+@click.option("--step", "percentage_step", type=int, default=None)
+@click.pass_context
+def fan_dec(ctx, entity_id, percentage_step):
+    emit(ctx, entity_control_core.fan_decrease(
+        make_client(ctx), entity_id, percentage_step=percentage_step,
+    ))
+
+
+# ──────────────────────────────────────────────────────── vacuum
+
+@cli.group()
+def vacuum():
+    """vacuum.* entities — start / dock / locate / clean_spot / fan_speed."""
+
+
+@vacuum.command("start")
+@click.argument("entity_id")
+@click.pass_context
+def vacuum_start_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.vacuum_start(make_client(ctx), entity_id))
+
+
+@vacuum.command("stop")
+@click.argument("entity_id")
+@click.pass_context
+def vacuum_stop_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.vacuum_stop(make_client(ctx), entity_id))
+
+
+@vacuum.command("pause")
+@click.argument("entity_id")
+@click.pass_context
+def vacuum_pause_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.vacuum_pause(make_client(ctx), entity_id))
+
+
+@vacuum.command("return-to-base")
+@click.argument("entity_id")
+@click.pass_context
+def vacuum_return_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.vacuum_return_to_base(make_client(ctx),
+                                                       entity_id))
+
+
+@vacuum.command("locate")
+@click.argument("entity_id")
+@click.pass_context
+def vacuum_locate_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.vacuum_locate(make_client(ctx), entity_id))
+
+
+@vacuum.command("clean-spot")
+@click.argument("entity_id")
+@click.pass_context
+def vacuum_clean_spot_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.vacuum_clean_spot(make_client(ctx),
+                                                    entity_id))
+
+
+@vacuum.command("set-fan-speed")
+@click.argument("entity_id")
+@click.argument("fan_speed")
+@click.pass_context
+def vacuum_fan_speed_cmd(ctx, entity_id, fan_speed):
+    emit(ctx, entity_control_core.vacuum_set_fan_speed(
+        make_client(ctx), entity_id, fan_speed=fan_speed,
+    ))
+
+
+@vacuum.command("send-command")
+@click.argument("entity_id")
+@click.argument("command")
+@click.option("--params", default=None,
+              help="JSON-encoded params payload")
+@click.pass_context
+def vacuum_send_cmd(ctx, entity_id, command, params):
+    parsed = json.loads(params) if params else None
+    emit(ctx, entity_control_core.vacuum_send_command(
+        make_client(ctx), entity_id, command=command, params=parsed,
+    ))
+
+
+# ──────────────────────────────────────────────────────── humidifier
+
+@cli.group()
+def humidifier():
+    """humidifier.* entities — on/off, set humidity / mode."""
+
+
+@humidifier.command("turn-on")
+@click.argument("entity_id")
+@click.pass_context
+def humidifier_on(ctx, entity_id):
+    emit(ctx, entity_control_core.humidifier_turn_on(make_client(ctx),
+                                                     entity_id))
+
+
+@humidifier.command("turn-off")
+@click.argument("entity_id")
+@click.pass_context
+def humidifier_off(ctx, entity_id):
+    emit(ctx, entity_control_core.humidifier_turn_off(make_client(ctx),
+                                                      entity_id))
+
+
+@humidifier.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def humidifier_toggle_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.humidifier_toggle(make_client(ctx),
+                                                    entity_id))
+
+
+@humidifier.command("set-humidity")
+@click.argument("entity_id")
+@click.argument("humidity", type=int)
+@click.pass_context
+def humidifier_set_hum(ctx, entity_id, humidity):
+    emit(ctx, entity_control_core.humidifier_set_humidity(
+        make_client(ctx), entity_id, humidity=humidity,
+    ))
+
+
+@humidifier.command("set-mode")
+@click.argument("entity_id")
+@click.argument("mode")
+@click.pass_context
+def humidifier_set_mode_cmd(ctx, entity_id, mode):
+    emit(ctx, entity_control_core.humidifier_set_mode(
+        make_client(ctx), entity_id, mode=mode,
+    ))
+
+
+# ──────────────────────────────────────────────────────── water-heater
+
+@cli.group("water-heater")
+def water_heater_grp():
+    """water_heater.* entities — on/off, set temperature / op mode / away."""
+
+
+@water_heater_grp.command("turn-on")
+@click.argument("entity_id")
+@click.pass_context
+def wh_on(ctx, entity_id):
+    emit(ctx, entity_control_core.water_heater_turn_on(make_client(ctx),
+                                                       entity_id))
+
+
+@water_heater_grp.command("turn-off")
+@click.argument("entity_id")
+@click.pass_context
+def wh_off(ctx, entity_id):
+    emit(ctx, entity_control_core.water_heater_turn_off(make_client(ctx),
+                                                        entity_id))
+
+
+@water_heater_grp.command("set-temperature")
+@click.argument("entity_id")
+@click.argument("temperature", type=float)
+@click.pass_context
+def wh_set_temp(ctx, entity_id, temperature):
+    emit(ctx, entity_control_core.water_heater_set_temperature(
+        make_client(ctx), entity_id, temperature=temperature,
+    ))
+
+
+@water_heater_grp.command("set-operation-mode")
+@click.argument("entity_id")
+@click.argument("operation_mode")
+@click.pass_context
+def wh_set_op_mode(ctx, entity_id, operation_mode):
+    emit(ctx, entity_control_core.water_heater_set_operation_mode(
+        make_client(ctx), entity_id, operation_mode=operation_mode,
+    ))
+
+
+@water_heater_grp.command("set-away-mode")
+@click.argument("entity_id")
+@click.option("--off", "off", is_flag=True, default=False,
+              help="Turn away mode off (default: on)")
+@click.pass_context
+def wh_set_away(ctx, entity_id, off):
+    emit(ctx, entity_control_core.water_heater_set_away_mode(
+        make_client(ctx), entity_id, away_mode=not off,
+    ))
+
+
+# ──────────────────────────────────────────────────────── valve
+
+@cli.group()
+def valve():
+    """valve.* entities — open / close / stop / set-position / toggle."""
+
+
+@valve.command("open")
+@click.argument("entity_id")
+@click.pass_context
+def valve_open_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.valve_open(make_client(ctx), entity_id))
+
+
+@valve.command("close")
+@click.argument("entity_id")
+@click.pass_context
+def valve_close_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.valve_close(make_client(ctx), entity_id))
+
+
+@valve.command("stop")
+@click.argument("entity_id")
+@click.pass_context
+def valve_stop_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.valve_stop(make_client(ctx), entity_id))
+
+
+@valve.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def valve_toggle_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.valve_toggle(make_client(ctx), entity_id))
+
+
+@valve.command("set-position")
+@click.argument("entity_id")
+@click.argument("position", type=int)
+@click.pass_context
+def valve_set_pos(ctx, entity_id, position):
+    emit(ctx, entity_control_core.valve_set_position(
+        make_client(ctx), entity_id, position=position,
+    ))
+
+
+# ──────────────────────────────────────────────────────── lawn-mower
+
+@cli.group("lawn-mower")
+def lawn_mower_grp():
+    """lawn_mower.* entities — start-mowing / pause / dock."""
+
+
+@lawn_mower_grp.command("start")
+@click.argument("entity_id")
+@click.pass_context
+def lm_start(ctx, entity_id):
+    emit(ctx, entity_control_core.lawn_mower_start(make_client(ctx), entity_id))
+
+
+@lawn_mower_grp.command("pause")
+@click.argument("entity_id")
+@click.pass_context
+def lm_pause(ctx, entity_id):
+    emit(ctx, entity_control_core.lawn_mower_pause(make_client(ctx), entity_id))
+
+
+@lawn_mower_grp.command("dock")
+@click.argument("entity_id")
+@click.pass_context
+def lm_dock(ctx, entity_id):
+    emit(ctx, entity_control_core.lawn_mower_dock(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────── siren
+
+@cli.group()
+def siren():
+    """siren.* entities — on (duration/tone/volume) / off / toggle."""
+
+
+@siren.command("on")
+@click.argument("entity_id")
+@click.option("--duration", type=int, default=None, help="Seconds")
+@click.option("--tone", default=None)
+@click.option("--volume", "volume_level", type=float, default=None,
+              help="0.0..1.0")
+@click.pass_context
+def siren_on_cmd(ctx, entity_id, duration, tone, volume_level):
+    emit(ctx, entity_control_core.siren_turn_on(
+        make_client(ctx), entity_id,
+        duration=duration, tone=tone, volume_level=volume_level,
+    ))
+
+
+@siren.command("off")
+@click.argument("entity_id")
+@click.pass_context
+def siren_off_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.siren_turn_off(make_client(ctx), entity_id))
+
+
+@siren.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def siren_toggle_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.siren_toggle(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────── remote
+
+@cli.group()
+def remote():
+    """remote.* entities — send / learn / delete IR-style commands."""
+
+
+@remote.command("turn-on")
+@click.argument("entity_id")
+@click.option("--activity", default=None,
+              help="Harmony-style activity to switch to")
+@click.pass_context
+def remote_on(ctx, entity_id, activity):
+    emit(ctx, entity_control_core.remote_turn_on(
+        make_client(ctx), entity_id, activity=activity,
+    ))
+
+
+@remote.command("turn-off")
+@click.argument("entity_id")
+@click.pass_context
+def remote_off(ctx, entity_id):
+    emit(ctx, entity_control_core.remote_turn_off(make_client(ctx), entity_id))
+
+
+@remote.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def remote_toggle_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.remote_toggle(make_client(ctx), entity_id))
+
+
+@remote.command("send-command")
+@click.argument("entity_id")
+@click.option("--command", "-c", "commands", multiple=True, required=True,
+              help="Command name (repeatable; sends as a list)")
+@click.option("--device", default=None)
+@click.option("--num-repeats", "num_repeats", type=int, default=None)
+@click.option("--delay-secs", "delay_secs", type=float, default=None)
+@click.option("--hold-secs", "hold_secs", type=float, default=None)
+@click.pass_context
+def remote_send_cmd(ctx, entity_id, commands, device, num_repeats,
+                    delay_secs, hold_secs):
+    cmd: str | list[str] = list(commands) if len(commands) > 1 else commands[0]
+    emit(ctx, entity_control_core.remote_send_command(
+        make_client(ctx), entity_id,
+        command=cmd, device=device,
+        num_repeats=num_repeats, delay_secs=delay_secs,
+        hold_secs=hold_secs,
+    ))
+
+
+@remote.command("learn-command")
+@click.argument("entity_id")
+@click.option("--command", "-c", "commands", multiple=True,
+              help="Command name (repeatable; learns as a list)")
+@click.option("--device", default=None)
+@click.option("--command-type", "command_type", default=None,
+              help="ir|rf|... (backend-specific)")
+@click.option("--alternative/--no-alternative", default=None)
+@click.option("--timeout", type=float, default=None)
+@click.pass_context
+def remote_learn_cmd(ctx, entity_id, commands, device, command_type,
+                     alternative, timeout):
+    cmd: str | list[str] | None = None
+    if commands:
+        cmd = list(commands) if len(commands) > 1 else commands[0]
+    emit(ctx, entity_control_core.remote_learn_command(
+        make_client(ctx), entity_id,
+        command=cmd, device=device, command_type=command_type,
+        alternative=alternative, timeout=timeout,
+    ))
+
+
+@remote.command("delete-command")
+@click.argument("entity_id")
+@click.option("--command", "-c", "commands", multiple=True, required=True,
+              help="Command name (repeatable; deletes as a list)")
+@click.option("--device", default=None)
+@click.pass_context
+def remote_delete_cmd(ctx, entity_id, commands, device):
+    cmd: str | list[str] = list(commands) if len(commands) > 1 else commands[0]
+    emit(ctx, entity_control_core.remote_delete_command(
+        make_client(ctx), entity_id, command=cmd, device=device,
+    ))
+
+
+# ──────────────────────────────────────────────────────── number
+
+@cli.group()
+def number():
+    """number.* entities — set numeric value."""
+
+
+@number.command("set")
+@click.argument("entity_id")
+@click.argument("value", type=float)
+@click.pass_context
+def number_set(ctx, entity_id, value):
+    emit(ctx, entity_control_core.number_set_value(
+        make_client(ctx), entity_id, value=value,
+    ))
+
+
+# ──────────────────────────────────────────────────────── select
+
+@cli.group()
+def select():
+    """select.* entities — pick an option / next / previous / first / last."""
+
+
+@select.command("set")
+@click.argument("entity_id")
+@click.argument("option")
+@click.pass_context
+def select_set(ctx, entity_id, option):
+    """Alias for select_option."""
+    emit(ctx, entity_control_core.select_select_option(
+        make_client(ctx), entity_id, option=option,
+    ))
+
+
+@select.command("next")
+@click.argument("entity_id")
+@click.option("--cycle/--no-cycle", default=None)
+@click.pass_context
+def select_next_cmd(ctx, entity_id, cycle):
+    emit(ctx, entity_control_core.select_next(
+        make_client(ctx), entity_id, cycle=cycle,
+    ))
+
+
+@select.command("previous")
+@click.argument("entity_id")
+@click.option("--cycle/--no-cycle", default=None)
+@click.pass_context
+def select_prev_cmd(ctx, entity_id, cycle):
+    emit(ctx, entity_control_core.select_previous(
+        make_client(ctx), entity_id, cycle=cycle,
+    ))
+
+
+@select.command("first")
+@click.argument("entity_id")
+@click.pass_context
+def select_first_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.select_first(make_client(ctx), entity_id))
+
+
+@select.command("last")
+@click.argument("entity_id")
+@click.pass_context
+def select_last_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.select_last(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────── button
+
+@cli.group()
+def button():
+    """button.* entities — press."""
+
+
+@button.command("press")
+@click.argument("entity_id")
+@click.pass_context
+def button_press_cmd(ctx, entity_id):
+    emit(ctx, entity_control_core.button_press(make_client(ctx), entity_id))
+
+
+# ──────────────────────────────────────────────────────── text
+
+@cli.group()
+def text():
+    """text.* entities — set value."""
+
+
+@text.command("set")
+@click.argument("entity_id")
+@click.argument("value")
+@click.pass_context
+def text_set(ctx, entity_id, value):
+    emit(ctx, entity_control_core.text_set_value(
+        make_client(ctx), entity_id, value=value,
+    ))
+
+
+# ──────────────────────────────────────────────────────── notify
+
+@cli.group()
+def notify():
+    """notify.* services — send a notification with title/data/target."""
+
+
+@notify.command("send")
+@click.argument("message")
+@click.option("--title", default=None)
+@click.option("--service", default="notify",
+              help="Which notify.<service> to call (default: notify)")
+@click.option("--target", "targets", multiple=True,
+              help="Target id (repeatable)")
+@click.option("--data", default=None, help="JSON-encoded data payload")
+@click.pass_context
+def notify_send_cmd(ctx, message, title, service, targets, data):
+    target: str | list[str] | None
+    if not targets:
+        target = None
+    elif len(targets) == 1:
+        target = targets[0]
+    else:
+        target = list(targets)
+    parsed_data = json.loads(data) if data else None
+    emit(ctx, entity_control_core.notify_send(
+        make_client(ctx),
+        message=message,
+        title=title,
+        target=target,
+        data=parsed_data,
+        service=service,
     ))
 
 

@@ -134,6 +134,23 @@ stderr and return a non-zero exit code.
 | `auth` (extensions) | `me`, `sign-path`, refresh token CRUD, full user admin       |
 | `logger` (extensions) | WS-side per-component log levels (`info-ws`/`level-get`/`level-set`) |
 | `system` (extensions) | manifest / analytics / app-credentials / issue / usb-scan / zha-permit-join / hardware-info / log |
+| `light`        | `light.*` ergonomic shortcuts (brightness/kelvin/rgb/effect/transition) |
+| `media-player` | `media_player.*` playback + volume + source + play-media + group join/unjoin |
+| `climate`      | `climate.*` set-temperature / set-hvac-mode / set-fan-mode / set-preset / set-humidity / set-swing / on / off |
+| `cover`        | `cover.*` open/close/stop/toggle + set-position + tilt ops |
+| `fan`          | `fan.*` percentage/preset/direction/oscillate + increase/decrease |
+| `vacuum`       | `vacuum.*` start/stop/pause/return-to-base/locate/clean-spot/set-fan-speed/send-command |
+| `humidifier`   | `humidifier.*` on/off/toggle + set-humidity/set-mode |
+| `water-heater` | `water_heater.*` on/off + set-temperature/operation-mode/away-mode |
+| `valve`        | `valve.*` open/close/stop/toggle + set-position |
+| `lawn-mower`   | `lawn_mower.*` start/pause/dock |
+| `siren`        | `siren.*` on (duration/tone/volume) / off / toggle |
+| `remote`       | `remote.*` turn-on (activity) + send-command / learn-command / delete-command |
+| `number`       | `number.* set` |
+| `select`       | `select.* set` / next / previous / first / last |
+| `button`       | `button.* press` |
+| `text`         | `text.* set` |
+| `notify`       | `notify.<service> send` with `--title` / `--target` / `--data` / `--service` |
 
 ### State Model
 
@@ -158,7 +175,13 @@ is fetched on demand. This means:
 
 | GUI action                            | CLI invocation                                                   |
 |---------------------------------------|------------------------------------------------------------------|
-| Toggle a light in the dashboard       | `service call light.toggle --target entity_id=light.kitchen`     |
+| Toggle a light in the dashboard       | `service call light.toggle --target entity_id=light.kitchen` (or `light toggle light.kitchen`) |
+| Set a light to warm dim               | `light on light.kitchen --brightness 80 --kelvin 2700`           |
+| Set living-room thermostat            | `climate set-temperature climate.living -t 21.5`                 |
+| Cast a track to Sonos                 | `media-player play-media media_player.sonos spotify:track:xyz music` |
+| Drop a blind to 30 %                  | `cover set-position cover.kitchen_blind 30`                      |
+| Pick a washing program                | `select set select.washer_program quick_30`                      |
+| Fire a one-off notification           | `notify send "Garage left open" --service mobile_app_jon`        |
 | Read a sensor value                   | `state get sensor.outdoor_temperature`                           |
 | Trigger an automation manually        | `automation trigger automation.morning_routine`                  |
 | Run a script                          | `script run script.bedtime`                                      |

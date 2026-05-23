@@ -514,3 +514,52 @@ New tests in:
   `test_system_analytics_get_live`, `test_category_list_live`. Each `WS`-
   backed one skips cleanly via `_skip_if_unknown_command` on older HA builds.
 
+
+## Refine pass v4 — entity-control shortcuts
+
+Added ergonomic per-domain shortcut groups so agents don't have to hand-craft
+`service call <domain> <svc> -d '<json>'` for everyday entity control. Each
+group is a thin wrapper over `services/<domain>/<service>` with typed Click
+options and prefix-validated entity_ids.
+
+### New CLI groups wired
+
+| Group          | Backing module        | Subcommands |
+|----------------|-----------------------|-------------|
+| `light`        | `core/entity_control.py` | `on`, `off`, `toggle` |
+| `media-player` | `core/entity_control.py` | `play`, `pause`, `stop`, `play-pause`, `next`, `previous`, `volume-set`, `volume-up`, `volume-down`, `mute`, `select-source`, `select-sound-mode`, `play-media`, `shuffle`, `repeat`, `clear-playlist`, `turn-on`, `turn-off`, `join`, `unjoin` |
+| `climate`      | `core/entity_control.py` | `set-temperature`, `set-hvac-mode`, `set-fan-mode`, `set-preset`, `set-humidity`, `set-swing`, `turn-on`, `turn-off` |
+| `cover`        | `core/entity_control.py` | `open`, `close`, `stop`, `toggle`, `set-position`, `set-tilt`, `open-tilt`, `close-tilt`, `stop-tilt` |
+| `fan`          | `core/entity_control.py` | `turn-on`, `turn-off`, `toggle`, `set-percentage`, `set-preset`, `set-direction`, `oscillate`, `increase`, `decrease` |
+| `vacuum`       | `core/entity_control.py` | `start`, `stop`, `pause`, `return-to-base`, `locate`, `clean-spot`, `set-fan-speed`, `send-command` |
+| `humidifier`   | `core/entity_control.py` | `turn-on`, `turn-off`, `toggle`, `set-humidity`, `set-mode` |
+| `water-heater` | `core/entity_control.py` | `turn-on`, `turn-off`, `set-temperature`, `set-operation-mode`, `set-away-mode` |
+| `valve`        | `core/entity_control.py` | `open`, `close`, `stop`, `toggle`, `set-position` |
+| `lawn-mower`   | `core/entity_control.py` | `start`, `pause`, `dock` |
+| `siren`        | `core/entity_control.py` | `on`, `off`, `toggle` |
+| `remote`       | `core/entity_control.py` | `turn-on`, `turn-off`, `toggle`, `send-command`, `learn-command`, `delete-command` |
+| `number`       | `core/entity_control.py` | `set` |
+| `select`       | `core/entity_control.py` | `set`, `next`, `previous`, `first`, `last` |
+| `button`       | `core/entity_control.py` | `press` |
+| `text`         | `core/entity_control.py` | `set` |
+| `notify`       | `core/entity_control.py` | `send` |
+
+### Test results — refine pass v4
+
+```
+$ python3 -m pytest tests/ -q --ignore=tests/test_full_e2e.py
+1755 passed in 1.53s
+```
+
+- **Before pass v4:** 1,583 unit tests.
+- **After pass v4:** 1,755 unit tests (+172).
+- **Regressions:** 0.
+
+New tests in:
+
+- `tests/test_entity_control.py` — 120 unit tests against the `entity_control`
+  core module. Each function is exercised for happy path, prefix validation,
+  drop-None semantics, and range/value validation where applicable.
+- `tests/test_cli_entity_control_wiring.py` — 52 Click-runner wiring tests
+  covering every new subcommand against the recorded `service_calls` log of
+  the shared `FakeClient`.

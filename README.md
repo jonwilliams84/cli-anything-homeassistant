@@ -78,6 +78,20 @@ overrides also work: `CLI_HA_URL`, `CLI_HA_TOKEN`, etc.
 | `assist-satellite` | `assist_satellite.*` — current config, set wake words, test connection |
 | `mobile-app` | Companion app push delivery receipts |
 | `media` | media_source browse / resolve to URL / local file remove |
+| `light` | `light.*` — `on` (brightness/kelvin/rgb/effect/transition) / `off` / `toggle` |
+| `media-player` | `media_player.*` — play/pause/stop/next/prev, volume/mute, source, play-media, shuffle, repeat, join/unjoin |
+| `climate` | `climate.*` — set-temperature, set-hvac-mode, set-fan-mode, set-preset, set-humidity, set-swing |
+| `cover` | `cover.*` — open/close/stop/toggle, set-position, set-tilt + tilt open/close/stop |
+| `fan` | `fan.*` — turn-on (percentage/preset), set-percentage, set-preset, set-direction, oscillate, increase/decrease |
+| `vacuum` | `vacuum.*` — start/stop/pause, return-to-base, locate, clean-spot, set-fan-speed, send-command |
+| `humidifier` | `humidifier.*` — on/off/toggle, set-humidity, set-mode |
+| `water-heater` | `water_heater.*` — on/off, set-temperature, set-operation-mode, set-away-mode |
+| `valve` | `valve.*` — open/close/stop/toggle, set-position |
+| `lawn-mower` | `lawn_mower.*` — start, pause, dock |
+| `siren` | `siren.*` — on (duration/tone/volume), off, toggle |
+| `remote` | `remote.*` — turn-on (activity), send-command, learn-command, delete-command |
+| `number` / `select` / `button` / `text` | One-shot input setters: `number set`, `select set`/`next`/`previous`, `button press`, `text set` |
+| `notify` | `notify.<service>` send with title/target/data |
 
 ## Quick examples
 
@@ -106,6 +120,16 @@ cli-anything-homeassistant entity-references sensor.old_name
 cli-anything-homeassistant lovelace view get jon-mobile scratch -o view.json
 # edit view.json...
 cli-anything-homeassistant lovelace view set jon-mobile scratch view.json
+
+# Entity-control shortcuts (typed args beat raw `service call`)
+cli-anything-homeassistant light on light.kitchen --brightness 200 --kelvin 2700
+cli-anything-homeassistant climate set-temperature climate.living -t 21.5 --hvac-mode heat
+cli-anything-homeassistant media-player play-media media_player.sonos \
+  spotify:track:xyz music --enqueue add
+cli-anything-homeassistant cover set-position cover.blinds 50
+cli-anything-homeassistant select set select.washer_program quick_30
+cli-anything-homeassistant notify send "Door left open" \
+  --service mobile_app_jon --title "Heads up"
 ```
 
 ## Agent / `--json` mode
