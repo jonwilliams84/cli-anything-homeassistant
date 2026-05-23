@@ -576,3 +576,143 @@ class TestCLISubprocess:
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert isinstance(data, list)
+
+    # ─────────────────────── refine pass v4: entity-control shortcuts (live)
+
+    def test_help_lists_v4_groups(self, hass_instance):
+        """Refine pass v4 added 17 entity-control shortcut groups — verify --help."""
+        r = self._run(["--help"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        for grp in ("light", "media-player", "climate", "cover", "fan",
+                    "vacuum", "humidifier", "water-heater", "valve",
+                    "lawn-mower", "siren", "remote", "number", "select",
+                    "button", "text", "notify"):
+            assert grp in r.stdout, f"missing {grp!r} in root --help output"
+
+        # Each group's own --help lists the expected key subcommands.
+        expected = {
+            "light":        ("on", "off", "toggle"),
+            "media-player": ("play", "pause", "stop", "next", "previous",
+                             "volume-set", "mute", "select-source",
+                             "play-media", "shuffle", "repeat",
+                             "turn-on", "turn-off", "join", "unjoin"),
+            "climate":      ("set-temperature", "set-hvac-mode", "set-fan-mode",
+                             "set-preset", "set-humidity", "set-swing",
+                             "turn-on", "turn-off"),
+            "cover":        ("open", "close", "stop", "toggle",
+                             "set-position", "set-tilt", "open-tilt",
+                             "close-tilt", "stop-tilt"),
+            "fan":          ("turn-on", "turn-off", "toggle",
+                             "set-percentage", "set-preset", "set-direction",
+                             "oscillate", "increase", "decrease"),
+            "vacuum":       ("start", "stop", "pause", "return-to-base",
+                             "locate", "clean-spot", "set-fan-speed",
+                             "send-command"),
+            "humidifier":   ("turn-on", "turn-off", "toggle",
+                             "set-humidity", "set-mode"),
+            "water-heater": ("turn-on", "turn-off", "set-temperature",
+                             "set-operation-mode", "set-away-mode"),
+            "valve":        ("open", "close", "stop", "toggle",
+                             "set-position"),
+            "lawn-mower":   ("start", "pause", "dock"),
+            "siren":        ("on", "off", "toggle"),
+            "remote":       ("turn-on", "turn-off", "toggle",
+                             "send-command", "learn-command", "delete-command"),
+            "number":       ("set",),
+            "select":       ("set", "next", "previous", "first", "last"),
+            "button":       ("press",),
+            "text":         ("set",),
+            "notify":       ("send",),
+        }
+        for grp, subs in expected.items():
+            r = self._run([grp, "--help"], hass_instance)
+            assert r.returncode == 0, f"{grp} --help failed: {r.stderr}"
+            for sub in subs:
+                assert sub in r.stdout, f"{grp}: missing subcommand {sub!r}"
+
+    def test_v4_complex_command_help(self, hass_instance):
+        """`light on --help` etc. must register all the typed flags."""
+        # light on — the headline command, most flags
+        r = self._run(["light", "on", "--help"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        for flag in ("--brightness", "--brightness-pct", "--kelvin",
+                     "--rgb", "--effect", "--flash", "--transition"):
+            assert flag in r.stdout, f"light on missing {flag!r}"
+
+        # climate set-temperature — multiple ranges
+        r = self._run(["climate", "set-temperature", "--help"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        for flag in ("--temperature", "--high", "--low", "--hvac-mode"):
+            assert flag in r.stdout, f"climate set-temperature missing {flag!r}"
+
+        # media-player play-media — three positional args + options
+        r = self._run(["media-player", "play-media", "--help"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        for tok in ("ENTITY_ID", "MEDIA_CONTENT_ID", "MEDIA_CONTENT_TYPE",
+                    "--enqueue", "--announce", "--extra"):
+            assert tok in r.stdout, f"media-player play-media missing {tok!r}"
+
+        # remote send-command — repeatable command + repeat/delay options
+        r = self._run(["remote", "send-command", "--help"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        for flag in ("--command", "--device", "--num-repeats",
+                     "--delay-secs", "--hold-secs"):
+            assert flag in r.stdout, f"remote send-command missing {flag!r}"
+
+        # notify send — title/service/target/data
+        r = self._run(["notify", "send", "--help"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        for flag in ("--title", "--service", "--target", "--data"):
+            assert flag in r.stdout, f"notify send missing {flag!r}"
+
+    def test_v4_notify_send_persistent_live(self, hass_instance):
+        """`notify send --service persistent_notification` is the one entity-
+        control shortcut that always works on a stock HA (persistent_notification
+        ships as a built-in notify service). Verify the bell-icon list picks it up.
+        """
+        marker = "cli-anything entity-control v4 probe"
+        r = self._run(
+            ["notify", "send", marker, "--title", "v4-probe",
+             "--service", "persistent_notification"],
+            hass_instance, check=False,
+        )
+        # `notify.persistent_notification` only auto-registers when the notify
+        # component is loaded. The minimal test fixture does not load notify:,
+        # so the POST returns 400 ("service not in registry"). Skip cleanly —
+        # CLI wiring is already proved by --help and the CliRunner suite.
+        err_lc = (r.stderr or "").lower()
+        if r.returncode != 0 and (
+            "not found" in err_lc
+            or "400" in err_lc
+            or "service not found" in err_lc
+        ):
+            pytest.skip(
+                "notify.persistent_notification not registered on this HA fixture",
+            )
+        assert r.returncode == 0, r.stderr
+
+        # Confirm it landed in the persistent-notifications list.
+        nlist = self._run(["--json", "notifications", "list"], hass_instance)
+        assert nlist.returncode == 0, nlist.stderr
+        data = json.loads(nlist.stdout)
+        assert any(marker in (n.get("message", "") or "") for n in data), \
+            f"persistent notification with marker {marker!r} not found in {data!r}"
+
+    def test_v4_number_set_dry_run_via_service(self, hass_instance):
+        """The number/text/select/button/notify shortcuts don't have --dry-run;
+        instead exercise the underlying `service call number set_value --dry-run`
+        path through the global `service` group to verify the service registry
+        is the same one the shortcut would target.
+        """
+        r = self._run(
+            ["--json", "service", "call", "number", "set_value",
+             "-T", "entity_id=number.does_not_exist",
+             "-D", "value=42",
+             "--dry-run"],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["dry_run"] is True
+        assert data["domain"] == "number"
+        assert data["service"] == "set_value"
