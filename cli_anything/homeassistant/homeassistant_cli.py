@@ -89,6 +89,7 @@ from cli_anything.homeassistant.core import service_shortcuts as service_shortcu
 from cli_anything.homeassistant.core import entity_control as entity_control_core
 from cli_anything.homeassistant.core import powercalc as powercalc_core
 from cli_anything.homeassistant.core import powercalc_calibration as powercalc_calibration_core
+from cli_anything.homeassistant.core import powercalc_regression as powercalc_regression_core
 from cli_anything.homeassistant.core import shopping_list as shopping_list_core
 from cli_anything.homeassistant.core import singletons as singletons_core
 from cli_anything.homeassistant.core import subentries as subentries_core
@@ -7999,6 +8000,62 @@ def powercalc_auto_calibrate(ctx, smart_meter, hours, pre_window_seconds,
     emit(ctx, powercalc_calibration_core.auto_calibrate(
         make_client(ctx), **kw,
     ))
+
+
+# ──────────────────────────────────────────────────────── powercalc regress (Tier 2)
+
+@powercalc.command("regress")
+@click.option("--smart-meter", "smart_meter", default=None,
+              help="Smart-meter sensor (default: sensor.smart_meter_electricity_power)")
+@click.option("--hours", type=float, default=24 * 7,
+              help="History window (default 168h = 7 days)")
+@click.option("--interval", "interval_seconds", type=float, default=60,
+              help="Grid spacing in seconds (default 60s = 1 min)")
+@click.option("--title-contains", "title_contains", default=None,
+              help="Only fit entries whose title contains this substring")
+@click.option("--min-on", "min_on_fraction", type=float, default=0.005,
+              help="Drop devices on for less than this fraction of samples (default 0.5%)")
+@click.option("--min-off", "min_off_fraction", type=float, default=0.005,
+              help="Drop devices on for MORE than 1-this fraction (no variance)")
+@click.option("--apply", "apply_", is_flag=True, default=False,
+              help="Write each fitted coefficient into the matching entry's "
+                   "fixed power. Dry-run by default.")
+@click.pass_context
+def powercalc_regress(ctx, smart_meter, hours, interval_seconds,
+                       title_contains, min_on_fraction, min_off_fraction,
+                       apply_):
+    """TIER-2 ML: fit a linear regression of the smart-meter signal
+    against the binary on/off state of every tracked device
+    simultaneously.
+
+    Each device's regression coefficient is its expected smart-meter
+    delta when on, holding every other tracked device fixed — what
+    powercalc's fixed_power should be set to. Output also reports
+    R² (model quality) and per-coefficient 95 % confidence interval.
+
+    Catches two cases that the median-of-transitions auto-calibrate
+    misses: devices that always switch in concert with another device,
+    and devices with no clean OFF→ON transitions (e.g. cycling fridges).
+
+    Default dry-run. Example:
+
+      # Inspect what 7 days of data would suggest:
+      powercalc regress --hours 168 --json | jq '.candidates'
+
+      # Apply only to entries whose title contains "Lamp":
+      powercalc regress --title-contains Lamp --apply
+    """
+    kw = {
+        "hours": hours,
+        "interval_seconds": interval_seconds,
+        "title_contains": title_contains,
+        "min_on_fraction": min_on_fraction,
+        "min_off_fraction": min_off_fraction,
+        "apply_": apply_,
+    }
+    if smart_meter:
+        kw["smart_meter"] = smart_meter
+    emit(ctx, powercalc_regression_core.regress(make_client(ctx), **kw))
 
 
 if __name__ == "__main__":

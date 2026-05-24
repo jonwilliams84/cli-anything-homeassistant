@@ -5,7 +5,7 @@ with open("cli_anything/homeassistant/README.md") as f:
 
 setup(
     name="cli-anything-homeassistant",
-    version="1.37.0",
+    version="1.38.0",
     description="CLI harness for Home Assistant — control your smart home from the command line",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -15,6 +15,10 @@ setup(
         "prompt-toolkit>=3.0.0",
         "requests>=2.28.0",
         "websocket-client>=1.5.0",
+        # `powercalc regress` (v1.38+) fits a linear regression of the
+        # smart-meter against per-device on/off state. numpy is the only
+        # ML-adjacent dep; no scipy/sklearn needed.
+        "numpy>=1.24",
     ],
     entry_points={
         "console_scripts": [

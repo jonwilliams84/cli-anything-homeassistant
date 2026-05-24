@@ -160,6 +160,7 @@ stderr and return a non-zero exit code.
 | `powercalc calibrate` | Active single-shot for fixed-power devices: baseline → service-on → load → delta, optional `--apply` |
 | `powercalc calibrate-template` | Active multi-step for variable devices: walks states, builds piecewise `power_template` |
 | `powercalc auto-calibrate` | Passive median-of-transitions from recorder history — fits fixed-power models from real data with no switch-flipping |
+| `powercalc regress` | Tier-2 ML: linear regression of smart-meter vs per-device on/off state. Recovers per-device load even when transitions are noisy / absent. Reports R² + per-coef 95% CI. numpy-only |
 
 ### State Model
 

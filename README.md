@@ -163,6 +163,12 @@ cli-anything-homeassistant powercalc calibrate-template <entry_id> \
     --source fan.x --attribute percentage \
     --service-set fan.set_percentage --state-arg percentage \
     --service-off fan.turn_off --states 0,25,50,75,100 --apply           # active variable-power
+
+# Tier 2 (v1.38+): linear regression of smart-meter vs per-device on/off
+# state — recovers per-device average load even for devices with no clean
+# OFF→ON transitions. numpy-only; needs ~7 days of history.
+cli-anything-homeassistant --json powercalc regress --hours 168                # dry-run
+cli-anything-homeassistant powercalc regress --title-contains Lamp --apply     # commit
 ```
 
 ## Agent / `--json` mode

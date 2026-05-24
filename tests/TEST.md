@@ -700,3 +700,67 @@ top 5 groups by contribution:
 The Outside group's 40 % share confirms the EV-charger fix from the
 prior session is now the dominant contribution. Coverage is 71 % over
 this window (was 20 % before the fix).
+
+## Refine pass v7 — Tier-2 regression calibration (v1.38.0)
+
+Where v1.37.0's `auto-calibrate` does median-of-clean-transitions, this
+pass fits a linear regression of the smart-meter signal against the
+binary on/off state of every tracked device simultaneously. Two cases
+this catches that the median approach misses:
+
+* Devices that always switch in concert with another device — the
+  transition filter rejects too many candidates.
+* Devices with no clean OFF→ON transitions (e.g. fridges that cycle
+  continuously).
+
+The per-device regression coefficient is the expected smart-meter
+delta when that device is on, holding every other tracked device
+fixed — which is what powercalc's fixed_power should be set to.
+Output also reports R² (model quality) and per-coefficient 95 %
+confidence interval.
+
+### Implementation
+
+* `core/powercalc_regression.py::regress(client, *, hours,
+  interval_seconds, ...)` — pulls per-device + smart-meter history,
+  resamples to a 1-min grid, drops always-on / always-off devices,
+  fits OLS via `numpy.linalg.lstsq`, reports per-coefficient std-err
+  + CI, and optionally writes via `powercalc.set_fixed_power`.
+
+* `core/powercalc_regression.py::_fit_ols(X, y)` — pure-numpy OLS:
+  adds the intercept column, computes residuals, R², and the
+  variance-covariance matrix for per-coefficient standard errors.
+
+* CLI: `powercalc regress [--hours 168] [--interval 60]
+  [--title-contains <substr>] [--min-on 0.005] [--min-off 0.005]
+  [--apply]`. Default dry-run.
+
+New dependency: `numpy>=1.24` (already a transitive of Home Assistant
+core, so no fresh install impact).
+
+### Test results — v1.38.0
+
+```
+$ python3 -m pytest tests/ -q --ignore=tests/test_full_e2e.py
+1826 passed in 1.57s
+```
+
+- **Before:** 1,814 unit tests.
+- **After:** 1,826 (+12). 0 regressions.
+
+New tests in `tests/test_powercalc_regression.py`:
+
+- `TestEncoders` (2) — binary on/off classification of state strings.
+- `TestResample` (2) — forward-fill onto a fixed grid; numeric encoder
+  for the smart-meter target.
+- `TestFitOls` (1) — recovers known coefficients from synthetic data
+  to within ±2W and R² > 0.99.
+- `TestRegress` (5) — end-to-end:
+  - Two-device synthetic dataset (800W + 200W); regression recovers
+    both to within ±5W including per-coef CI computation.
+  - Always-on device is dropped with `drop_reason` (no variance).
+  - `--apply` writes via `set_fixed_power`.
+  - Empty-history input short-circuits with a warning.
+  - Title-filter is forwarded to `powercalc.list_entries`.
+- `TestCli` (2) — `powercalc regress --hours/--interval/--title-contains
+  /--min-on/--min-off/--apply` flag wiring.
