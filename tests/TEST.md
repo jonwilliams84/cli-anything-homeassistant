@@ -764,3 +764,72 @@ New tests in `tests/test_powercalc_regression.py`:
   - Title-filter is forwarded to `powercalc.list_entries`.
 - `TestCli` (2) — `powercalc regress --hours/--interval/--title-contains
   /--min-on/--min-off/--apply` flag wiring.
+
+---
+
+## v1.39.0 — refine pass: zone / webhook / image / profiler
+
+Four new command groups + core modules, all wired into the CLI's main Click
+tree and covered by isolated FakeClient unit tests.
+
+### New core modules
+
+* `core/zone.py` — storage zone CRUD via `config/zone/*` WS, plus
+  `list_state_zones()` and `entities_in_zone()` helpers built off the
+  state machine.
+* `core/webhook.py` — webhook discovery (aggregates `webhook/list` WS,
+  automation YAML triggers, and `mobile_app/list_for_user`) + `trigger`
+  (POST/PUT/GET/HEAD on `/api/webhook/<id>`) + `generate_id` + cloudhook
+  CRUD via `cloud/cloudhook/*`.
+* `core/image.py` — `image.*` entity domain: listing with attribute
+  scrubbing, `auth/sign_path`-minted proxy URLs, binary snapshot to disk
+  (signed or direct), and `subscribe_updates` for state-changed events.
+* `core/profiler.py` — thin service wrappers over every `profiler.*`
+  service plus a `status` probe that reads `/api/components` and
+  `/api/services` to confirm the integration is loaded.
+
+### New CLI groups
+
+| Group | Commands |
+|-------|----------|
+| `zone` | `list`, `state-list`, `find`, `create`, `update`, `delete`, `entities` |
+| `webhook` | `list`, `trigger`, `generate-id`, `cloudhooks`, `cloudhook-create`, `cloudhook-delete` |
+| `image` | `list`, `show`, `snapshot`, `proxy-url`, `subscribe` |
+| `profiler` | `start`, `memory`, `dump-log-objects`, `log-thread-frames`, `log-event-loop-scheduled`, `log-current-tasks`, `lru-stats`, `set-asyncio-debug`, `log-events`, `status` |
+
+### Test results — v1.39.0
+
+```
+$ python3 -m pytest tests/ -q --ignore=tests/test_full_e2e.py
+1904 passed in 1.91s
+```
+
+- **Before:** 1,826 unit tests.
+- **After:** 1,904 (+78). 0 regressions.
+
+Breakdown of new tests:
+
+- `tests/test_zone.py` (20) — `list/find/create/update/delete` happy paths
+  + boundary cases (empty ident, missing coords, partial update payloads,
+  passive flag) + `list_state_zones` filtering + `entities_in_zone`
+  resolution by entity_id and by friendly_name.
+- `tests/test_webhook.py` (21) — registered list, automation-trigger
+  discovery (both `trigger` and `triggers` schema variants), aggregator
+  totals, `trigger()` with POST happy path / unknown-id guard + bypass /
+  bad-method / GET-via-session, `generate_id` uniqueness, cloudhooks dict
+  flattening, cloudhook create/delete payload shape.
+- `tests/test_image.py` (19) — listing with and without attributes,
+  proxy-url signed and unsigned paths (verifies `auth/sign_path` call
+  shape), `snapshot()` direct + signed (header-stripping check) +
+  overwrite guard + missing-session error path, `subscribe_updates`
+  entity-id filtering via `SubscribingFakeClient`.
+- `tests/test_profiler.py` (18) — every `profiler.*` service has a
+  payload-shape assertion, plus `seconds<=0` rejection on `start` /
+  `memory`, plus a `status` test that reads from
+  `/api/components` + `/api/services` and gracefully degrades when
+  `client.get` raises.
+
+All new code paths are exercised by FakeClient (no live HA required for
+unit tests). E2E coverage against a real HA instance lands via the
+existing `tests/test_full_e2e.py` harness when run with a populated
+`homeassistant` install.

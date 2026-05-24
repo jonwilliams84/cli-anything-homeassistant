@@ -161,6 +161,10 @@ stderr and return a non-zero exit code.
 | `powercalc calibrate-template` | Active multi-step for variable devices: walks states, builds piecewise `power_template` |
 | `powercalc auto-calibrate` | Passive median-of-transitions from recorder history — fits fixed-power models from real data with no switch-flipping |
 | `powercalc regress` | Tier-2 ML: linear regression of smart-meter vs per-device on/off state. Recovers per-device load even when transitions are noisy / absent. Reports R² + per-coef 95% CI. numpy-only |
+| `zone`         | Storage zone registry (`config/zone/*` WS): list/state-list/find/create/update/delete + `entities` (who's inside right now). YAML zones are read-only and surface via `state-list`. |
+| `webhook`      | `webhook/list` WS + automation/mobile-app scan; `trigger <id>` (POST/PUT/GET/HEAD) with a registered-id guard; `generate-id`; cloudhook CRUD via `cloud/cloudhook/*` |
+| `image`        | `image.*` entity domain: `list` / `show` / `snapshot <eid> <path>` (signed or direct), `proxy-url` (signed via `auth/sign_path`), `subscribe` to state-change events |
+| `profiler`     | Wraps the `profiler` integration's services (cProfile/memray/lru_stats/dump_log_objects/log_thread_frames/log_event_loop_scheduled/log_current_tasks/set_asyncio_debug/log_events) plus a `status` probe |
 
 ### State Model
 

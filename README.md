@@ -95,6 +95,10 @@ overrides also work: `CLI_HA_URL`, `CLI_HA_TOKEN`, etc.
 | `powercalc` | `list` / `create` / `set-template` / `set-power` / `reload` + `group {members,add-members,remove-members,set-members}` — safety wrappers over the REPLACE-on-write and binary_sensor-no-op footguns |
 | `entity restored` / `entity orphans` / `entity prune` | Find and bulk-delete orphan registry entries; backup-first + dry-run by default + per-entity error tolerance |
 | `recorder top` | Rank entities by state-change count over a window — first question when investigating recorder DB bloat |
+| `zone` | Storage zone registry CRUD (`config/zone/*` WS) — `list`/`state-list`/`find`/`create`/`update`/`delete` + `entities <zone>` (who is inside right now). YAML-declared zones are read-only and surface via `state-list`. |
+| `webhook` | Webhook discovery (aggregates `webhook/list` WS, automation triggers, and mobile_app registrations) + `trigger <id>` (POST/PUT/GET/HEAD with registered-id guard) + `generate-id` + cloudhook CRUD via `cloud/cloudhook/*` |
+| `image` | `image.*` entity domain — `list`/`show`/`snapshot <entity_id> <path>` (signed via `auth/sign_path` or direct auth) + `proxy-url` (signed URL minted on demand) + `subscribe` for update events |
+| `profiler` | Pass-through to the `profiler` integration's services: `start` (cProfile), `memory` (memray), `dump-log-objects --type Class`, `log-thread-frames`/`log-current-tasks`/`log-event-loop-scheduled`/`log-events`, `lru-stats`, `set-asyncio-debug`. `status` is a cheap "is the integration even loaded" probe. |
 
 ## Quick examples
 

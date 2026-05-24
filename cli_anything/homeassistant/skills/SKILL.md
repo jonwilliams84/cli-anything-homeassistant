@@ -4,9 +4,10 @@ description: >-
   Drive a running Home Assistant from the shell. A stateless CLI + REPL over
   HA's REST and WebSocket APIs. Read any entity, call any service, render Jinja
   templates, manage automations/scripts/scenes/blueprints/backups/dashboards,
-  inspect registries (area/device/entity/floor/label/category), audit
-  diagnostics + statistics, manage powercalc, edit Lovelace surgically, and
-  watch live events. 17 typed shortcut groups (light, media-player, climate,
+  inspect registries (area/device/entity/floor/label/category/zone), audit
+  diagnostics + statistics, manage powercalc, edit Lovelace surgically, watch
+  live events, fire webhooks, snapshot image entities, and drive the profiler
+  integration for live perf triage. 17 typed shortcut groups (light, media-player, climate,
   cover, fan, vacuum, …) so agents never hand-craft JSON for routine entity
   control. Every command has --json for machine output. Use this when an agent
   needs to do anything to a smart home without the browser UI.
@@ -118,6 +119,10 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `todo`             | `todo.*` integrations — list/add/update/complete/remove/move/clear.                            |
 | `lock`/`alarm`     | Shortcut groups: lock/unlock/open; arm-away/arm-home/arm-night/arm-vacation/disarm.            |
 | `updates`          | `update.*` entities: list, install, install-all, skip, clear-skipped.                          |
+| `zone`             | Zone registry (storage zones via `config/zone/*` WS): list/state-list/find/create/update/delete; `entities` lists person/device_tracker entities currently inside. |
+| `webhook`          | Webhook discovery + triggering: `list` (registered + automations + mobile_app), `trigger` (POST/PUT/GET/HEAD with guard), `generate-id`, `cloudhooks`, `cloudhook-create`/`-delete`. |
+| `image`            | `image.*` entities: `list`, `show`, `snapshot <eid> <path>` (signed or direct), `proxy-url` (signed URL minted via `auth/sign_path`), `subscribe` for update events. |
+| `profiler`         | `profiler.*` services: `start` (cProfile), `memory` (memray), `dump-log-objects`, `log-thread-frames`/`log-current-tasks`/`log-event-loop-scheduled`, `lru-stats`, `set-asyncio-debug`, `status` (loaded? services exposed?). |
 | `whoami`           | Current user (id, name, admin/owner flags).                                                    |
 | **Entity-control shortcut groups** (typed, ergonomic — prefer these over raw `service call`) | |
 | `light`            | `on` (brightness/kelvin/rgb/effect/transition/profile/white), `off`, `toggle`.                  |
@@ -263,6 +268,58 @@ cli-anything-homeassistant entity-references sensor.old_name
 cli-anything-homeassistant --json service describe vacuum send_command \
   | jq '.fields'
 # Inspect the schema before guessing arg shapes.
+```
+
+### Zone CRUD + presence introspection
+
+```bash
+# Create a zone for the office
+cli-anything-homeassistant zone create Office --lat 51.502 --lon -0.105 \
+  --radius 250 --icon mdi:office-building
+
+# Who is at home right now?
+cli-anything-homeassistant --json zone entities zone.home \
+  | jq '.[] | .entity_id'
+```
+
+### Webhook list + fire-by-id
+
+```bash
+# Inventory every webhook id this HA honours
+cli-anything-homeassistant --json webhook list \
+  | jq '{registered: .registered|length, automations: .automations|length}'
+
+# Fire a known webhook with JSON body
+cli-anything-homeassistant webhook trigger abc123 --data '{"door":"open"}'
+
+# Mint a fresh id for a new automation
+cli-anything-homeassistant --json webhook generate-id | jq -r .webhook_id
+```
+
+### Image entity snapshot
+
+```bash
+# Save the current frame of an image entity to disk
+cli-anything-homeassistant image snapshot image.front_door /tmp/door.png --overwrite
+
+# Get a signed URL valid for 5 minutes (no Auth header needed)
+cli-anything-homeassistant image proxy-url image.front_door --expires 300 --json
+```
+
+### Profiler — live perf triage
+
+```bash
+# Is the profiler integration even loaded?
+cli-anything-homeassistant --json profiler status
+
+# 60s cProfile dump → .storage
+cli-anything-homeassistant profiler start --seconds 60
+
+# Dump every live State object to the log
+cli-anything-homeassistant profiler dump-log-objects --type State
+
+# Snapshot every running asyncio task
+cli-anything-homeassistant profiler log-current-tasks
 ```
 
 ## Output shapes (so agents can write jq without guessing)

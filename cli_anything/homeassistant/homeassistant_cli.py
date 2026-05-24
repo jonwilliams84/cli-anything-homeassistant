@@ -101,6 +101,10 @@ from cli_anything.homeassistant.core import template_helpers as template_helpers
 from cli_anything.homeassistant.core import todos as todos_core
 from cli_anything.homeassistant.core import user_admin as user_admin_core
 from cli_anything.homeassistant.core import weather_advanced as weather_advanced_core
+from cli_anything.homeassistant.core import zone as zone_core
+from cli_anything.homeassistant.core import webhook as webhook_core
+from cli_anything.homeassistant.core import image as image_core
+from cli_anything.homeassistant.core import profiler as profiler_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
     HomeAssistantError,
@@ -8056,6 +8060,371 @@ def powercalc_regress(ctx, smart_meter, hours, interval_seconds,
     if smart_meter:
         kw["smart_meter"] = smart_meter
     emit(ctx, powercalc_regression_core.regress(make_client(ctx), **kw))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# refine pass: zone, webhook, image, profiler
+# ════════════════════════════════════════════════════════════════════════════
+
+# ────────────────────────────────────────────────────────────── zone registry
+
+@cli.group()
+def zone():
+    """Zone registry — storage zones from the UI (config/zone WS).
+
+    YAML-declared zones in configuration.yaml are not in the registry; use
+    `zone state-list` to see every `zone.*` entity, registry-backed or not.
+    """
+
+
+@zone.command("list")
+@click.pass_context
+def zone_list(ctx):
+    """List storage zones (does NOT include YAML zones)."""
+    emit(ctx, zone_core.list_zones(make_client(ctx)))
+
+
+@zone.command("state-list")
+@click.pass_context
+def zone_state_list(ctx):
+    """List every zone.* entity state (registry + YAML, combined)."""
+    emit(ctx, zone_core.list_state_zones(make_client(ctx)))
+
+
+@zone.command("find")
+@click.argument("ident")
+@click.pass_context
+def zone_find(ctx, ident):
+    """Find a storage zone by id or by case-insensitive name."""
+    out = zone_core.find_zone(make_client(ctx), ident)
+    if not out:
+        _abort(f"no zone matching {ident!r}")
+    emit(ctx, out)
+
+
+@zone.command("create")
+@click.argument("name")
+@click.option("--lat", "latitude", type=float, required=True,
+              help="Centre latitude (decimal degrees)")
+@click.option("--lon", "longitude", type=float, required=True,
+              help="Centre longitude (decimal degrees)")
+@click.option("--radius", type=float, default=None,
+              help="Zone radius in metres (default 100m on the server side)")
+@click.option("--icon", default=None, help="mdi: icon, e.g. mdi:school")
+@click.option("--passive/--active", "passive", default=None,
+              help="Passive zones don't influence presence resolution")
+@click.pass_context
+def zone_create(ctx, name, latitude, longitude, radius, icon, passive):
+    """Create a new storage zone."""
+    emit(ctx, zone_core.create(
+        make_client(ctx),
+        name=name, latitude=latitude, longitude=longitude,
+        radius=radius, icon=icon, passive=passive,
+    ))
+
+
+@zone.command("update")
+@click.argument("zone_id")
+@click.option("--name", default=None)
+@click.option("--lat", "latitude", type=float, default=None)
+@click.option("--lon", "longitude", type=float, default=None)
+@click.option("--radius", type=float, default=None)
+@click.option("--icon", default=None)
+@click.option("--passive/--active", "passive", default=None)
+@click.pass_context
+def zone_update(ctx, zone_id, name, latitude, longitude, radius, icon, passive):
+    """Patch a storage zone — only fields you pass are sent."""
+    emit(ctx, zone_core.update(
+        make_client(ctx), zone_id,
+        name=name, latitude=latitude, longitude=longitude,
+        radius=radius, icon=icon, passive=passive,
+    ))
+
+
+@zone.command("delete")
+@click.argument("zone_id")
+@click.confirmation_option(prompt="Delete this zone?")
+@click.pass_context
+def zone_delete(ctx, zone_id):
+    """Delete a storage zone (YAML zones are read-only)."""
+    emit(ctx, zone_core.delete(make_client(ctx), zone_id))
+
+
+@zone.command("entities")
+@click.argument("zone_ident")
+@click.pass_context
+def zone_entities(ctx, zone_ident):
+    """List person/device_tracker entities currently inside ZONE_IDENT.
+
+    ZONE_IDENT may be an entity_id (`zone.home`) or a friendly name.
+    """
+    emit(ctx, zone_core.entities_in_zone(make_client(ctx), zone_ident))
+
+
+# ──────────────────────────────────────────────────────────────────── webhook
+
+@cli.group()
+def webhook():
+    """Webhook triggers — the `/api/webhook/<id>` endpoint plus discovery.
+
+    Webhooks here are HA's incoming-call surface: automations register one,
+    HA assigns an id, and external systems POST to `/api/webhook/<id>` to
+    trigger the automation. This group lets you list registered webhooks,
+    fire one for testing, generate a fresh webhook id, and read cloudhook
+    pairings when Nabu Casa cloud is connected.
+    """
+
+
+@webhook.command("list")
+@click.option("--include-automations/--no-automations", default=True,
+              help="Scan automations for `webhook` triggers and surface their ids")
+@click.option("--include-mobile/--no-mobile", default=True,
+              help="Include mobile_app webhooks registered per device")
+@click.pass_context
+def webhook_list(ctx, include_automations, include_mobile):
+    """List every webhook id this HA instance currently honours."""
+    emit(ctx, webhook_core.list_webhooks(
+        make_client(ctx),
+        include_automations=include_automations,
+        include_mobile=include_mobile,
+    ))
+
+
+@webhook.command("trigger")
+@click.argument("webhook_id")
+@click.option("--method", type=click.Choice(["POST", "PUT", "GET", "HEAD"]),
+              default="POST", show_default=True)
+@click.option("--data", default=None,
+              help="JSON body to send (object). Mutually exclusive with --form-data")
+@click.option("--form-data", "form_pairs", multiple=True,
+              help="key=value form fields (repeatable). Sent as form-urlencoded")
+@click.option("--allowed/--all", "allowed_only", default=True,
+              help="--allowed = only attempt if id is in the registry list (safer)")
+@click.pass_context
+def webhook_trigger(ctx, webhook_id, method, data, form_pairs, allowed_only):
+    """Fire a webhook by id — POSTs to `/api/webhook/<id>` by default."""
+    body: Any = None
+    if data and form_pairs:
+        _abort("--data and --form-data are mutually exclusive")
+    if data:
+        try:
+            body = json.loads(data)
+        except json.JSONDecodeError as exc:
+            _abort(f"--data must be valid JSON: {exc}")
+    elif form_pairs:
+        body = parse_kv_pairs(form_pairs)
+    emit(ctx, webhook_core.trigger(
+        make_client(ctx),
+        webhook_id=webhook_id,
+        method=method,
+        body=body,
+        guard_registered=allowed_only,
+    ))
+
+
+@webhook.command("generate-id")
+@click.pass_context
+def webhook_generate_id(ctx):
+    """Mint a fresh webhook id without registering it anywhere.
+
+    Same RNG HA uses for automation webhook ids. Useful for scripting an
+    automation creation flow.
+    """
+    emit(ctx, webhook_core.generate_id())
+
+
+@webhook.command("cloudhooks")
+@click.pass_context
+def webhook_cloudhooks(ctx):
+    """List cloudhook bindings (Nabu Casa) — webhook_id → external URL."""
+    emit(ctx, webhook_core.cloudhooks(make_client(ctx)))
+
+
+@webhook.command("cloudhook-create")
+@click.argument("webhook_id")
+@click.pass_context
+def webhook_cloudhook_create(ctx, webhook_id):
+    """Create a cloudhook binding for an existing local webhook id."""
+    emit(ctx, webhook_core.cloudhook_create(make_client(ctx), webhook_id))
+
+
+@webhook.command("cloudhook-delete")
+@click.argument("webhook_id")
+@click.confirmation_option(prompt="Delete the cloudhook binding?")
+@click.pass_context
+def webhook_cloudhook_delete(ctx, webhook_id):
+    """Delete a cloudhook binding (the local webhook keeps working)."""
+    emit(ctx, webhook_core.cloudhook_delete(make_client(ctx), webhook_id))
+
+
+# ────────────────────────────────────────────────────────────────────── image
+
+@cli.group()
+def image():
+    """image.* entities — snapshots, live image-proxy URLs, signed URLs."""
+
+
+@image.command("list")
+@click.option("--include-attributes/--no-attributes", default=False)
+@click.pass_context
+def image_list(ctx, include_attributes):
+    """List every image.* entity with its current state."""
+    emit(ctx, image_core.list_image_entities(
+        make_client(ctx), include_attributes=include_attributes,
+    ))
+
+
+@image.command("show")
+@click.argument("entity_id")
+@click.pass_context
+def image_show(ctx, entity_id):
+    """Show the full state record for an image entity (state + attributes)."""
+    emit(ctx, image_core.get_image_entity(make_client(ctx), entity_id))
+
+
+@image.command("snapshot")
+@click.argument("entity_id")
+@click.argument("output_path", type=click.Path(dir_okay=False, writable=True))
+@click.option("--overwrite/--no-overwrite", default=False,
+              help="Replace OUTPUT_PATH if it already exists")
+@click.option("--signed/--direct", default=False,
+              help="Use auth/sign_path to mint a one-shot URL, then fetch unauthenticated")
+@click.option("--expires", type=int, default=30,
+              help="If --signed, seconds the signed URL is valid for")
+@click.pass_context
+def image_snapshot(ctx, entity_id, output_path, overwrite, signed, expires):
+    """Download the current frame from an image entity to OUTPUT_PATH."""
+    result = image_core.snapshot(
+        make_client(ctx),
+        entity_id=entity_id,
+        output_path=output_path,
+        overwrite=overwrite,
+        signed=signed,
+        expires=expires,
+    )
+    emit(ctx, result)
+
+
+@image.command("proxy-url")
+@click.argument("entity_id")
+@click.option("--signed/--unsigned", default=True,
+              help="Sign the URL so it works without an Authorization header (default: signed)")
+@click.option("--expires", type=int, default=30, show_default=True)
+@click.pass_context
+def image_proxy_url(ctx, entity_id, signed, expires):
+    """Return the `/api/image_proxy/<entity_id>` URL (signed by default)."""
+    emit(ctx, image_core.proxy_url(
+        make_client(ctx), entity_id=entity_id,
+        signed=signed, expires=expires,
+    ))
+
+
+@image.command("subscribe")
+@click.argument("entity_id")
+@click.option("--timeout", type=int, default=10,
+              help="Stop after N seconds (default 10)")
+@click.pass_context
+def image_subscribe(ctx, entity_id, timeout):
+    """Subscribe to image_updated events for ENTITY_ID and print each.
+
+    Uses the state-change event stream filtered to this entity. Image-domain
+    entities update their `state` attribute (an opaque hash) whenever a new
+    frame is ready, so each emitted event marks a fresh snapshot.
+    """
+    emit(ctx, image_core.subscribe_updates(
+        make_client(ctx), entity_id=entity_id, timeout=timeout,
+    ))
+
+
+# ─────────────────────────────────────────────────────────────────── profiler
+
+@cli.group()
+def profiler():
+    """profiler.* services — cProfile / memray / object dumps / async tasks.
+
+    All commands here are pass-throughs to the `profiler` integration. Add
+    the integration first if it isn't loaded:
+
+      service call profiler.start --data '{"seconds": 60}'
+
+    is the long form; this group is the safety-wrappered version.
+    """
+
+
+@profiler.command("start")
+@click.option("--seconds", type=int, default=60, show_default=True,
+              help="Profiling window. cProfile dump is written to .storage")
+@click.pass_context
+def profiler_start(ctx, seconds):
+    """Start cProfile profiling for N seconds."""
+    emit(ctx, profiler_core.start(make_client(ctx), seconds=seconds))
+
+
+@profiler.command("memory")
+@click.option("--seconds", type=int, default=60, show_default=True)
+@click.pass_context
+def profiler_memory(ctx, seconds):
+    """Capture a memory profile via memray for N seconds."""
+    emit(ctx, profiler_core.memory(make_client(ctx), seconds=seconds))
+
+
+@profiler.command("dump-log-objects")
+@click.option("--type", "type_", required=True,
+              help="Python class name to dump (e.g. State, Event, EntityFilter)")
+@click.pass_context
+def profiler_dump_log_objects(ctx, type_):
+    """Dump every live instance of TYPE to the log."""
+    emit(ctx, profiler_core.dump_log_objects(make_client(ctx), type_=type_))
+
+
+@profiler.command("log-thread-frames")
+@click.pass_context
+def profiler_log_thread_frames(ctx):
+    """Log a stack frame for every running thread (snapshot of the GIL)."""
+    emit(ctx, profiler_core.log_thread_frames(make_client(ctx)))
+
+
+@profiler.command("log-event-loop-scheduled")
+@click.pass_context
+def profiler_log_event_loop_scheduled(ctx):
+    """Log every scheduled callback queued on the asyncio event loop."""
+    emit(ctx, profiler_core.log_event_loop_scheduled(make_client(ctx)))
+
+
+@profiler.command("log-current-tasks")
+@click.pass_context
+def profiler_log_current_tasks(ctx):
+    """Log every currently running asyncio task (active stack)."""
+    emit(ctx, profiler_core.log_current_tasks(make_client(ctx)))
+
+
+@profiler.command("lru-stats")
+@click.pass_context
+def profiler_lru_stats(ctx):
+    """Dump @lru_cache statistics for every cache HA has registered."""
+    emit(ctx, profiler_core.lru_stats(make_client(ctx)))
+
+
+@profiler.command("set-asyncio-debug")
+@click.option("--enabled/--disabled", default=True, show_default=True)
+@click.pass_context
+def profiler_set_asyncio_debug(ctx, enabled):
+    """Toggle asyncio debug mode at runtime (slow-callback warnings, etc.)."""
+    emit(ctx, profiler_core.set_asyncio_debug(make_client(ctx), enabled=enabled))
+
+
+@profiler.command("log-events")
+@click.pass_context
+def profiler_log_events(ctx):
+    """Log a one-shot snapshot of the event bus listener counts."""
+    emit(ctx, profiler_core.log_events(make_client(ctx)))
+
+
+@profiler.command("status")
+@click.pass_context
+def profiler_status(ctx):
+    """Is the profiler integration loaded? Which services are exposed?"""
+    emit(ctx, profiler_core.status(make_client(ctx)))
 
 
 if __name__ == "__main__":
