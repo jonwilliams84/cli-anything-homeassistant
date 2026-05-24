@@ -156,6 +156,10 @@ stderr and return a non-zero exit code.
 | `entity prune` | Bulk-delete registry entries matching `--platform` / `--restored` / `--orphan` / `--disabled-by` / `--entity-id`; dry-run by default, protects user-disabled entries, per-entity error tolerance (proven against the 96.7k-entry UniFi cleanup) |
 | `recorder top` | Rank entities by state-change count over `--hours N`; `--domain` to scope on large installs |
 | `backup list/show` | Now correctly surface `size_mb` / `agents` / `protected` (previously stuck at null because the fields live per-agent in HA's payload) |
+| `powercalc audit` | Passive: smart-meter vs Home Total over a window + ranked sub-group contributions |
+| `powercalc calibrate` | Active single-shot for fixed-power devices: baseline → service-on → load → delta, optional `--apply` |
+| `powercalc calibrate-template` | Active multi-step for variable devices: walks states, builds piecewise `power_template` |
+| `powercalc auto-calibrate` | Passive median-of-transitions from recorder history — fits fixed-power models from real data with no switch-flipping |
 
 ### State Model
 

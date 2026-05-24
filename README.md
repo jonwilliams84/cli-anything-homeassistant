@@ -152,6 +152,17 @@ cli-anything-homeassistant entity prune --platform unifi \
 
 # What's hammering the recorder right now?
 cli-anything-homeassistant recorder top --hours 24 --domain sensor --limit 20
+
+# Powercalc calibration (v1.37+) — figure out where the model is wrong
+cli-anything-homeassistant --json powercalc audit --hours 24             # passive coverage report
+cli-anything-homeassistant --json powercalc auto-calibrate --hours 168   # passive median-of-transitions from history
+cli-anything-homeassistant powercalc calibrate <entry_id> \
+    --service-on switch.turn_on --target switch.tower_fan \
+    --service-off switch.turn_off --apply                                # active single-shot fixed-power
+cli-anything-homeassistant powercalc calibrate-template <entry_id> \
+    --source fan.x --attribute percentage \
+    --service-set fan.set_percentage --state-arg percentage \
+    --service-off fan.turn_off --states 0,25,50,75,100 --apply           # active variable-power
 ```
 
 ## Agent / `--json` mode

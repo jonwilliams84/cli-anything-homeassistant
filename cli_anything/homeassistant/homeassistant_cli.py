@@ -88,6 +88,7 @@ from cli_anything.homeassistant.core import scenes as scenes_core
 from cli_anything.homeassistant.core import service_shortcuts as service_shortcuts_core
 from cli_anything.homeassistant.core import entity_control as entity_control_core
 from cli_anything.homeassistant.core import powercalc as powercalc_core
+from cli_anything.homeassistant.core import powercalc_calibration as powercalc_calibration_core
 from cli_anything.homeassistant.core import shopping_list as shopping_list_core
 from cli_anything.homeassistant.core import singletons as singletons_core
 from cli_anything.homeassistant.core import subentries as subentries_core
@@ -7781,6 +7782,222 @@ def recorder_top(ctx, hours, domains, limit):
         make_client(ctx),
         hours=hours, domains=list(domains) if domains else None,
         limit=limit, by="changes",
+    ))
+
+
+# ──────────────────────────────────────────────────────── powercalc calibration
+
+@powercalc.command("audit")
+@click.option("--smart-meter", "smart_meter", default=None,
+              help="Smart-meter sensor (default: sensor.smart_meter_electricity_power)")
+@click.option("--home-total", "home_total", default=None,
+              help="Powercalc Home Total sensor (default: sensor.power_home_total_power)")
+@click.option("--hours", type=float, default=24,
+              help="Window in hours (default 24)")
+@click.option("--top", "top_n", type=int, default=8,
+              help="How many groups to rank (default 8)")
+@click.pass_context
+def powercalc_audit(ctx, smart_meter, home_total, hours, top_n):
+    """Passive coverage report — smart-meter actual vs powercalc Home Total
+    over a window, plus a ranked list of sub-groups by contribution.
+
+    Points you at the biggest mis-modelled chunks without flipping any
+    switches. Read-only."""
+    kw = {"hours": hours, "top_n": top_n}
+    if smart_meter:
+        kw["smart_meter"] = smart_meter
+    if home_total:
+        kw["home_total"] = home_total
+    emit(ctx, powercalc_calibration_core.audit(make_client(ctx), **kw))
+
+
+@powercalc.command("calibrate")
+@click.argument("entry_id")
+@click.option("--service-on", "service_on", required=True,
+              help="Service to invoke to put the device under load "
+                   "(e.g. light.turn_on, switch.turn_on)")
+@click.option("--target", required=True,
+              help="entity_id to target (or a JSON dict for richer targets)")
+@click.option("--service-off", "service_off", default=None,
+              help="Service to fire after measurement to leave device idle")
+@click.option("--smart-meter", "smart_meter", default=None,
+              help="Smart-meter sensor (default: sensor.smart_meter_electricity_power)")
+@click.option("--baseline-seconds", "baseline_seconds", type=float, default=30,
+              help="Baseline measurement duration (default 30s)")
+@click.option("--stabilisation-seconds", "stabilisation_seconds",
+              type=float, default=10,
+              help="Pause after service_on before sampling load (default 10s)")
+@click.option("--load-seconds", "load_seconds", type=float, default=30,
+              help="Load measurement duration (default 30s)")
+@click.option("--samples", type=int, default=6,
+              help="Samples per measurement window (default 6)")
+@click.option("--apply", "apply_", is_flag=True, default=False,
+              help="Write the measured delta into the entry's fixed power")
+@click.pass_context
+def powercalc_calibrate(ctx, entry_id, service_on, target, service_off,
+                         smart_meter, baseline_seconds, stabilisation_seconds,
+                         load_seconds, samples, apply_):
+    """Active single-shot calibration for a FIXED-POWER device.
+
+    Reads smart-meter baseline → fires --service-on → waits for
+    stabilisation → reads smart-meter load → computes delta → optionally
+    writes via `powercalc set-power`.
+
+    Example: calibrate a tower-fan switch at full speed:
+
+      powercalc calibrate <entry_id> --service-on switch.turn_on \\
+        --target switch.tower_fan --service-off switch.turn_off \\
+        --baseline-seconds 30 --load-seconds 30 --apply
+    """
+    # Allow JSON-dict target for richer targets (area/device).
+    target_val: str | dict = target
+    if target.lstrip().startswith("{"):
+        try:
+            target_val = json.loads(target)
+        except json.JSONDecodeError:
+            pass
+    kw = {
+        "service_on": service_on,
+        "target": target_val,
+        "baseline_seconds": baseline_seconds,
+        "stabilisation_seconds": stabilisation_seconds,
+        "load_seconds": load_seconds,
+        "samples": samples,
+        "service_off": service_off,
+        "apply_": apply_,
+    }
+    if smart_meter:
+        kw["smart_meter"] = smart_meter
+    emit(ctx, powercalc_calibration_core.calibrate(
+        make_client(ctx), entry_id, **kw,
+    ))
+
+
+@powercalc.command("calibrate-template")
+@click.argument("entry_id")
+@click.option("--source", "source_entity", required=True,
+              help="Device entity_id (e.g. fan.dining_room_fan_main_fan)")
+@click.option("--attribute", required=True,
+              help="State attribute keying the template (e.g. percentage)")
+@click.option("--service-set", "service_set", required=True,
+              help="Service that sets the attribute (e.g. fan.set_percentage)")
+@click.option("--state-arg", "state_arg", required=True,
+              help="Service-data key carrying the step value (e.g. percentage)")
+@click.option("--service-off", "service_off", required=True,
+              help="Service to turn the device off (e.g. fan.turn_off)")
+@click.option("--states", required=True,
+              help="Comma-separated list of values to walk through "
+                   "(e.g. 0,25,50,75,100)")
+@click.option("--smart-meter", "smart_meter", default=None)
+@click.option("--baseline-seconds", "baseline_seconds", type=float, default=20)
+@click.option("--stabilisation-seconds", "stabilisation_seconds",
+              type=float, default=15)
+@click.option("--load-seconds", "load_seconds", type=float, default=20)
+@click.option("--samples", type=int, default=5)
+@click.option("--apply", "apply_", is_flag=True, default=False,
+              help="Write the generated power_template into the entry")
+@click.pass_context
+def powercalc_calibrate_template(ctx, entry_id, source_entity, attribute,
+                                  service_set, state_arg, service_off,
+                                  states, smart_meter, baseline_seconds,
+                                  stabilisation_seconds, load_seconds,
+                                  samples, apply_):
+    """Active multi-step calibration for a VARIABLE device.
+
+    Walks the device through each value in --states, measures the
+    smart-meter delta per state, and builds a piecewise power_template.
+
+    Example: fit a fan's per-percentage profile:
+
+      powercalc calibrate-template <entry_id> \\
+        --source fan.dining_room_fan_main_fan \\
+        --attribute percentage \\
+        --service-set fan.set_percentage \\
+        --state-arg percentage \\
+        --service-off fan.turn_off \\
+        --states 16,33,50,66,83,100 --apply
+    """
+    try:
+        state_values: list[float | int] = []
+        for s in states.split(","):
+            s = s.strip()
+            if not s:
+                continue
+            v = float(s)
+            state_values.append(int(v) if v.is_integer() else v)
+    except ValueError:
+        raise click.BadParameter(f"could not parse --states {states!r}")
+    kw = {
+        "source_entity": source_entity,
+        "attribute": attribute,
+        "service_set": service_set,
+        "state_arg": state_arg,
+        "service_off": service_off,
+        "states": state_values,
+        "baseline_seconds": baseline_seconds,
+        "stabilisation_seconds": stabilisation_seconds,
+        "load_seconds": load_seconds,
+        "samples": samples,
+        "apply_": apply_,
+    }
+    if smart_meter:
+        kw["smart_meter"] = smart_meter
+    emit(ctx, powercalc_calibration_core.calibrate_template(
+        make_client(ctx), entry_id, **kw,
+    ))
+
+
+@powercalc.command("auto-calibrate")
+@click.option("--smart-meter", "smart_meter", default=None,
+              help="Smart-meter sensor (default: sensor.smart_meter_electricity_power)")
+@click.option("--hours", type=float, default=24 * 7,
+              help="History window (default 168h = 7 days)")
+@click.option("--pre-seconds", "pre_window_seconds", type=float, default=30,
+              help="Baseline window before each transition (default 30s)")
+@click.option("--post-seconds", "post_window_seconds", type=float, default=30,
+              help="Load window after each transition (default 30s)")
+@click.option("--quiet-seconds", "quiet_seconds", type=float, default=10,
+              help="Reject transitions where any other tracked device "
+                   "changed within ±this many seconds (default 10s)")
+@click.option("--min-samples", "min_samples", type=int, default=5,
+              help="Minimum clean transitions before suggesting (default 5)")
+@click.option("--title-contains", "title_contains", default=None,
+              help="Only process entries whose title contains this substring")
+@click.option("--apply", "apply_", is_flag=True, default=False,
+              help="Apply median deltas via powercalc set-power. "
+                   "Dry-run by default.")
+@click.pass_context
+def powercalc_auto_calibrate(ctx, smart_meter, hours, pre_window_seconds,
+                              post_window_seconds, quiet_seconds, min_samples,
+                              title_contains, apply_):
+    """PASSIVE calibration: scan recorder history for clean on/off
+    transitions, compute median smart-meter delta per device, and
+    optionally write the result into each entry's fixed power.
+
+    No switches need to be flipped — runs entirely on saved history.
+    Default is dry-run.
+
+    Example workflow:
+
+      # 1. See what auto-calibration would suggest (dry-run):
+      powercalc auto-calibrate --hours 168 --json | jq '.candidates'
+
+      # 2. Apply only to entries whose title contains "Lamp":
+      powercalc auto-calibrate --title-contains Lamp --apply
+    """
+    kw = {
+        "hours": hours,
+        "pre_window_seconds": pre_window_seconds,
+        "post_window_seconds": post_window_seconds,
+        "quiet_seconds": quiet_seconds,
+        "min_samples": min_samples,
+        "title_contains": title_contains,
+        "apply_": apply_,
+    }
+    if smart_meter:
+        kw["smart_meter"] = smart_meter
+    emit(ctx, powercalc_calibration_core.auto_calibrate(
+        make_client(ctx), **kw,
     ))
 
 

@@ -616,3 +616,87 @@ New tests in:
 - `tests/test_v5_refine_cli_wiring.py` — 16 CliRunner wiring tests
   covering every new CLI surface end-to-end against the recorded
   FakeClient `service_calls`/`ws_calls` log.
+
+## Refine pass v6 — powercalc calibration & audit (v1.37.0)
+
+Driven by the EV-charger fix session, which surfaced two things:
+the powercalc Home Total was sitting at 20 % coverage of the smart
+meter, and there was no way to know which sub-groups deserved attention
+without eyeballing the energy dashboard. Built four new commands:
+
+1. **`powercalc audit`** — passive coverage report. Reads `--hours` of
+   history for the smart-meter and the Home Total powercalc rollup,
+   computes time-weighted means, gap, and coverage ratio. Then ranks
+   every `Power · …` sub-group by its mean contribution. Read-only.
+
+2. **`powercalc calibrate <entry_id>`** — active single-shot. Takes a
+   baseline measurement → calls `--service-on` against `--target` →
+   waits for stabilisation → takes a load measurement → computes delta.
+   Optional `--service-off` returns the device to baseline after. With
+   `--apply`, writes the delta into the entry's fixed power via
+   `powercalc set-power`.
+
+3. **`powercalc calibrate-template <entry_id>`** — active multi-step
+   for variable devices. Walks the device through each value in
+   `--states`, measures delta per state, fits a piecewise Jinja
+   template keyed on `--attribute`, and optionally writes via
+   `powercalc set-template`.
+
+4. **`powercalc auto-calibrate`** — *passive median-of-transitions*.
+   Scans recorder history over `--hours`, finds clean ON→OFF / OFF→ON
+   transitions for every powercalc virtual_power entry's source entity
+   (rejecting any whose smart-meter delta is contaminated by other
+   tracked devices changing within `±--quiet-seconds`), takes the
+   median across N clean samples, and proposes a fixed_power update.
+   Default dry-run; `--apply` commits.
+
+The four together cover all three calibration shapes:
+"actively flip a switch", "actively walk through states", and "passively
+mine my history".
+
+### Test results — v1.37.0
+
+```
+$ python3 -m pytest tests/ -q --ignore=tests/test_full_e2e.py
+1814 passed in 1.55s
+```
+
+- **Before:** 1,797 unit tests.
+- **After:** 1,814 (+17). 0 regressions.
+
+New tests in `tests/test_powercalc_calibration.py`:
+
+- `TestMeasure` (2) — averaging across multiple reads + skipping
+  unavailable readings.
+- `TestTimeWeightedMean` (3) — basic time-weighted math, empty input,
+  single-point degenerate case.
+- `TestAudit` (1) — full end-to-end: smart-meter mean, home-total
+  mean, coverage ratio, group ranking by contribution.
+- `TestCalibrate` (2) — baseline+load delta computation + service-call
+  recording; `--apply` writes via `powercalc.set_fixed_power`.
+- `TestCalibrateTemplate` (1) — walks five state values, builds
+  template referencing the source entity, mid-point cuts as expected.
+- `TestAutoCalibrate` (3) — finds clean transitions while rejecting
+  noisy ones (other-device within ±quiet-seconds), `--apply` writes
+  the median, low-sample-count is reported with a `skip_reason`.
+- `TestCli` (5) — CLI wiring for all four commands.
+
+### Live verification (against home.k8s.home)
+
+```
+$ cli-anything-homeassistant --json powercalc audit --hours 1 --top 5
+window: 1.0h
+smart_meter: mean=5634W min=798 max=10830
+home_total:  mean=4017W min=914 max=10936
+delta_mean: 1617W  coverage: 0.713
+top 5 groups by contribution:
+   40.1%  mean=2288W  Power · Outside
+   20.2%  mean=1152W  Power · Ground Floor
+   15.1%  mean= 860W  Power · Office
+   10.2%  mean= 584W  Power · Appliances
+    5.3%  mean= 302W  Power · Upstairs
+```
+
+The Outside group's 40 % share confirms the EV-charger fix from the
+prior session is now the dominant contribution. Coverage is 71 % over
+this window (was 20 % before the fix).
