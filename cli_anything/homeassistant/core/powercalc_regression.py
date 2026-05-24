@@ -208,22 +208,12 @@ def regress(
     Returns ``{n_samples, n_features, r_squared, intercept, candidates:
     [...], applied, dropped}``.
     """
-    entries = _pc.list_entries(client, title_contains=title_contains)
-    raw_candidates: list[dict] = []
-    for e in entries:
-        opts = e.get("options") or {}
-        data = e.get("data") or {}
-        source = opts.get("entity_id") or data.get("entity_id")
-        if not source:
-            continue
-        if (e.get("title") or "").startswith("Power · "):
-            continue
-        raw_candidates.append({
-            "entry_id": e["entry_id"],
-            "title": e.get("title") or "",
-            "source_entity": source,
-            "previous_power_w": opts.get("power") or data.get("power"),
-        })
+    from cli_anything.homeassistant.core.powercalc_calibration import (
+        virtual_power_entries,
+    )
+    raw_candidates = virtual_power_entries(
+        client, title_contains=title_contains,
+    )
 
     if not raw_candidates:
         return {"n_samples": 0, "n_features": 0, "r_squared": None,

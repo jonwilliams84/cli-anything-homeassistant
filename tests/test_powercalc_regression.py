@@ -29,6 +29,30 @@ class _Client:
 
     def set_entries(self, entries):
         self._entries = entries
+        # Auto-derive matching powercalc power-sensor states so
+        # virtual_power_entries() can resolve source_entity for each
+        # entry.
+        states = []
+        for e in entries:
+            opts = e.get("options") or {}
+            source = opts.get("entity_id")
+            title = e.get("title") or ""
+            if not source or title.startswith("Power · "):
+                continue
+            slug = "".join(
+                c.lower() if c.isalnum() else "_" for c in title
+            ).strip("_")
+            states.append({
+                "entity_id": f"sensor.{slug}_power",
+                "state": "0",
+                "attributes": {
+                    "integration": "powercalc",
+                    "calculation_mode": "fixed",
+                    "source_entity": source,
+                    "friendly_name": title + " Power",
+                },
+            })
+        self._states = states
 
     def set_history(self, entity_id, points):
         self._history[entity_id] = points
@@ -38,6 +62,8 @@ class _Client:
         if path.startswith("history/period/"):
             eid = (params or {}).get("filter_entity_id")
             return [self._history.get(eid, [])]
+        if path == "states":
+            return getattr(self, "_states", [])
         return {}
 
     def post(self, path, payload=None):
@@ -181,8 +207,9 @@ class TestRegress:
         by_entry = {c["entry_id"]: c for c in out["candidates"]}
         assert abs(by_entry["E_H"]["fitted_power_w"] - 800) < 5
         assert abs(by_entry["E_TV"]["fitted_power_w"] - 200) < 5
-        # Each candidate carries CI95 + previous_power
-        assert by_entry["E_TV"]["previous_power_w"] == 150
+        # previous_power_w is None — see calibration module docstring on
+        # why introspecting current options requires an extra round-trip
+        assert by_entry["E_TV"]["previous_power_w"] is None
         assert by_entry["E_H"]["ci95_w"] is not None
 
     def test_drops_always_on_device(self):

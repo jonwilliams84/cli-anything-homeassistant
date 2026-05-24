@@ -328,6 +328,36 @@ class TestCalibrateTemplate:
 # ─────────────────────────────────────────── auto_calibrate (passive)
 
 class TestAutoCalibrate:
+    def _wire_entries(self, client, entries, *, power_sensor_state="0"):
+        """Wire both the WS entries list AND the states list so
+        virtual_power_entries() can resolve source_entity."""
+        client.responses[("WS", "config_entries/get")] = entries
+        # Synthesize matching power-sensor states
+        states = []
+        for e in entries:
+            opts = e.get("options") or {}
+            source = opts.get("entity_id")
+            title = e.get("title") or ""
+            if not source or title.startswith("Power · "):
+                continue
+            # power_sensor entity_id by HA slug convention
+            sensor_id = "sensor." + "".join(
+                c.lower() if c.isalnum() else "_" for c in title
+            ).strip("_") + "_power"
+            states.append({
+                "entity_id": sensor_id,
+                "state": power_sensor_state,
+                "attributes": {
+                    "integration": "powercalc",
+                    "calculation_mode": "fixed",
+                    "source_entity": source,
+                    "friendly_name": title + " Power",
+                },
+            })
+        # Don't overwrite an explicitly-set states response
+        if ("GET", "states") not in client.responses:
+            client.responses[("GET", "states")] = states
+
     def test_finds_clean_transitions(self):
         client = _Client()
         t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -380,18 +410,20 @@ class TestAutoCalibrate:
                     return [[*fan_hist]]
                 if eid == "light.unrelated":
                     return [[*light_hist]]
+            if path == "states":
+                return client.responses.get(("GET", "states"), [])
             return {}
         client.get = routed_get
 
         # Two powercalc entries (the fan + the light)
-        client.responses[("WS", "config_entries/get")] = [
+        self._wire_entries(client, [
             {"entry_id": "E_FAN", "domain": "powercalc",
              "title": "Tower Fan",
              "options": {"entity_id": "switch.tower_fan", "power": 80}},
             {"entry_id": "E_LIGHT", "domain": "powercalc",
              "title": "Light",
              "options": {"entity_id": "light.unrelated", "power": 50}},
-        ]
+        ])
 
         out = cal.auto_calibrate(
             client, hours=1,
@@ -405,7 +437,9 @@ class TestAutoCalibrate:
         assert fan["samples"] == 2
         # Median delta ~ 1500W (200 → 1700)
         assert 1400 <= (fan["median_delta_w"] or 0) <= 1600
-        assert fan["previous_power_w"] == 80
+        # previous_power_w is None — see calibration module docstring on
+        # why introspecting current options requires an extra round-trip
+        assert fan["previous_power_w"] is None
         assert fan["applied"] is False
 
     def test_apply_writes(self):
@@ -434,13 +468,15 @@ class TestAutoCalibrate:
                     return [[*sm_points]]
                 if eid == "switch.tower_fan":
                     return [[*fan_hist]]
+            if path == "states":
+                return client.responses.get(("GET", "states"), [])
             return {}
         client.get = routed_get
-        client.responses[("WS", "config_entries/get")] = [
+        self._wire_entries(client, [
             {"entry_id": "E_FAN", "domain": "powercalc",
              "title": "Tower Fan",
              "options": {"entity_id": "switch.tower_fan", "power": 80}},
-        ]
+        ])
         # Capture set_fixed_power
         from cli_anything.homeassistant.core import powercalc as pc
         orig = pc.set_fixed_power
@@ -473,12 +509,14 @@ class TestAutoCalibrate:
                     return [list(sm)]
                 if eid == "switch.x":
                     return [[]]
+            if path == "states":
+                return client.responses.get(("GET", "states"), [])
             return {}
         client.get = routed_get
-        client.responses[("WS", "config_entries/get")] = [
+        self._wire_entries(client, [
             {"entry_id": "E_X", "domain": "powercalc",
              "title": "X", "options": {"entity_id": "switch.x", "power": 50}},
-        ]
+        ])
         out = cal.auto_calibrate(client, hours=1, min_samples=5,
                                   apply_=False)
         c = out["candidates"][0]

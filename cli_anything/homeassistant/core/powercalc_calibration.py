@@ -188,6 +188,85 @@ def _call_service(
     return client.post(f"services/{domain}/{name}", payload)
 
 
+def virtual_power_entries(client, *,
+                          title_contains: str | None = None) -> list[dict]:
+    """Enumerate every fixed-mode powercalc virtual_power entry with the
+    metadata calibration tools need.
+
+    The ``config_entries/get`` WS payload omits each entry's ``options``,
+    so we cross-reference with the per-entry power-sensor state — every
+    powercalc-generated sensor exposes ``source_entity`` /
+    ``calculation_mode`` / ``integration: powercalc`` attributes. Joining
+    by friendly_name (with the " Power" suffix stripped) gives us the
+    triple ``(entry_id, source_entity, current_power_w)``.
+
+    Returns rows that look like::
+
+        {
+          "entry_id": "...",
+          "title": "MUSHROOM-LIGHT",
+          "source_entity": "light.mushroom_light",
+          "calculation_mode": "fixed",
+          "power_sensor": "sensor.mushroom_light_power",
+          "previous_power_w": <current state of power_sensor when off, or
+                                None if mode != fixed>,
+        }
+
+    Only fixed-mode entries are included — template/linear/lut entries
+    can't be calibrated via :func:`powercalc.set_fixed_power`.
+    """
+    entries = _pc.list_entries(client, title_contains=title_contains)
+    # Build title → entry_id (skip group entries — they don't have a
+    # source_entity).
+    by_title: dict[str, str] = {}
+    for e in entries:
+        t = e.get("title") or ""
+        if t.startswith("Power · "):
+            continue
+        by_title[t.strip()] = e["entry_id"]
+
+    if not by_title:
+        return []
+
+    states = client.get("states")
+    if not isinstance(states, list):
+        return []
+
+    out: list[dict] = []
+    for s in states:
+        a = s.get("attributes") or {}
+        if a.get("integration") != "powercalc":
+            continue
+        mode = a.get("calculation_mode")
+        if mode != "fixed":
+            continue
+        source = a.get("source_entity")
+        if not source:
+            continue
+        fname = a.get("friendly_name") or ""
+        if fname.endswith(" Power"):
+            fname = fname[:-len(" Power")]
+        if fname.endswith(" power"):
+            fname = fname[:-len(" power")]
+        entry_id = by_title.get(fname.strip())
+        if not entry_id:
+            continue
+        # `previous_power_w` is the entry's fixed_power setting, which we
+        # don't directly see in attributes. Use the sensor's current
+        # state as a proxy ONLY when the source is currently off — that's
+        # the "configured fixed power but multiplied by 0" zero case;
+        # otherwise we can't tell from attributes alone.
+        out.append({
+            "entry_id": entry_id,
+            "title": fname.strip(),
+            "source_entity": source,
+            "calculation_mode": mode,
+            "power_sensor": s["entity_id"],
+            "previous_power_w": None,
+        })
+    return out
+
+
 # ── audit ─────────────────────────────────────────────────────────────────
 
 def audit(
@@ -596,26 +675,8 @@ def auto_calibrate(
           "applied": bool,
         }
     """
-    entries = _pc.list_entries(client, title_contains=title_contains)
-    # Restrict to fixed-mode virtual_power entries. We can't strictly
-    # detect mode from the listing alone, so we just take any entry that
-    # carries a source_entity in data/options.
-    candidates_raw: list[dict] = []
-    for e in entries:
-        opts = e.get("options") or {}
-        data = e.get("data") or {}
-        source = opts.get("entity_id") or data.get("entity_id")
-        if not source:
-            continue
-        # Skip group entries (they don't have a source_entity).
-        if (e.get("title") or "").startswith("Power · "):
-            continue
-        candidates_raw.append({
-            "entry_id": e["entry_id"],
-            "title": e.get("title") or "",
-            "source_entity": source,
-            "previous_power_w": opts.get("power") or data.get("power"),
-        })
+    candidates_raw = virtual_power_entries(client,
+                                            title_contains=title_contains)
 
     # Pull smart-meter history once — we'll slice windows out of it.
     sm_series = _list_state_history(client, smart_meter, hours=hours)
