@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from cli_anything.homeassistant.core import config_entries as _ce
+
 
 POWERCALC_DOMAIN = "powercalc"
 
@@ -250,3 +252,120 @@ def create_virtual_power(
         resp = client.post(f"config/config_entries/flow/{flow_id}", {})
 
     return resp
+
+
+# ── list / reload / set-power-template ─────────────────────────────────────
+
+def list_entries(client, *, title_contains: str | None = None,
+                 state: str | None = None) -> list[dict]:
+    """Return all powercalc config entries.
+
+    Optional filters:
+      * ``title_contains`` — case-insensitive substring match on entry title.
+      * ``state`` — filter to entries whose ``state`` matches exactly
+        (e.g. ``"loaded"``, ``"not_loaded"``, ``"setup_error"``).
+    """
+    entries = _ce.list_entries(client, domain=POWERCALC_DOMAIN)
+    if title_contains is not None:
+        needle = title_contains.lower()
+        entries = [e for e in entries
+                   if needle in (e.get("title") or "").lower()]
+    if state is not None:
+        entries = [e for e in entries if e.get("state") == state]
+    return entries
+
+
+def reload_entry(client, entry_id: str) -> dict:
+    """Reload a powercalc config entry without restarting HA.
+
+    Useful after editing a power_template, or when a group's flat
+    ``entities`` attribute hasn't refreshed after a new leaf was added.
+    """
+    if not entry_id:
+        raise ValueError("entry_id is required")
+    return _ce.reload_entry(client, entry_id)
+
+
+def reload_groups_for_member(client, *, parent_entry_ids: list[str]) -> dict:
+    """Reload the supplied parent powercalc group entries so their flat
+    ``entities`` attribute regenerates after a new leaf was added.
+
+    Common use: after :func:`create_virtual_power` joins a sub-group, the
+    upstream rollup groups (e.g. Ground Floor, Home Total) still cache the
+    old flat list until reloaded.
+
+    Returns ``{parent_entry_id: <reload response>}``.
+    """
+    out: dict[str, dict] = {}
+    for eid in parent_entry_ids:
+        out[eid] = reload_entry(client, eid)
+    return out
+
+
+def _open_fixed_step(client, entry_id: str) -> str:
+    """Open a powercalc virtual_power entry's options flow and advance to the
+    ``fixed`` step, returning the flow_id ready for the next submit.
+
+    Raises ``RuntimeError`` if the menu doesn't expose a ``fixed`` step (which
+    means this is either a group entry, a non-fixed-mode entry, or an unknown
+    entry type — none of which `set_power_template` can edit).
+    """
+    init = _ce.options_flow_init(client, entry_id)
+    flow_id = init.get("flow_id")
+    if not flow_id:
+        raise RuntimeError(
+            f"Could not open options flow for {entry_id}: {init!r}",
+        )
+    if init.get("type") == "menu":
+        if "fixed" not in (init.get("menu_options") or []):
+            raise RuntimeError(
+                f"Entry {entry_id} options flow has no `fixed` step "
+                f"(menu options: {init.get('menu_options')!r}). "
+                f"Not a fixed-mode virtual_power entry?",
+            )
+        resp = _ce.options_flow_configure(
+            client, flow_id, {"next_step_id": "fixed"},
+        )
+        if resp.get("type") != "form":
+            raise RuntimeError(
+                f"Expected form after selecting `fixed`, got "
+                f"{resp.get('type')!r}: {resp!r}",
+            )
+    return flow_id
+
+
+def set_power_template(client, entry_id: str, *,
+                        power_template: str) -> dict:
+    """Replace the ``power_template`` on a fixed-mode virtual_power entry.
+
+    The 6-line manual flow (options-init → options-configure
+    next_step_id=fixed → options-configure power_template) collapsed into
+    one call. Used e.g. to bump a fan model from 24 W to 30 W:
+
+        set_power_template(client, fan_entry_id,
+            power_template="{{ 30 * ((state_attr('fan.x','percentage')|float(0))/100)**3 "
+                            "if is_state('fan.x','on') else 0 }}")
+    """
+    if not entry_id:
+        raise ValueError("entry_id is required")
+    if not power_template:
+        raise ValueError("power_template is required and must be non-empty")
+    flow_id = _open_fixed_step(client, entry_id)
+    return _ce.options_flow_configure(
+        client, flow_id, {"power_template": power_template},
+    )
+
+
+def set_fixed_power(client, entry_id: str, *, power: float) -> dict:
+    """Replace the fixed ``power`` (constant W) on a fixed-mode entry.
+
+    Same flow as :func:`set_power_template` but submits ``power`` instead.
+    """
+    if not entry_id:
+        raise ValueError("entry_id is required")
+    if power is None:
+        raise ValueError("power is required")
+    flow_id = _open_fixed_step(client, entry_id)
+    return _ce.options_flow_configure(
+        client, flow_id, {"power": power},
+    )

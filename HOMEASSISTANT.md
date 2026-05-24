@@ -151,6 +151,11 @@ stderr and return a non-zero exit code.
 | `button`       | `button.* press` |
 | `text`         | `text.* set` |
 | `notify`       | `notify.<service> send` with `--title` / `--target` / `--data` / `--service` |
+| `powercalc`    | `list` / `create` / `set-template` / `set-power` / `reload` + nested `group {members,add-members,remove-members,set-members}` — safety wrappers over powercalc's REPLACE-on-write group API and the binary_sensor fixed-mode no-op |
+| `entity restored` / `entity orphans` | List entities flagged `restored=true` or referencing missing config entries — strong orphan signal |
+| `entity prune` | Bulk-delete registry entries matching `--platform` / `--restored` / `--orphan` / `--disabled-by` / `--entity-id`; dry-run by default, protects user-disabled entries, per-entity error tolerance (proven against the 96.7k-entry UniFi cleanup) |
+| `recorder top` | Rank entities by state-change count over `--hours N`; `--domain` to scope on large installs |
+| `backup list/show` | Now correctly surface `size_mb` / `agents` / `protected` (previously stuck at null because the fields live per-agent in HA's payload) |
 
 ### State Model
 

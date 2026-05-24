@@ -174,3 +174,120 @@ def update_device(client, device_id: str, *,
     if labels is not None:       payload["labels"]       = labels
     if disabled_by is not _SENTINEL: payload["disabled_by"] = disabled_by
     return client.ws_call("config/device_registry/update", payload) or {}
+
+
+# ── entity removal (registry-level) ────────────────────────────────────────
+
+def remove_entity(client, entity_id: str) -> Any:
+    """Permanently remove an entity from the entity registry.
+
+    Wraps the ``config/entity_registry/remove`` WS command. The integration
+    that originally provided the entity is free to re-add it on a future
+    boot if it sees the same unique_id again — so for actively-provided
+    entities this is more of a "reset to defaults" than a hard delete.
+    For orphaned / disabled-by-integration entries this is a true delete.
+    """
+    if not entity_id:
+        raise ValueError("entity_id is required")
+    return client.ws_call(
+        "config/entity_registry/remove", {"entity_id": entity_id},
+    )
+
+
+def bulk_remove_entities(client, *,
+                          entity_ids: list[str],
+                          dry_run: bool = False,
+                          progress_every: int = 500,
+                          on_progress=None) -> dict:
+    """Remove a list of entities from the registry, tolerating per-entity errors.
+
+    Returns ``{removed: [...], failed: [{entity_id, error}], dry_run: bool}``.
+    One failure does NOT abort the loop — the prior 96k-entity UniFi prune
+    succeeded with 3 transient HA-unreachable failures, and those entries
+    were quietly retried later. Pass ``on_progress(done, total, ok, errs)``
+    to receive periodic progress callbacks.
+    """
+    total = len(entity_ids)
+    removed: list[str] = []
+    failed: list[dict] = []
+    for i, eid in enumerate(entity_ids, 1):
+        if dry_run:
+            removed.append(eid)
+        else:
+            try:
+                remove_entity(client, eid)
+                removed.append(eid)
+            except Exception as exc:
+                failed.append({"entity_id": eid, "error": str(exc)})
+        if on_progress is not None and (
+            i % progress_every == 0 or i == total
+        ):
+            try:
+                on_progress(i, total, len(removed), len(failed))
+            except Exception:
+                pass
+    return {"removed": removed, "failed": failed, "dry_run": dry_run,
+            "total": total}
+
+
+# ── orphan detection ──────────────────────────────────────────────────────
+
+def find_restored_entities(client) -> list[dict]:
+    """Return registry entries currently flagged ``attributes.restored=True``.
+
+    ``restored=true`` on a state means HA loaded the entity from the registry
+    on boot but no integration re-claimed it via async_add_entities. Strong
+    signal of "integration is no longer providing this entity" — but mind
+    the false positives: intermittent integrations (iBeacon, doorbell push,
+    MQTT-discovery-after-quiet-period) also flip restored=true until their
+    first event arrives.
+
+    Each returned dict is the registry entry, with ``_state`` and
+    ``_friendly_name`` added for convenience.
+    """
+    states = client.get("states")
+    reg = client.ws_call("config/entity_registry/list") or []
+    state_by_id = {s["entity_id"]: s for s in states}
+    out: list[dict] = []
+    for e in reg:
+        s = state_by_id.get(e["entity_id"])
+        if not s:
+            continue
+        if s.get("attributes", {}).get("restored") is True:
+            row = dict(e)
+            row["_state"] = s.get("state")
+            row["_friendly_name"] = s.get("attributes", {}).get("friendly_name")
+            out.append(row)
+    return out
+
+
+def find_orphan_entities(client) -> list[dict]:
+    """Return registry entries whose ``config_entry_id`` is no longer loaded.
+
+    Two flavors are included:
+
+    * ``_orphan_reason='missing'`` — the referenced config entry has been
+      removed entirely; the registry entry is truly orphaned.
+    * ``_orphan_reason='no_config_entry'`` — no ``config_entry_id`` at all
+      (typically YAML-defined helpers or template entities whose YAML has
+      been removed).
+
+    Entries with valid loaded config entries are NOT included even if their
+    state is currently unavailable — see :func:`find_restored_entities` for
+    the runtime-orphan signal instead.
+    """
+    reg = client.ws_call("config/entity_registry/list") or []
+    cfgs = client.ws_call("config_entries/get") or []
+    cfg_ids = {c["entry_id"] for c in cfgs}
+    out: list[dict] = []
+    for e in reg:
+        cid = e.get("config_entry_id")
+        if not cid:
+            row = dict(e)
+            row["_orphan_reason"] = "no_config_entry"
+            out.append(row)
+        elif cid not in cfg_ids:
+            row = dict(e)
+            row["_orphan_reason"] = "missing"
+            out.append(row)
+    return out

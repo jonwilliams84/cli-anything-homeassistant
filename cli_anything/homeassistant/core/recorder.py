@@ -139,3 +139,89 @@ def purge_entities(client, entity_ids: list[str], *,
         raise ValueError("provide at least one of entity_ids / domains / entity_globs")
     return services_core.call_service(client, "recorder", "purge_entities",
                                        service_data=data)
+
+
+def top_entities(
+    client,
+    *,
+    hours: float = 24,
+    domains: list[str] | None = None,
+    entity_ids: list[str] | None = None,
+    limit: int = 20,
+    by: str = "changes",
+) -> list[dict]:
+    """Rank entities by how much recorder volume they're producing.
+
+    The cheap signal HA's API actually offers is "state-change points per
+    entity over the last N hours". That's what dominates state_changes
+    table growth on a typical install — there isn't a direct "rows per
+    entity" introspection endpoint without going at the DB.
+
+    Args:
+      hours:     window to count points over (default 24).
+      domains:   if set, restrict to entities in these domains
+                 (e.g. ``["sensor", "binary_sensor"]``).
+      entity_ids: if set, restrict to these exact ids (otherwise the
+                 entire live state list is sampled).
+      limit:     how many top entities to return.
+      by:        ``"changes"`` (state-change count, default) is the only
+                 mode currently supported. Reserved for future modes
+                 (e.g. ``"bytes"`` if HA ever exposes byte-per-entity).
+
+    Returns a list ordered by descending ``changes_per_hour`` of dicts:
+      ``{entity_id, friendly_name, domain, changes, changes_per_hour}``.
+
+    Cost: one ``/api/history/period`` call per entity sampled (HA's
+    minimal_response keeps each cheap). For a 5000-entity install with
+    ``--limit 20`` you still pay 5000 calls — set ``domains`` /
+    ``entity_ids`` to narrow scope on big installs.
+    """
+    if by != "changes":
+        raise ValueError(f"by must be 'changes' (got {by!r})")
+
+    if entity_ids is None:
+        states = client.get("states")
+        ids = [s["entity_id"] for s in states]
+        names = {s["entity_id"]: s.get("attributes", {}).get("friendly_name")
+                 for s in states}
+    else:
+        ids = list(entity_ids)
+        names = {}
+    if domains:
+        dom_set = set(domains)
+        ids = [e for e in ids if e.split(".", 1)[0] in dom_set]
+
+    end = datetime.now(tz=timezone.utc)
+    start = end - timedelta(hours=hours)
+    start_iso = _iso(start)
+    end_iso = _iso(end)
+
+    rows: list[dict] = []
+    for eid in ids:
+        try:
+            raw = client.get(
+                f"history/period/{start_iso}",
+                params={
+                    "filter_entity_id": eid,
+                    "end_time": end_iso,
+                    "minimal_response": "true",
+                },
+            )
+        except Exception:
+            continue
+        points: list = []
+        if isinstance(raw, list) and raw and isinstance(raw[0], list):
+            points = raw[0]
+        n = len(points)
+        if n == 0:
+            continue
+        rows.append({
+            "entity_id": eid,
+            "friendly_name": names.get(eid),
+            "domain": eid.split(".", 1)[0],
+            "changes": n,
+            "changes_per_hour": round(n / max(hours, 0.001), 2),
+        })
+
+    rows.sort(key=lambda r: -r["changes"])
+    return rows[: max(limit, 0)]

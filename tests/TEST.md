@@ -563,3 +563,56 @@ New tests in:
 - `tests/test_cli_entity_control_wiring.py` — 52 Click-runner wiring tests
   covering every new subcommand against the recorded `service_calls` log of
   the shared `FakeClient`.
+
+## Refine pass v5 — powercalc CLI + entity prune + recorder top + backup size
+
+This pass addressed gaps that surfaced during real-world sessions:
+
+1. **No `powercalc` CLI group** — `core/powercalc.py` already had the safety
+   wrappers, but every operation went through ad-hoc `python3 <<PY`. Wired a
+   full Click surface: `list`, `create`, `set-template`, `set-power`,
+   `reload`, plus nested `group` (members/add-members/remove-members/set-members).
+2. **No entity-prune command** — the 96.7k UniFi cleanup was hand-rolled.
+   Added `entity restored`, `entity orphans`, and `entity prune` (with
+   `--platform`/`--restored`/`--orphan`/`--disabled-by`/`--entity-id`
+   filters, default-dry-run, user-disabled protection, per-entity
+   error tolerance via `bulk_remove_entities`).
+3. **`backup list/show` always returned `size: null`** — HA stores `size`,
+   `protected`, and `agent_ids` per agent. Added `_enrich()` in
+   `core/backup.py` that promotes these to top-level fields, and updated
+   the CLI list view to read them.
+4. **No "what's eating the recorder" probe** — added `recorder top`
+   (state-change count per entity over `--hours`, with `--domain` scope).
+
+### New CLI groups / commands wired
+
+| Surface                              | Backing module          |
+|--------------------------------------|-------------------------|
+| `powercalc list/create/set-template/set-power/reload` | `core/powercalc.py` |
+| `powercalc group {members,add-members,remove-members,set-members}` | `core/powercalc.py` |
+| `entity restored / orphans / prune`  | `core/registry.py` (new: `remove_entity`, `bulk_remove_entities`, `find_restored_entities`, `find_orphan_entities`) |
+| `recorder top`                       | `core/recorder.py` (new: `top_entities`) |
+| `backup list` (size promotion fix)   | `core/backup.py` (new: `_enrich`) |
+
+### Test results — refine pass v5
+
+```
+$ python3 -m pytest tests/ -q --ignore=tests/test_full_e2e.py
+1797 passed in 1.54s
+```
+
+- **Before pass v5:** 1,755 unit tests.
+- **After pass v5:** 1,797 unit tests (+42).
+- **Regressions:** 0.
+
+New tests in:
+
+- `tests/test_v5_refine_core.py` — 26 unit tests against the new core
+  helpers (backup enrichment, powercalc list/reload/set-template/set-power
+  flow incl. the fixed-step menu traversal, registry remove/bulk-remove
+  with per-entity error tolerance + progress callback, find_restored and
+  find_orphan classification, recorder.top_entities ordering/domain
+  filter/limit/unknown-mode rejection).
+- `tests/test_v5_refine_cli_wiring.py` — 16 CliRunner wiring tests
+  covering every new CLI surface end-to-end against the recorded
+  FakeClient `service_calls`/`ws_calls` log.

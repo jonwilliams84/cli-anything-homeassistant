@@ -87,6 +87,7 @@ from cli_anything.homeassistant.core import recorder as recorder_core
 from cli_anything.homeassistant.core import scenes as scenes_core
 from cli_anything.homeassistant.core import service_shortcuts as service_shortcuts_core
 from cli_anything.homeassistant.core import entity_control as entity_control_core
+from cli_anything.homeassistant.core import powercalc as powercalc_core
 from cli_anything.homeassistant.core import shopping_list as shopping_list_core
 from cli_anything.homeassistant.core import singletons as singletons_core
 from cli_anything.homeassistant.core import subentries as subentries_core
@@ -3542,14 +3543,20 @@ def backup_list(ctx):
     """Flat table of backups: id, name, date, size, agents."""
     rows = []
     for b in backup_core.list_backups(make_client(ctx)):
+        # `size_bytes`, `agent_ids`, `protected` are now promoted from the
+        # per-agent dict by core/backup.py::_enrich. Fall back to the
+        # legacy top-level `size` if some future HA version puts it back.
+        size_bytes = b.get("size_bytes") or b.get("size")
         rows.append({
             "backup_id": b.get("backup_id") or b.get("slug"),
             "name": b.get("name"),
             "date": b.get("date") or b.get("created_at"),
-            "size_mb": round((b.get("size") or 0) / (1024 * 1024), 2) if b.get("size") else None,
+            "size_mb": (round(size_bytes / (1024 * 1024), 2)
+                        if size_bytes else None),
             "protected": b.get("protected"),
             "type": b.get("type"),
-            "agents": list((b.get("agents") or {}).keys()) or None,
+            "agents": b.get("agent_ids")
+                       or list((b.get("agents") or {}).keys()) or None,
         })
     emit(ctx, rows)
 
@@ -7465,6 +7472,315 @@ def notify_send_cmd(ctx, message, title, service, targets, data):
         target=target,
         data=parsed_data,
         service=service,
+    ))
+
+
+# ──────────────────────────────────────────────────────── powercalc
+
+@cli.group()
+def powercalc():
+    """Powercalc safety wrappers — virtual_power create / group membership /
+    fixed-mode template edits. Uses the same safety helpers that defuse the
+    REPLACE-on-write and binary_sensor-no-op footguns."""
+
+
+@powercalc.command("list")
+@click.option("--title-contains", default=None,
+              help="Case-insensitive substring filter on entry title")
+@click.option("--state", default=None,
+              help="Filter by config-entry state (loaded/not_loaded/...)")
+@click.pass_context
+def powercalc_list(ctx, title_contains, state):
+    """List powercalc config entries."""
+    emit(ctx, powercalc_core.list_entries(
+        make_client(ctx),
+        title_contains=title_contains, state=state,
+    ))
+
+
+@powercalc.command("create")
+@click.option("--source", "source_entity", required=True,
+              help="Source entity_id powering the calculation")
+@click.option("--name", required=True, help="Entry name")
+@click.option("--power", type=float, default=None,
+              help="Fixed wattage when source is 'on' (mutually exclusive with --template)")
+@click.option("--template", "power_template", default=None,
+              help="Jinja power_template (mutually exclusive with --power)")
+@click.option("--standby", "standby_power", type=float, default=0,
+              help="Standby power in W (default 0)")
+@click.option("--no-energy-sensor", "create_energy_sensor",
+              is_flag=True, default=True, flag_value=False,
+              help="Don't create the matching energy sensor (default: do create)")
+@click.option("--utility-meters", "create_utility_meters",
+              is_flag=True, default=False,
+              help="Also create utility_meter helpers (default: off)")
+@click.option("--group", "groups", multiple=True,
+              help="Powercalc group entry_id to auto-join (repeatable)")
+@click.pass_context
+def powercalc_create(ctx, source_entity, name, power, power_template,
+                     standby_power, create_energy_sensor,
+                     create_utility_meters, groups):
+    """Create a virtual_power entry.
+
+    Refuses fixed-mode (--power) on binary_sensor sources — those silently
+    no-op in powercalc. Use --template "{{ <W> if is_state(...,'on') else 0 }}"."""
+    emit(ctx, powercalc_core.create_virtual_power(
+        make_client(ctx),
+        source_entity=source_entity, name=name,
+        power=power, power_template=power_template,
+        standby_power=standby_power,
+        create_energy_sensor=create_energy_sensor,
+        create_utility_meters=create_utility_meters,
+        groups=list(groups) if groups else None,
+    ))
+
+
+@powercalc.command("set-template")
+@click.argument("entry_id")
+@click.argument("power_template")
+@click.pass_context
+def powercalc_set_template(ctx, entry_id, power_template):
+    """Replace the power_template on a fixed-mode virtual_power entry.
+
+    Collapses the manual options-init → options-configure(next=fixed) →
+    options-configure(power_template=...) flow into one call. Example:
+
+      powercalc set-template <entry_id> \\
+        "{{ 30 * ((state_attr('fan.x','percentage')|float(0))/100)**3
+            if is_state('fan.x','on') else 0 }}"
+    """
+    emit(ctx, powercalc_core.set_power_template(
+        make_client(ctx), entry_id, power_template=power_template,
+    ))
+
+
+@powercalc.command("set-power")
+@click.argument("entry_id")
+@click.argument("power", type=float)
+@click.pass_context
+def powercalc_set_power(ctx, entry_id, power):
+    """Replace the fixed power (W) on a fixed-mode virtual_power entry."""
+    emit(ctx, powercalc_core.set_fixed_power(
+        make_client(ctx), entry_id, power=power,
+    ))
+
+
+@powercalc.command("reload")
+@click.argument("entry_ids", nargs=-1, required=True)
+@click.pass_context
+def powercalc_reload(ctx, entry_ids):
+    """Reload one or more powercalc entries (e.g. parent groups after a new
+    leaf joined, so their flat 'entities' attribute regenerates)."""
+    emit(ctx, powercalc_core.reload_groups_for_member(
+        make_client(ctx), parent_entry_ids=list(entry_ids),
+    ))
+
+
+@powercalc.group("group")
+def powercalc_group():
+    """Manage powercalc group membership safely (read-merge-write)."""
+
+
+@powercalc_group.command("members")
+@click.argument("sensor_entity_id")
+@click.pass_context
+def powercalc_group_members(ctx, sensor_entity_id):
+    """List the resolved entity list for a group's power sensor."""
+    emit(ctx, powercalc_core.get_group_members(
+        make_client(ctx), sensor_entity_id,
+    ))
+
+
+@powercalc_group.command("add-members")
+@click.option("--entry-id", required=True, help="Group's config-entry id")
+@click.option("--sensor", "sensor_entity_id", required=True,
+              help="Group's power sensor entity_id (used to read current list)")
+@click.option("--member", "entities", multiple=True, required=True,
+              help="Power sensor entity_id to add (repeatable)")
+@click.pass_context
+def powercalc_group_add_members(ctx, entry_id, sensor_entity_id, entities):
+    """SAFELY add members (read current list, merge, write back)."""
+    emit(ctx, powercalc_core.add_group_members(
+        make_client(ctx), entry_id,
+        sensor_entity_id=sensor_entity_id, entities=list(entities),
+    ))
+
+
+@powercalc_group.command("remove-members")
+@click.option("--entry-id", required=True, help="Group's config-entry id")
+@click.option("--sensor", "sensor_entity_id", required=True)
+@click.option("--member", "entities", multiple=True, required=True,
+              help="Power sensor entity_id to drop (repeatable)")
+@click.pass_context
+def powercalc_group_remove_members(ctx, entry_id, sensor_entity_id, entities):
+    """SAFELY remove members (read current list, filter, write back)."""
+    emit(ctx, powercalc_core.remove_group_members(
+        make_client(ctx), entry_id,
+        sensor_entity_id=sensor_entity_id, entities=list(entities),
+    ))
+
+
+@powercalc_group.command("set-members")
+@click.option("--entry-id", required=True)
+@click.option("--power-entity", "power_entities", multiple=True,
+              help="Replacement power-sensor list (repeatable). Pass --power-entity= once with empty value to clear.")
+@click.option("--sub-group", "sub_groups", multiple=True,
+              help="Replacement sub_groups list (repeatable)")
+@click.option("--energy-entity", "energy_entities", multiple=True,
+              help="Replacement energy-sensor list (repeatable)")
+@click.confirmation_option(prompt="REPLACE all group members. Continue?")
+@click.pass_context
+def powercalc_group_set_members(ctx, entry_id, power_entities,
+                                sub_groups, energy_entities):
+    """DESTRUCTIVE: replace a group's membership lists with the provided
+    sets. Prefer add-members / remove-members unless you really do want
+    to overwrite the whole list."""
+    emit(ctx, powercalc_core.set_group_members(
+        make_client(ctx), entry_id,
+        power_entities=list(power_entities) if power_entities else None,
+        sub_groups=list(sub_groups) if sub_groups else None,
+        energy_entities=list(energy_entities) if energy_entities else None,
+    ))
+
+
+# ──────────────────────────────────────────────────────── entity restored / prune
+
+@entity.command("restored")
+@click.option("--platform", default=None,
+              help="Filter to entities whose registry platform matches")
+@click.option("--summary/--no-summary", default=True,
+              help="Print platform breakdown only (default) vs full entity list")
+@click.pass_context
+def entity_restored(ctx, platform, summary):
+    """List entities currently flagged restored=true (HA loaded them from
+    registry but no integration claimed them on boot).
+
+    Strong orphan signal — but mind false positives for intermittent
+    integrations (iBeacon, doorbell, MQTT-after-quiet)."""
+    from collections import Counter
+    rows = registry_core.find_restored_entities(make_client(ctx))
+    if platform:
+        rows = [r for r in rows if r.get("platform") == platform]
+    if summary and not ctx.obj.get("as_json"):
+        by_plat = Counter(r.get("platform") for r in rows)
+        emit(ctx, {"total": len(rows),
+                   "by_platform": dict(by_plat.most_common())})
+        return
+    emit(ctx, rows)
+
+
+@entity.command("orphans")
+@click.option("--reason", default=None,
+              type=click.Choice(["missing", "no_config_entry"]),
+              help="Filter to one orphan flavor")
+@click.pass_context
+def entity_orphans(ctx, reason):
+    """List entities whose config_entry_id references a missing config entry,
+    OR has no config_entry_id at all (typically YAML-helper leftovers)."""
+    rows = registry_core.find_orphan_entities(make_client(ctx))
+    if reason:
+        rows = [r for r in rows if r.get("_orphan_reason") == reason]
+    emit(ctx, rows)
+
+
+@entity.command("prune")
+@click.option("--platform", default=None,
+              help="Only delete entries with this registry platform")
+@click.option("--restored", is_flag=True, default=False,
+              help="Only delete entries currently flagged restored=true")
+@click.option("--orphan", is_flag=True, default=False,
+              help="Only delete entries whose config entry is missing")
+@click.option("--disabled-by", default=None,
+              type=click.Choice(["integration", "user", "device", "config_entry",
+                                 "hass", "any"], case_sensitive=False),
+              help="Only delete entries with this disabled_by value (or 'any')")
+@click.option("--entity-id", "entity_ids", multiple=True,
+              help="Exact entity_id (repeatable). When supplied, all other filters are ignored.")
+@click.option("--dry-run/--apply", default=True,
+              help="Default: dry run. Pass --apply to actually delete.")
+@click.option("--protect-user-disabled/--no-protect-user-disabled",
+              default=True,
+              help="Never delete user-disabled entries (default: on)")
+@click.pass_context
+def entity_prune(ctx, platform, restored, orphan, disabled_by,
+                 entity_ids, dry_run, protect_user_disabled):
+    """Bulk-delete registry entries matching criteria. Backup first."""
+    client = make_client(ctx)
+
+    if entity_ids:
+        targets = list(entity_ids)
+    else:
+        reg = registry_core.list_entities(client)
+        live_ids = set()
+        if restored:
+            states = client.get("states")
+            live_ids = {s["entity_id"] for s in states
+                        if s.get("attributes", {}).get("restored") is True}
+
+        orphan_ids: set[str] = set()
+        if orphan:
+            orphans = registry_core.find_orphan_entities(client)
+            orphan_ids = {e["entity_id"] for e in orphans}
+
+        targets = []
+        for e in reg:
+            if platform and e.get("platform") != platform:
+                continue
+            if restored and e["entity_id"] not in live_ids:
+                continue
+            if orphan and e["entity_id"] not in orphan_ids:
+                continue
+            if disabled_by:
+                if disabled_by.lower() == "any":
+                    if not e.get("disabled_by"):
+                        continue
+                elif e.get("disabled_by") != disabled_by.lower():
+                    continue
+            if protect_user_disabled and e.get("disabled_by") == "user":
+                continue
+            targets.append(e["entity_id"])
+
+    if not targets:
+        emit(ctx, {"dry_run": dry_run, "total": 0, "removed": [], "failed": [],
+                   "note": "no entries matched filters"})
+        return
+
+    def _progress(done, total, ok, errs):
+        if not ctx.obj.get("as_json"):
+            click.echo(f"  {done}/{total}  ok={ok} errs={errs}", err=True)
+
+    res = registry_core.bulk_remove_entities(
+        client, entity_ids=targets, dry_run=dry_run,
+        on_progress=_progress,
+    )
+    emit(ctx, {
+        "dry_run": res["dry_run"],
+        "total": res["total"],
+        "removed_count": len(res["removed"]),
+        "failed_count": len(res["failed"]),
+        "failed": res["failed"][:20],
+        "removed_sample": res["removed"][:10],
+    })
+
+
+# ──────────────────────────────────────────────────────── recorder top
+
+@recorder.command("top")
+@click.option("--hours", type=float, default=24,
+              help="Window (default 24h)")
+@click.option("--domain", "domains", multiple=True,
+              help="Restrict to these domains (repeatable). Recommended on big installs.")
+@click.option("--limit", type=int, default=20)
+@click.pass_context
+def recorder_top(ctx, hours, domains, limit):
+    """Rank entities by state-change count over the last N hours.
+
+    The first question when investigating recorder bloat. Cost: one
+    history call per sampled entity, so set --domain on big installs."""
+    emit(ctx, recorder_core.top_entities(
+        make_client(ctx),
+        hours=hours, domains=list(domains) if domains else None,
+        limit=limit, by="changes",
     ))
 
 

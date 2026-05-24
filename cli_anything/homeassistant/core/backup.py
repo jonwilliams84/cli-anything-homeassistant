@@ -13,28 +13,73 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
+def _enrich(b: dict) -> dict:
+    """Promote per-agent `size` / `protected` to top-level fields.
+
+    HA stores ``size`` and ``protected`` inside ``agents[agent_id]`` because
+    the same logical backup can live on multiple agents (local, network,
+    cloud) at independent sizes. For most callers — list views, audit
+    scripts — the top-level summary is what's actually wanted. This adds:
+
+      * ``size_bytes`` — sum of every agent's size (None when no agent has
+        a known size yet)
+      * ``agent_ids``  — list of agents holding this backup
+      * ``protected``  — True if any agent reports protected
+    """
+    if not isinstance(b, dict):
+        return b
+    agents = b.get("agents") or {}
+    sizes = [a.get("size") for a in agents.values() if a.get("size") is not None]
+    out = dict(b)
+    out["size_bytes"] = sum(sizes) if sizes else None
+    out["agent_ids"] = list(agents.keys())
+    out["protected"] = any(a.get("protected") for a in agents.values())
+    return out
+
+
 def info(client) -> dict:
-    """Return overall backup state: list of backups, in-flight job, last completed."""
+    """Return overall backup state: list of backups, in-flight job, last completed.
+
+    Each backup in ``backups`` is enriched with top-level ``size_bytes``,
+    ``agent_ids``, and ``protected`` for the common case (HA only exposes
+    these per-agent in the raw payload).
+    """
     data = client.ws_call("backup/info") or {}
-    return data if isinstance(data, dict) else {"raw": data}
+    if not isinstance(data, dict):
+        return {"raw": data}
+    if isinstance(data.get("backups"), list):
+        data = dict(data)
+        data["backups"] = [_enrich(b) for b in data["backups"]]
+    return data
 
 
 def list_backups(client) -> list[dict]:
-    """Flatten `info()['backups']` for table display."""
+    """Flatten `info()['backups']` for table display (enriched)."""
     data = info(client)
     backups = data.get("backups") if isinstance(data, dict) else None
     return backups if isinstance(backups, list) else []
 
 
 def details(client, backup_id: str) -> dict:
-    """Full record for one backup (agents it lives on, size, content, etc.)."""
+    """Full record for one backup (agents it lives on, size, content, etc.).
+
+    Enriched the same way as :func:`info` — top-level ``size_bytes``,
+    ``agent_ids``, and ``protected`` are promoted from the per-agent dict.
+    """
     if not backup_id:
         raise ValueError("backup_id is required")
     # Newer HA: backup/details takes backup_id; older took slug
     try:
-        return client.ws_call("backup/details", {"backup_id": backup_id}) or {}
+        d = client.ws_call("backup/details", {"backup_id": backup_id}) or {}
     except Exception:
-        return client.ws_call("backup/details", {"slug": backup_id}) or {}
+        d = client.ws_call("backup/details", {"slug": backup_id}) or {}
+    # `backup/details` returns {backup: {...}} on some HA versions, a
+    # flat dict on others. Enrich whichever shape is returned.
+    if isinstance(d, dict) and "backup" in d and isinstance(d["backup"], dict):
+        d = dict(d)
+        d["backup"] = _enrich(d["backup"])
+        return d
+    return _enrich(d)
 
 
 def generate(client, *, name: Optional[str] = None,

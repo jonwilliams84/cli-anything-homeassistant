@@ -92,6 +92,9 @@ overrides also work: `CLI_HA_URL`, `CLI_HA_TOKEN`, etc.
 | `remote` | `remote.*` — turn-on (activity), send-command, learn-command, delete-command |
 | `number` / `select` / `button` / `text` | One-shot input setters: `number set`, `select set`/`next`/`previous`, `button press`, `text set` |
 | `notify` | `notify.<service>` send with title/target/data |
+| `powercalc` | `list` / `create` / `set-template` / `set-power` / `reload` + `group {members,add-members,remove-members,set-members}` — safety wrappers over the REPLACE-on-write and binary_sensor-no-op footguns |
+| `entity restored` / `entity orphans` / `entity prune` | Find and bulk-delete orphan registry entries; backup-first + dry-run by default + per-entity error tolerance |
+| `recorder top` | Rank entities by state-change count over a window — first question when investigating recorder DB bloat |
 
 ## Quick examples
 
@@ -130,6 +133,25 @@ cli-anything-homeassistant cover set-position cover.blinds 50
 cli-anything-homeassistant select set select.washer_program quick_30
 cli-anything-homeassistant notify send "Door left open" \
   --service mobile_app_jon --title "Heads up"
+
+# Powercalc edits without the manual options-flow dance
+cli-anything-homeassistant powercalc list --title-contains "Dining"
+cli-anything-homeassistant powercalc set-template <ENTRY_ID> \
+  "{{ 30 * ((state_attr('fan.dining','percentage')|float(0))/100)**3 \
+       if is_state('fan.dining','on') else 0 }}"
+cli-anything-homeassistant powercalc group add-members \
+  --entry-id <GROUP_ID> --sensor sensor.power_dining \
+  --member sensor.dining_room_fan_power
+
+# Find orphaned / restored registry entries and prune safely
+cli-anything-homeassistant entity restored --platform cloud
+cli-anything-homeassistant entity prune --platform unifi \
+  --disabled-by integration               # dry-run by default
+cli-anything-homeassistant entity prune --platform unifi \
+  --disabled-by integration --apply       # actually delete
+
+# What's hammering the recorder right now?
+cli-anything-homeassistant recorder top --hours 24 --domain sensor --limit 20
 ```
 
 ## Agent / `--json` mode
