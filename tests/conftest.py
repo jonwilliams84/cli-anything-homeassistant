@@ -50,10 +50,14 @@ class FakeClient:
         return self.responses.get(("GET", match_path),
                                   self.responses.get(("GET", path), []))
 
-    def post(self, path: str, payload: Any = None) -> Any:
+    def post(self, path: str, payload: Any = None,
+              params: dict | None = None) -> Any:
         path = path.lstrip("/")
         match_path = path.split("?", 1)[0]
-        self.calls.append({"verb": "POST", "path": path, "payload": payload})
+        call = {"verb": "POST", "path": path, "payload": payload}
+        if params is not None:
+            call["params"] = params
+        self.calls.append(call)
         # If this looks like services/<domain>/<svc>, also record it via the
         # service-call recorder so logger / mqtt tests can inspect.
         if match_path.startswith("services/"):
@@ -70,9 +74,12 @@ class FakeClient:
         return self.responses.get(("POST", match_path),
                                   self.responses.get(("POST", path), {}))
 
-    def delete(self, path: str) -> Any:
+    def delete(self, path: str, params: dict | None = None) -> Any:
         path = path.lstrip("/")
-        self.calls.append({"verb": "DELETE", "path": path})
+        call = {"verb": "DELETE", "path": path}
+        if params is not None:
+            call["params"] = params
+        self.calls.append(call)
         return self.responses.get(("DELETE", path), {})
 
     def ws_call(self, msg_type: str, payload: dict | None = None) -> Any:

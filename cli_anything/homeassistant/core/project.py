@@ -63,7 +63,12 @@ def save_config(
     timeout: int = DEFAULT_TIMEOUT,
     config_path: Path | None = None,
 ) -> Path:
-    """Persist the connection profile."""
+    """Persist the connection profile.
+
+    The file is created with mode 0600 from the start (via os.open + O_CREAT)
+    rather than chmod'd after the fact — closes the window where a token
+    would briefly be world-readable on a permissive umask.
+    """
     path = config_path or DEFAULT_CONFIG_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
@@ -72,11 +77,24 @@ def save_config(
         "verify_ssl": bool(verify_ssl),
         "timeout": int(timeout),
     }
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(str(path), flags, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        # If os.fdopen raised before taking ownership of fd, close it
+        # ourselves so we don't leak.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    # Defensive: if the file pre-existed with looser perms, fdopen+O_CREAT
+    # won't have re-applied the mode. chmod here makes the result deterministic.
     try:
         os.chmod(path, 0o600)
-    except OSError:  # pragma: no cover — best-effort permission tightening
+    except OSError:  # pragma: no cover
         pass
     return path
 

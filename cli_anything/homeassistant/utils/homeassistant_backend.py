@@ -141,19 +141,24 @@ class HomeAssistantClient:
             )
         return self._decode(resp)
 
-    def post(self, path: str, payload: Any = None) -> Any:
+    def post(self, path: str, payload: Any = None,
+              params: dict | None = None) -> Any:
         """POST JSON payload to a REST endpoint and return the decoded response."""
         try:
             if payload is None:
-                resp = self.session.post(self._url(path), timeout=self.timeout)
+                resp = self.session.post(self._url(path), params=params, timeout=self.timeout)
             elif isinstance(payload, str):
                 # Used by /api/template which expects a JSON object body, but
                 # also for endpoints that take raw text. Default: send as JSON.
                 resp = self.session.post(
-                    self._url(path), json={"template": payload}, timeout=self.timeout
+                    self._url(path), params=params,
+                    json={"template": payload}, timeout=self.timeout,
                 )
             else:
-                resp = self.session.post(self._url(path), json=payload, timeout=self.timeout)
+                resp = self.session.post(
+                    self._url(path), params=params,
+                    json=payload, timeout=self.timeout,
+                )
         except requests.exceptions.ConnectionError as exc:
             raise self._connection_error(exc) from exc
         except requests.exceptions.Timeout as exc:
@@ -165,10 +170,10 @@ class HomeAssistantClient:
             )
         return self._decode(resp)
 
-    def delete(self, path: str) -> Any:
+    def delete(self, path: str, params: dict | None = None) -> Any:
         """DELETE a REST endpoint and return the decoded response."""
         try:
-            resp = self.session.delete(self._url(path), timeout=self.timeout)
+            resp = self.session.delete(self._url(path), params=params, timeout=self.timeout)
         except requests.exceptions.ConnectionError as exc:
             raise self._connection_error(exc) from exc
         self._check_auth(resp)
@@ -251,6 +256,10 @@ class HomeAssistantClient:
         """Subscribe and stream messages until ``stop_event`` is set.
 
         ``on_message`` receives parsed event dicts (the inner ``event`` payload).
+
+        On exit the subscription is explicitly cancelled via ``unsubscribe_events``
+        before the WebSocket is closed, so the HA server isn't left tracking
+        a dangling subscription when the CLI is Ctrl-C'd.
         """
         if websocket is None:
             raise HomeAssistantError(
@@ -261,6 +270,8 @@ class HomeAssistantClient:
         url = _ws_url_from_http(self.base_url)
         ssl_opts = None if self.verify_ssl else {"cert_reqs": 0}
         ws = websocket.create_connection(url, timeout=self.timeout, sslopt=ssl_opts)
+        sub_id: int | None = None
+        ids = count(1)
         try:
             handshake = json.loads(ws.recv())
             if handshake.get("type") != "auth_required":
@@ -270,7 +281,6 @@ class HomeAssistantClient:
             if auth_result.get("type") != "auth_ok":
                 raise HomeAssistantError(f"WS auth failed: {auth_result!r}")
 
-            ids = count(1)
             sub_id = next(ids)
             message = {"id": sub_id, "type": msg_type}
             if payload:
@@ -295,6 +305,19 @@ class HomeAssistantClient:
                         f"WS subscribe failed: {data.get('error')}"
                     )
         finally:
+            # Best-effort unsubscribe before close so the HA server isn't left
+            # tracking a stale subscription id. Ignore failures — the socket
+            # may already be half-closed when we get here.
+            if sub_id is not None:
+                try:
+                    ws.settimeout(2.0)
+                    ws.send(json.dumps({
+                        "id": next(ids),
+                        "type": "unsubscribe_events",
+                        "subscription": sub_id,
+                    }))
+                except Exception:
+                    pass
             try:
                 ws.close()
             except Exception:  # pragma: no cover

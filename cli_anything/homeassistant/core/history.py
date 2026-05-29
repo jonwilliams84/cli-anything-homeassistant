@@ -17,8 +17,21 @@ def history(
     start: datetime | None = None,
     end: datetime | None = None,
     minimal_response: bool = True,
+    no_attributes: bool = False,
+    significant_changes_only: bool = False,
 ) -> list[list[dict]]:
-    """Return historical state changes from /api/history/period."""
+    """Return historical state changes from /api/history/period.
+
+    ``no_attributes`` (default False) — when True, omits the per-sample
+    ``attributes`` blob from each entry. Massive speed/size win on installs
+    with heavy entities (96k+ entries on big homes); the default keeps
+    backwards compatibility.
+
+    ``significant_changes_only`` (default False) — when True, HA only
+    returns samples that represent a meaningful state change rather than
+    every recorded sample. Cuts response size dramatically for noisy
+    sensors (sgv/power/temperature). Trades off resolution for size.
+    """
     path = "history/period"
     if start is not None:
         path = f"history/period/{_iso(start)}"
@@ -29,6 +42,10 @@ def history(
         params["end_time"] = _iso(end)
     if minimal_response:
         params["minimal_response"] = ""
+    if no_attributes:
+        params["no_attributes"] = ""
+    if significant_changes_only:
+        params["significant_changes_only"] = ""
     data = client.get(path, params=params or None)
     return data if isinstance(data, list) else []
 

@@ -61,7 +61,5 @@ def call_service(
         payload.update(service_data)
     if target:
         payload.update(target)
-    path = f"services/{domain}/{service}"
-    if return_response:
-        path += "?return_response"
-    return client.post(path, payload)
+    params = {"return_response": "true"} if return_response else None
+    return client.post(f"services/{domain}/{service}", payload, params=params)

@@ -161,7 +161,7 @@ class TestShoppingListCli:
 
     def test_clear_completed(self, runner, fake_client):
         fake_client.set_ws("shopping_list/items/clear", {"ok": True})
-        r = _invoke(runner, "shopping-list", "clear-completed")
+        r = _invoke(runner, "shopping-list", "clear-completed", "--yes")
         assert r.exit_code == 0, r.output
         assert fake_client.ws_calls[-1]["type"] == "shopping_list/items/clear"
 
@@ -203,12 +203,12 @@ class TestTodoCli:
         assert payload["item"] == "Bread"
 
     def test_remove_single(self, runner, fake_client):
-        r = _invoke(runner, "todo", "remove", "todo.groceries", "Bread")
+        r = _invoke(runner, "todo", "remove", "todo.groceries", "Bread", "--yes")
         assert r.exit_code == 0, r.output
         assert fake_client.calls[-1]["payload"]["item"] == "Bread"
 
     def test_remove_multi(self, runner, fake_client):
-        r = _invoke(runner, "todo", "remove", "todo.groceries", "Bread", "Milk")
+        r = _invoke(runner, "todo", "remove", "todo.groceries", "Bread", "Milk", "--yes")
         assert r.exit_code == 0, r.output
         assert fake_client.calls[-1]["payload"]["item"] == ["Bread", "Milk"]
 

@@ -14,13 +14,17 @@ from cli_anything.homeassistant.core import states as states_core
 
 
 _TOGGLABLE_DOMAINS = {
+    "alarm_control_panel",
     "automation",
     "climate",
     "cover",
     "fan",
+    "group",
     "humidifier",
     "input_boolean",
+    "lawn_mower",
     "light",
+    "lock",
     "media_player",
     "remote",
     "scene",
@@ -28,6 +32,7 @@ _TOGGLABLE_DOMAINS = {
     "siren",
     "switch",
     "vacuum",
+    "valve",
     "water_heater",
 }
 

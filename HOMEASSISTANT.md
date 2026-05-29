@@ -254,7 +254,7 @@ Assistant is a hard dependency.
 ## Dependencies
 
 Python:
-- `click`, `prompt_toolkit`, `requests`, `websocket-client`, `pyyaml`
+- `click`, `prompt_toolkit`, `requests`, `websocket-client`
 
 System (the real software):
 - `homeassistant` Python package (installed standalone or via Docker).

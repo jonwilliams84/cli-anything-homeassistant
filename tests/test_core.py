@@ -1715,7 +1715,9 @@ class TestServices:
         services_core.call_service(fake_client, "calendar", "get_events",
                                     return_response=True)
         last = fake_client.calls[-1]
-        assert last["path"].endswith("?return_response")
+        # v6: switched from hand-built '?return_response' suffix to params=.
+        assert last["path"] == "services/calendar/get_events"
+        assert last.get("params") == {"return_response": "true"}
 
     def test_call_service_validates(self, fake_client):
         with pytest.raises(ValueError):

@@ -31,8 +31,9 @@ cli-anything-homeassistant \
   config save
 ```
 
-Profile is stored at `~/.config/cli-anything-homeassistant.json`. Per-key env
-overrides also work: `CLI_HA_URL`, `CLI_HA_TOKEN`, etc.
+Profile is stored at `~/.config/cli-anything-homeassistant.json` (mode 0600).
+Per-key env overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL` (`0` to
+disable), `HASS_TIMEOUT` (seconds).
 
 ## What it covers
 

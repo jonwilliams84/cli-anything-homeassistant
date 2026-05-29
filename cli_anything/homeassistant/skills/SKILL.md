@@ -142,7 +142,27 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `button`           | `press <entity_id>`.                                                                           |
 | `text`             | `set <entity_id> <value>`.                                                                     |
 | `notify`           | `send <message> [--title …] [--service notify|mobile_app_…] [--target …]+ [--data <json>]`.     |
-| `domain`           | Last-resort generic per-domain `turn-on`/`turn-off`/`toggle`/`list` for any controllable domain. Use a typed shortcut group above if one exists. |
+| `domain`           | Last-resort generic per-domain `turn-on`/`turn-off`/`toggle`/`list` for any controllable domain (now also accepts `valve`/`lock`/`lawn_mower`/`alarm_control_panel`/`group` — v1.39+). |
+| **New in v1.39 — wired core modules** | |
+| `backup advanced`  | Restore + decryption + agent config (`details`, `delete`, `restore`, `auto-generate`, `list-agents`, `get-config`, `update-config`, `can-decrypt`). |
+| `calendar-ws`      | Calendar event CRUD via WebSocket (different shape from REST `calendar` group). |
+| `network`          | Network adapters, internal/external/cloud URL config. |
+| `frontend`         | Per-user frontend data + template preview. |
+| `state-stream`     | Live WS event firehose (`events`, `state-changed`, `trigger`, `collect`). |
+| `history-ext`      | Long-history fallback path — recorder states → long-term stats; `with-stats-fallback`, `retention-estimate`, `stats-to-samples`. |
+| `history-logbook`  | WS `history/history_during_period` — bypasses the 24h-only REST gotcha that bites multi-day walks. |
+| `helper-preview`   | UI preview-flow dispatch for template/threshold/derivative helpers. |
+| `diagnostics download` | Unified diagnostics download (integration or device via `--device-id`). |
+| `trace-debug`      | Trace introspection (`list`, `get`, `contexts`). |
+| `trace-debugger`   | Live breakpoint debugger for running automations/scripts. |
+| `lovelace layout-lint` | Read-only layout audit (sections fit, columns add up, etc). |
+| `lovelace section <hero/spacer/divider/with-options>` | Pre-baked section builders. |
+| `lovelace view <build-sections/build-masonry/build-panel/build-sidebar/…>` | View-shape builders + `summaries`, `set-max-columns`, `set-visibility`. |
+| `energy <validate/solar-forecast/fossil-consumption/save-prefs-structured>` | Long-term energy admin. |
+| `statistics <adjust-sum/change-unit/validate/import/update-issue/update-stored-metadata>` | Statistics admin CRUD. |
+| `entity <get-many/list-for-display/remove/subscribe-config-entries/integration-setup-info/statistic-during-period>` | Registry extras. |
+| `state delete <entity_id>` | Tear out a state-machine entry (registry untouched). |
+| `tag create/delete` | Full tag CRUD (was list/find/update only). |
 
 Always start with `--help` if you're unsure:
 `cli-anything-homeassistant <group> [<subcommand>] --help`.
@@ -379,14 +399,28 @@ These are paid in lost time. Read them before mutating anything.
   directly into HA's state machine without going through the entity's normal
   logic. For controlling devices, always use `service call <domain>.<svc>` or
   a typed shortcut group.
+- **`state delete`** (v1.39.0+) tears an entity out of the state machine but
+  leaves the registry entry intact. Use `entity delete` for the registry
+  side; use `state delete` for stale REST/template-only entities only.
 - **WebSocket `subscribe` commands keep an open connection** — in scripts,
-  always pass `--limit` and/or `--timeout` so the call returns.
+  always pass `--limit` and/or `--timeout` so the call returns. WS
+  subscriptions now send `unsubscribe_events` on exit (v1.39.0+) so
+  Ctrl-C'd long-runners don't leave the server tracking stale ids.
 - **Mutating commands accept `--dry-run`** (where it makes sense). The dry
   run never touches HA. Use it for any "I'm going to bulk-rename N entities"
-  command.
+  command. Newly added in v1.39: `automation save`, `script save`,
+  `lovelace card insert/delete` all carry `--dry-run` (diff against live).
+- **Destructive verbs require `--yes` when scripted.** Affects (v1.39+):
+  `automation save`, `script save`, `lovelace config save`, `shopping-list
+  remove`/`clear-completed`, `todo remove`/`clear-completed`, `system
+  reload-core-config`/`reload-all`, `state delete`, `tag delete`. Without
+  `--yes` and without a TTY, the command aborts rather than blocking.
 - **Lovelace dashboards** — prefer `lovelace view get` / `view set` /
   `section ...` over re-pushing the full config. The full-config write is
-  destructive and easy to corrupt.
+  destructive and easy to corrupt. **Card writes auto-validate**
+  (v1.39.0+) via `lovelace_card_validate`; broken-config errors abort the
+  write. Pass `--no-validate` to override (e.g. when the HACS plugin will
+  be installed later).
 - **Powercalc group membership is REPLACE-on-write** at the API level.
   Use the wrapper `core/powercalc.py::add_group_members` /
   `remove_group_members` (or the dedicated CLI surface when wired) rather

@@ -37,6 +37,18 @@ def set_state(
     return client.post(f"states/{entity_id}", payload)
 
 
+def delete_state(client, entity_id: str) -> dict:
+    """Delete an entity from HA's state machine (DELETE /api/states/<entity_id>).
+
+    Useful for tearing down stale REST/template-only entities. Does NOT
+    delete registry entries or persistent automations/scripts — use
+    ``entity delete`` (registry) for those.
+    """
+    if not entity_id:
+        raise ValueError("entity_id cannot be empty")
+    return client.delete(f"states/{entity_id}")
+
+
 def list_domains(client) -> list[str]:
     """Return the unique sorted list of domains found in current states."""
     domains: set[str] = set()

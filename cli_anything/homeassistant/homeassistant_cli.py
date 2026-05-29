@@ -53,6 +53,7 @@ from cli_anything.homeassistant.core import lovelace_cards as lovelace_cards_cor
 from cli_anything.homeassistant.core import lovelace_card_builders as lovelace_builders_core
 from cli_anything.homeassistant.core import lovelace_card_ops as lovelace_card_ops_core
 from cli_anything.homeassistant.core import lovelace_card_types as lovelace_card_types_core
+from cli_anything.homeassistant.core import lovelace_card_validate as lovelace_validate_core
 from cli_anything.homeassistant.core import lovelace_badges as lovelace_badges_core
 from cli_anything.homeassistant.core import lovelace_sections as lovelace_sections_core
 from cli_anything.homeassistant.core import lovelace_paths as lovelace_paths_core
@@ -105,6 +106,23 @@ from cli_anything.homeassistant.core import zone as zone_core
 from cli_anything.homeassistant.core import webhook as webhook_core
 from cli_anything.homeassistant.core import image as image_core
 from cli_anything.homeassistant.core import profiler as profiler_core
+from cli_anything.homeassistant.core import backup_advanced as backup_advanced_core
+from cli_anything.homeassistant.core import calendar_ws as calendar_ws_core
+from cli_anything.homeassistant.core import diagnostics_dl as diagnostics_dl_core
+from cli_anything.homeassistant.core import entity_registry_extras as entity_registry_extras_core
+from cli_anything.homeassistant.core import frontend_prefs as frontend_prefs_core
+from cli_anything.homeassistant.core import network as network_core
+from cli_anything.homeassistant.core import energy_advanced as energy_advanced_core
+from cli_anything.homeassistant.core import statistics_admin as statistics_admin_core
+from cli_anything.homeassistant.core import helper_previews as helper_previews_core
+from cli_anything.homeassistant.core import history_ext as history_ext_core
+from cli_anything.homeassistant.core import history_logbook as history_logbook_core
+from cli_anything.homeassistant.core import lovelace_layout_lint as lovelace_layout_lint_core
+from cli_anything.homeassistant.core import lovelace_sections_ext as lovelace_sections_ext_core
+from cli_anything.homeassistant.core import lovelace_views as lovelace_views_core
+from cli_anything.homeassistant.core import state_stream as state_stream_core
+from cli_anything.homeassistant.core import trace_debug as trace_debug_core
+from cli_anything.homeassistant.core import trace_debugger as trace_debugger_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
     HomeAssistantError,
@@ -149,6 +167,66 @@ def emit(ctx: click.Context, data) -> None:
         pass
     else:
         click.echo(str(data))
+
+
+def _validate_card_or_abort(card_or_dash, *, client=None,
+                              skip: bool = False, is_dashboard: bool = False) -> None:
+    """Run lovelace_card_validate on a card (or full dashboard).
+
+    Aborts the CLI with ``click.ClickException`` if any ``error``-severity
+    issue is found. Warnings are printed to stderr and the caller is allowed
+    to proceed.
+
+    Pass ``skip=True`` (wired to a CLI ``--no-validate`` flag) to bypass
+    entirely — useful when the validator's heuristics are wrong, or when
+    posting a card whose plugin will be installed later.
+    """
+    if skip:
+        return
+    try:
+        if is_dashboard:
+            issues = lovelace_validate_core.validate_dashboard(card_or_dash, client=client)
+        else:
+            installed = (lovelace_validate_core.installed_card_types(client)
+                          if client is not None else None)
+            issues = lovelace_validate_core.validate_card(
+                card_or_dash, installed=installed,
+            )
+    except Exception as exc:
+        # Validator itself broke — surface and continue rather than block on a
+        # validator bug. (The user can always pass --no-validate.)
+        click.echo(f"  [validate] internal error, skipping: {exc}", err=True)
+        return
+    errors = [i for i in issues if i.get("severity") == "error"]
+    warnings = [i for i in issues if i.get("severity") == "warning"]
+    for w in warnings:
+        click.echo(f"  [validate] WARN {w.get('path') or '<root>'}: "
+                    f"{w.get('message')}", err=True)
+    if errors:
+        body = lovelace_validate_core.format_issues(errors)
+        raise click.ClickException(
+            f"lovelace validation failed ({len(errors)} error(s)):\n"
+            f"{body}\n\n(pass --no-validate to override)"
+        )
+
+
+def _config_diff(current, new, *, label_a: str = "live",
+                  label_b: str = "new") -> str:
+    """Return a unified diff string between two JSON-serialisable configs.
+
+    Used by ``automation save --dry-run`` / ``script save --dry-run`` /
+    ``lovelace card insert|delete --dry-run`` to let agents preview a
+    destructive write before committing. ``current`` may be ``None`` (e.g.
+    new entity) — the diff then shows the full new config as additions.
+    """
+    import difflib
+    a_text = json.dumps(current, indent=2, default=str, sort_keys=True) if current is not None else ""
+    b_text = json.dumps(new, indent=2, default=str, sort_keys=True)
+    a_lines = a_text.splitlines(keepends=True)
+    b_lines = b_text.splitlines(keepends=True)
+    return "".join(difflib.unified_diff(
+        a_lines, b_lines, fromfile=label_a, tofile=label_b, n=3,
+    )) or "(no changes)"
 
 
 def parse_kv_pairs(pairs: tuple[str, ...]) -> dict:
@@ -631,6 +709,22 @@ def state_set(ctx, entity_id, state_value, attr):
     emit(ctx, states_core.set_state(make_client(ctx), entity_id, state_value, attributes))
 
 
+@state.command("delete")
+@click.argument("entity_id")
+@click.confirmation_option(
+    prompt="Delete this entity from HA's state machine? "
+           "(Registry entries are NOT affected; use `entity delete` for those.)")
+@click.pass_context
+def state_delete(ctx, entity_id):
+    """Delete an entity state (DELETE /api/states/<entity_id>).
+
+    Tears down a state entry — useful for stale REST/template-only entities.
+    Does NOT touch the entity registry or any UI-managed automation; for
+    those use ``entity delete``.
+    """
+    emit(ctx, states_core.delete_state(make_client(ctx), entity_id))
+
+
 @state.command("domains")
 @click.pass_context
 def state_domains(ctx):
@@ -749,39 +843,10 @@ def event_fire(ctx, event_type, data, dry_run):
     emit(ctx, events_core.fire_event(make_client(ctx), event_type, payload))
 
 
-@event.command("subscribe")
-@click.argument("event_type", required=False, default=None)
-@click.option("--limit", default=10, type=int, help="Stop after this many events (default 10)")
-@click.option("--timeout", "wait_timeout", default=None, type=int,
-              help="Stop after N seconds")
-@click.pass_context
-def event_subscribe(ctx, event_type, limit, wait_timeout):
-    """Subscribe to events via WebSocket and print them. Ctrl-C to stop."""
-    client = make_client(ctx)
-    stop = threading.Event()
-    seen: list[dict] = []
-
-    def on_msg(evt):
-        seen.append(evt)
-        if not ctx.obj.get("as_json"):
-            click.echo(json.dumps(evt, default=str))
-        if limit and len(seen) >= limit:
-            stop.set()
-
-    payload = {"event_type": event_type} if event_type else None
-
-    if wait_timeout:
-        threading.Timer(wait_timeout, stop.set).start()
-
-    try:
-        client.ws_subscribe("subscribe_events", payload, on_msg, stop)
-    except KeyboardInterrupt:
-        stop.set()
-
-    if ctx.obj.get("as_json"):
-        emit(ctx, seen)
-    else:
-        click.echo(f"received {len(seen)} event(s)")
+# Note: a second `event subscribe` is defined further down (line ~4075). Both
+# are registered under the same Click name; the later definition wins. The
+# canonical definition lives there and now carries --filter; this stub is
+# kept only as a documentation breadcrumb pointing at the real one.
 
 
 # ──────────────────────────────────────────────────────────────────────── template
@@ -1294,6 +1359,17 @@ def tag_list(ctx):
     emit(ctx, tags_core.list_tags(make_client(ctx)))
 
 
+@tag.command("create")
+@click.argument("tag_id")
+@click.option("--name", default=None, help="Friendly name for the tag")
+@click.option("--description", default=None)
+@click.pass_context
+def tag_create(ctx, tag_id, name, description):
+    """Register a new tag in HA via ``tag/create``."""
+    emit(ctx, tags_core.create(make_client(ctx), tag_id,
+                                 name=name, description=description))
+
+
 @tag.command("update")
 @click.argument("tag_id")
 @click.option("--name", default=None)
@@ -1302,6 +1378,15 @@ def tag_list(ctx):
 def tag_update(ctx, tag_id, name, description):
     emit(ctx, tags_core.update(make_client(ctx), tag_id,
                                  name=name, description=description))
+
+
+@tag.command("delete")
+@click.argument("tag_id")
+@click.confirmation_option(prompt="Delete this tag from the registry?")
+@click.pass_context
+def tag_delete(ctx, tag_id):
+    """Remove a tag via ``tag/delete``. Automations bound to this tag stop firing silently."""
+    emit(ctx, tags_core.delete(make_client(ctx), tag_id))
 
 
 # ──────────────────────────────────────────────────────────────────────── automation
@@ -1558,8 +1643,15 @@ def domain_toggle(ctx, domain_name, entity_id, data, dry_run):
 @click.option("--end", "end_iso", default=None,
               help="Explicit ISO-8601 end time")
 @click.option("--minimal/--full", "minimal", default=True)
+@click.option("--no-attributes", is_flag=True, default=False,
+              help="Omit per-sample attributes blob. Big speed/size win on "
+                   "installs with heavy entities.")
+@click.option("--significant-changes-only", is_flag=True, default=False,
+              help="Only return samples representing a meaningful state "
+                   "change. Trades resolution for response size.")
 @click.pass_context
-def history_cmd(ctx, entity_ids, hours, start_iso, end_iso, minimal):
+def history_cmd(ctx, entity_ids, hours, start_iso, end_iso, minimal,
+                no_attributes, significant_changes_only):
     """Return historical state changes.
 
     NOTE: HA's history API returns at most one 24-hour slice per call,
@@ -1581,6 +1673,8 @@ def history_cmd(ctx, entity_ids, hours, start_iso, end_iso, minimal):
         entity_ids=list(entity_ids) if entity_ids else None,
         start=start, end=end,
         minimal_response=minimal,
+        no_attributes=no_attributes,
+        significant_changes_only=significant_changes_only,
     ))
 
 
@@ -1725,7 +1819,7 @@ def logbook_cmd(ctx, entity_id, hours):
 @click.pass_context
 def whoami_cmd(ctx):
     """Show which HA user the active token belongs to + admin/owner flags."""
-    emit(ctx, auth_core.current_user(make_client(ctx)))
+    emit(ctx, auth_tokens_core.current_user(make_client(ctx)))
 
 
 # ──────────────────────────────────────────────────────── entity references
@@ -2006,15 +2100,40 @@ def lovelace_config_get(ctx, url_path, out):
 @lovelace_config.command("save")
 @click.argument("url_path")
 @click.argument("config_file", type=click.Path(exists=True, dir_okay=False))
-@click.option("--dry-run", is_flag=True, default=False)
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show a unified diff vs the live dashboard; do not write.")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="Skip the interactive confirmation (required for scripted use).")
 @click.pass_context
-def lovelace_config_save(ctx, url_path, config_file, dry_run):
-    """Replace a dashboard's config from a JSON file."""
+def lovelace_config_save(ctx, url_path, config_file, dry_run, yes):
+    """Replace a dashboard's config from a JSON file.
+
+    Wholesale dashboard overwrite — a typo here erases every view and card on
+    the target dashboard. Without --yes the command prompts; with --dry-run
+    it prints a unified diff vs the live config and exits without writing.
+    """
     cfg = json.loads(Path(config_file).read_text())
+    client = make_client(ctx)
     if dry_run:
-        emit(ctx, {"dry_run": True, "url_path": url_path, "view_count": len(cfg.get("views", []))})
+        try:
+            current = lovelace_core.get_dashboard_config(client, url_path)
+        except Exception:
+            current = None
+        emit(ctx, {
+            "dry_run": True, "url_path": url_path,
+            "view_count": len(cfg.get("views", [])),
+            "diff": _config_diff(current, cfg,
+                                  label_a=f"live:{url_path}",
+                                  label_b=f"new:{config_file}"),
+        })
         return
-    result = lovelace_core.save_dashboard_config(make_client(ctx), url_path, cfg)
+    if not yes and not click.confirm(
+        f"Overwrite ENTIRE dashboard {url_path!r} "
+        f"({len(cfg.get('views', []))} views in new config)?",
+        default=False,
+    ):
+        raise click.ClickException("aborted")
+    result = lovelace_core.save_dashboard_config(client, url_path, cfg)
     emit(ctx, {"saved": url_path, "result": result})
 
 
@@ -2060,10 +2179,15 @@ def lovelace_view_get(ctx, url_path, view_path, out):
 @click.argument("view_path")
 @click.argument("view_file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, default=False)
+@click.option("--no-validate", is_flag=True, default=False,
+              help="Skip lovelace_card_validate on the cards in this view.")
 @click.pass_context
-def lovelace_view_set(ctx, url_path, view_path, view_file, dry_run):
+def lovelace_view_set(ctx, url_path, view_path, view_file, dry_run, no_validate):
     """Replace one view in a dashboard from a JSON file."""
     new_view = json.loads(Path(view_file).read_text())
+    client = make_client(ctx)
+    for card in new_view.get("cards", []) or []:
+        _validate_card_or_abort(card, client=client, skip=no_validate)
     cfg = _fetch_dash_cfg(ctx, url_path)
     lovelace_paths_core.set_view(cfg, view_path, new_view)
     emit(ctx, _push_dash_cfg(ctx, url_path, cfg, dry_run=dry_run))
@@ -2075,10 +2199,15 @@ def lovelace_view_set(ctx, url_path, view_path, view_file, dry_run):
 @click.option("--index", type=int, default=None,
               help="Insert at this index (default: append)")
 @click.option("--dry-run", is_flag=True, default=False)
+@click.option("--no-validate", is_flag=True, default=False,
+              help="Skip lovelace_card_validate on the cards in this view.")
 @click.pass_context
-def lovelace_view_add(ctx, url_path, view_file, index, dry_run):
+def lovelace_view_add(ctx, url_path, view_file, index, dry_run, no_validate):
     """Append (or insert at --index) a new view from a JSON file."""
     new_view = json.loads(Path(view_file).read_text())
+    client = make_client(ctx)
+    for card in new_view.get("cards", []) or []:
+        _validate_card_or_abort(card, client=client, skip=no_validate)
     cfg = _fetch_dash_cfg(ctx, url_path)
     lovelace_paths_core.add_view(cfg, new_view, index=index)
     emit(ctx, _push_dash_cfg(ctx, url_path, cfg, dry_run=dry_run))
@@ -2118,9 +2247,14 @@ def lovelace_section_get(ctx, url_path, view_path, section_idx):
 @click.argument("section_idx", type=int)
 @click.argument("section_file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, default=False)
+@click.option("--no-validate", is_flag=True, default=False,
+              help="Skip lovelace_card_validate on the cards in this section.")
 @click.pass_context
-def lovelace_section_set(ctx, url_path, view_path, section_idx, section_file, dry_run):
+def lovelace_section_set(ctx, url_path, view_path, section_idx, section_file, dry_run, no_validate):
     new_section = json.loads(Path(section_file).read_text())
+    client = make_client(ctx)
+    for card in new_section.get("cards", []) or []:
+        _validate_card_or_abort(card, client=client, skip=no_validate)
     cfg = _fetch_dash_cfg(ctx, url_path)
     lovelace_paths_core.set_section(cfg, view_path, section_idx, new_section)
     emit(ctx, _push_dash_cfg(ctx, url_path, cfg, dry_run=dry_run))
@@ -2245,11 +2379,14 @@ def lovelace_card_get(ctx, url_path, pointer, out):
 @click.argument("card_file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show what would change without saving")
+@click.option("--no-validate", is_flag=True, default=False,
+              help="Skip lovelace_card_validate (default: validate, abort on error).")
 @click.pass_context
-def lovelace_card_replace(ctx, url_path, pointer, card_file, dry_run):
+def lovelace_card_replace(ctx, url_path, pointer, card_file, dry_run, no_validate):
     """Replace a single card at <pointer> with the JSON from <card_file>."""
     new_card = json.loads(Path(card_file).read_text())
     client = make_client(ctx)
+    _validate_card_or_abort(new_card, client=client, skip=no_validate)
     cfg = lovelace_core.get_dashboard_config(client, url_path)
     try:
         old_card = dict(lovelace_cards_core.get_card(cfg, pointer))
@@ -2275,8 +2412,10 @@ def lovelace_card_replace(ctx, url_path, pointer, card_file, dry_run):
 @click.argument("url_path")
 @click.argument("pointer")
 @click.option("--yes", is_flag=True, default=False, help="Skip confirmation")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Describe what would be deleted without saving the dashboard.")
 @click.pass_context
-def lovelace_card_delete(ctx, url_path, pointer, yes):
+def lovelace_card_delete(ctx, url_path, pointer, yes, dry_run):
     """Delete the card at <pointer>."""
     client = make_client(ctx)
     cfg = lovelace_core.get_dashboard_config(client, url_path)
@@ -2285,6 +2424,10 @@ def lovelace_card_delete(ctx, url_path, pointer, yes):
     except (KeyError, IndexError, ValueError) as exc:
         click.echo(f"error: {exc}", err=True)
         sys.exit(1)
+    if dry_run:
+        emit(ctx, {"dry_run": True, "would_delete": pointer,
+                    "type": old_card.get("type")})
+        return
     if not yes and not click.confirm(
         f"Delete {old_card.get('type')!r} card at {pointer}?", default=False,
     ):
@@ -2301,17 +2444,26 @@ def lovelace_card_delete(ctx, url_path, pointer, yes):
 @click.argument("card_file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--position", default=None, type=int,
               help="Position in the parent's cards[] (default: append)")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Describe what would change without saving the dashboard.")
+@click.option("--no-validate", is_flag=True, default=False,
+              help="Skip lovelace_card_validate (default: validate, abort on error).")
 @click.pass_context
-def lovelace_card_insert(ctx, url_path, parent_pointer, card_file, position):
+def lovelace_card_insert(ctx, url_path, parent_pointer, card_file, position, dry_run, no_validate):
     """Insert a new card into <parent_pointer>'s cards[] array."""
     new_card = json.loads(Path(card_file).read_text())
     client = make_client(ctx)
+    _validate_card_or_abort(new_card, client=client, skip=no_validate)
     cfg = lovelace_core.get_dashboard_config(client, url_path)
     try:
         lovelace_cards_core.insert_card(cfg, parent_pointer, new_card, position=position)
     except (KeyError, IndexError, ValueError) as exc:
         click.echo(f"error: {exc}", err=True)
         sys.exit(1)
+    if dry_run:
+        emit(ctx, {"dry_run": True, "would_insert_into": parent_pointer,
+                    "type": new_card.get("type"), "position": position})
+        return
     lovelace_core.save_dashboard_config(client, url_path, cfg)
     emit(ctx, {"inserted_into": parent_pointer, "type": new_card.get("type"),
                "position": position})
@@ -2701,10 +2853,34 @@ def automation_get(ctx, entity_id, out):
 @automation.command("save")
 @click.argument("entity_id")
 @click.argument("config_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show a unified diff vs the live config; do not write.")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="Skip the interactive confirmation (required for scripted use).")
 @click.pass_context
-def automation_save(ctx, entity_id, config_file):
-    """Replace a UI-managed automation's config from a JSON file."""
+def automation_save(ctx, entity_id, config_file, dry_run, yes):
+    """Replace a UI-managed automation's config from a JSON file.
+
+    Without --dry-run / --yes the command prompts before overwriting. With
+    --dry-run it prints a unified diff between the live config and the
+    proposed body and exits without writing.
+    """
     cfg = json.loads(Path(config_file).read_text())
+    client = make_client(ctx)
+    if dry_run:
+        try:
+            current = automation_core.get_config(client, entity_id)
+        except Exception:
+            current = None
+        diff = _config_diff(current, cfg, label_a=f"live:{entity_id}",
+                             label_b=f"new:{config_file}")
+        emit(ctx, {"dry_run": True, "entity_id": entity_id, "diff": diff})
+        return
+    if not yes and not click.confirm(
+        f"Overwrite automation {entity_id!r} with contents of {config_file}?",
+        default=False,
+    ):
+        raise click.ClickException("aborted")
     emit(ctx, {"saved": entity_id, "result": automation_core.save_config(make_client(ctx), entity_id, cfg)})
 
 
@@ -2727,10 +2903,34 @@ def script_get(ctx, entity_id, out):
 @script.command("save")
 @click.argument("entity_id")
 @click.argument("config_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show a unified diff vs the live config; do not write.")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="Skip the interactive confirmation (required for scripted use).")
 @click.pass_context
-def script_save(ctx, entity_id, config_file):
-    """Replace a UI-managed script's config from a JSON file."""
+def script_save(ctx, entity_id, config_file, dry_run, yes):
+    """Replace a UI-managed script's config from a JSON file.
+
+    Without --dry-run / --yes the command prompts before overwriting. With
+    --dry-run it prints a unified diff between the live config and the
+    proposed body and exits without writing.
+    """
     cfg = json.loads(Path(config_file).read_text())
+    client = make_client(ctx)
+    if dry_run:
+        try:
+            current = script_core.get_config(client, entity_id)
+        except Exception:
+            current = None
+        diff = _config_diff(current, cfg, label_a=f"live:{entity_id}",
+                             label_b=f"new:{config_file}")
+        emit(ctx, {"dry_run": True, "entity_id": entity_id, "diff": diff})
+        return
+    if not yes and not click.confirm(
+        f"Overwrite script {entity_id!r} with contents of {config_file}?",
+        default=False,
+    ):
+        raise click.ClickException("aborted")
     emit(ctx, {"saved": entity_id, "result": script_core.save_config(make_client(ctx), entity_id, cfg)})
 
 
@@ -2788,18 +2988,26 @@ def mqtt_subscribe(ctx, topic, limit, timeout, qos, out):
     """
     client = make_client(ctx)
     stop = threading.Event()
-    seen: list[dict] = []
     out_fh = open(out, "a") if out else None
+    # Only retain messages in memory when we will need them for the final emit
+    # — i.e. JSON mode with no --out file. Otherwise streaming-only: messages
+    # go directly to stdout and/or the file and a counter tracks --limit, so
+    # the process is memory-flat regardless of message volume.
+    buffer_messages = ctx.obj.get("as_json") and out_fh is None
+    seen: list[dict] = []
+    count = [0]
 
     def on_msg(evt):
-        seen.append(evt)
+        count[0] += 1
+        if buffer_messages:
+            seen.append(evt)
         line = json.dumps(evt, default=str)
         if not ctx.obj.get("as_json"):
             click.echo(line)
         if out_fh is not None:
             out_fh.write(line + "\n")
             out_fh.flush()
-        if limit and len(seen) >= limit:
+        if limit and count[0] >= limit:
             stop.set()
 
     if timeout:
@@ -2815,9 +3023,10 @@ def mqtt_subscribe(ctx, topic, limit, timeout, qos, out):
             out_fh.close()
 
     if ctx.obj.get("as_json"):
-        emit(ctx, seen)
+        emit(ctx, seen if buffer_messages else
+             {"received": count[0], "out": out, "streamed_only": True})
     else:
-        click.echo(f"received {len(seen)} message(s)")
+        click.echo(f"received {count[0]} message(s)")
 
 
 # ──────────────────────────────────────────────────────────────────────── helpers
@@ -3664,6 +3873,7 @@ def system_check_config(ctx, wait_secs):
 
 
 @system.command("reload-core-config")
+@click.confirmation_option(prompt="Reload core configuration? (mutating)")
 @click.pass_context
 def system_reload_core(ctx):
     emit(ctx, {"reloaded": "core_config",
@@ -3671,6 +3881,9 @@ def system_reload_core(ctx):
 
 
 @system.command("reload-all")
+@click.confirmation_option(
+    prompt="Reload all integrations (automations, scripts, scenes, groups, "
+           "templates, helpers, customize)?")
 @click.pass_context
 def system_reload_all(ctx):
     """Reload automations, scripts, scenes, groups, templates, helpers, customize — without restart."""
@@ -3804,26 +4017,61 @@ def notifications_mark_read(ctx, notification_id):
 
 # 5. WATCH (event subscribe + state watch)
 @event.command("subscribe")
-@click.option("--type", "event_type", default=None,
-              help="Event type to filter (default: all events)")
+@click.argument("event_type_pos", required=False, default=None,
+                metavar="[EVENT_TYPE]")
+@click.option("--type", "event_type_opt", default=None,
+              help="Event type to filter (default: all events). Also accepted as positional arg.")
 @click.option("--duration", type=float, default=10.0,
               help="Seconds to listen (default 10)")
 @click.option("--limit", type=int, default=None,
               help="Stop after N events")
+@click.option("--filter", "filters", multiple=True,
+              help="Client-side filter, e.g. 'data.entity_id=sensor.x'. "
+                   "Dotted-path key matched against str(value). Repeatable; AND.")
 @click.pass_context
-def event_subscribe(ctx, event_type, duration, limit):
+def event_subscribe(ctx, event_type_pos, event_type_opt, duration, limit, filters):
     """Tail the HA event bus.
 
     With --json, returns a list of captured events. Without --json, prints
     each event one per line as it arrives.
+
+    --filter applies *after* the server-side event_type filter; useful when
+    HA's subscribe_events doesn't support the narrower predicate you want.
     """
+    event_type = event_type_opt or event_type_pos
+    parsed_filters: list[tuple[tuple[str, ...], str]] = []
+    for raw in filters:
+        if "=" not in raw:
+            raise click.ClickException(
+                f"--filter expects key=value, got {raw!r}"
+            )
+        k, v = raw.split("=", 1)
+        parsed_filters.append((tuple(k.split(".")), v))
+
+    def _matches(evt) -> bool:
+        for path, expected in parsed_filters:
+            node = evt
+            for p in path:
+                if not isinstance(node, dict):
+                    return False
+                node = node.get(p)
+            if str(node) != expected:
+                return False
+        return True
+
     if ctx.obj.get("as_json"):
-        emit(ctx, watch_core.subscribe_events(
+        all_events = watch_core.subscribe_events(
             make_client(ctx),
             event_type=event_type, duration=duration, limit=limit,
-        ))
+        )
+        if parsed_filters:
+            all_events = [e for e in (all_events or []) if _matches(e)]
+        emit(ctx, all_events)
         return
+
     def _cb(ev):
+        if parsed_filters and not _matches(ev):
+            return
         click.echo(json.dumps(ev, default=str))
     watch_core.subscribe_events(
         make_client(ctx),
@@ -5413,6 +5661,7 @@ def shopping_list_update(ctx, item_id, name, complete):
 
 @shopping_list_grp.command("remove")
 @click.argument("item_id")
+@click.confirmation_option(prompt="Remove this shopping-list item?")
 @click.pass_context
 def shopping_list_remove(ctx, item_id):
     """Remove an item by id."""
@@ -5422,6 +5671,7 @@ def shopping_list_remove(ctx, item_id):
 
 
 @shopping_list_grp.command("clear-completed")
+@click.confirmation_option(prompt="Remove every completed shopping-list item?")
 @click.pass_context
 def shopping_list_clear(ctx):
     """Remove every item with complete=True."""
@@ -5500,6 +5750,7 @@ def todo_complete(ctx, entity_id, item):
 @todo.command("remove")
 @click.argument("entity_id")
 @click.argument("items", nargs=-1, required=True)
+@click.confirmation_option(prompt="Remove the listed todo item(s)?")
 @click.pass_context
 def todo_remove(ctx, entity_id, items):
     """Remove one or more items by uid or summary."""
@@ -5523,6 +5774,7 @@ def todo_move(ctx, entity_id, uid, previous_uid):
 
 @todo.command("clear-completed")
 @click.argument("entity_id")
+@click.confirmation_option(prompt="Remove every completed item from this todo list?")
 @click.pass_context
 def todo_clear_completed(ctx, entity_id):
     """Remove every completed item from a todo list."""
@@ -7714,7 +7966,25 @@ def entity_prune(ctx, platform, restored, orphan, disabled_by,
     client = make_client(ctx)
 
     if entity_ids:
-        targets = list(entity_ids)
+        # Explicit entity list — but still honour --protect-user-disabled so a
+        # typo in --entity-id can't smash a registry entry the operator chose
+        # to keep around as "disabled by user".
+        requested = list(entity_ids)
+        if protect_user_disabled:
+            reg = registry_core.list_entities(client)
+            user_disabled = {e["entity_id"] for e in reg
+                              if e.get("disabled_by") == "user"}
+            skipped = [eid for eid in requested if eid in user_disabled]
+            targets = [eid for eid in requested if eid not in user_disabled]
+            if skipped and not ctx.obj.get("as_json"):
+                click.echo(
+                    f"  skipped {len(skipped)} user-disabled entries "
+                    f"(--protect-user-disabled): {skipped[:5]}"
+                    + ("..." if len(skipped) > 5 else ""),
+                    err=True,
+                )
+        else:
+            targets = requested
     else:
         reg = registry_core.list_entities(client)
         live_ids = set()
@@ -8425,6 +8695,1472 @@ def profiler_log_events(ctx):
 def profiler_status(ctx):
     """Is the profiler integration loaded? Which services are exposed?"""
     emit(ctx, profiler_core.status(make_client(ctx)))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Newly-wired core modules (17 — see prompt 2026-05-29)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+# ────────────────────────────────────────────────────────── backup-advanced
+# Sub-group under existing `backup` (overlaps backup_core but covers HA
+# 2024.6+ WS-only commands: backup/details, agents/info, config/info|update,
+# can_decrypt_on_download, generate_with_automatic_settings).
+
+@backup.group("advanced")
+def backup_advanced():
+    """Backup WS API for HA 2024.6+ — details, agents, config, decrypt-check."""
+
+
+@backup_advanced.command("details")
+@click.argument("backup_id")
+@click.pass_context
+def backup_advanced_details(ctx, backup_id):
+    """Full metadata for one backup including per-agent availability."""
+    emit(ctx, backup_advanced_core.details(make_client(ctx), backup_id=backup_id))
+
+
+@backup_advanced.command("delete")
+@click.argument("backup_id")
+@click.confirmation_option(prompt="Delete this backup across ALL agents?")
+@click.pass_context
+def backup_advanced_delete(ctx, backup_id):
+    """Delete a backup across all agents (WS backup/delete)."""
+    emit(ctx, backup_advanced_core.delete(make_client(ctx), backup_id=backup_id))
+
+
+@backup_advanced.command("restore")
+@click.argument("backup_id")
+@click.argument("agent_id")
+@click.option("--password", default=None, help="Decryption password (if encrypted)")
+@click.option("--restore-addon", "restore_addons", multiple=True,
+              help="Subset of add-ons to restore (repeatable). Omit for all.")
+@click.option("--restore-database/--no-restore-database", default=True)
+@click.option("--restore-folder", "restore_folders", multiple=True,
+              help="Subset of folders to restore (repeatable). Omit for all.")
+@click.option("--restore-homeassistant/--no-restore-homeassistant", default=True)
+@click.confirmation_option(prompt="Restore will RESTART Home Assistant. Proceed?")
+@click.pass_context
+def backup_advanced_restore(ctx, backup_id, agent_id, password,
+                             restore_addons, restore_database,
+                             restore_folders, restore_homeassistant):
+    """Restore HA from a backup. **Destructive — HA will restart.**"""
+    emit(ctx, backup_advanced_core.restore(
+        make_client(ctx),
+        backup_id=backup_id, agent_id=agent_id, password=password,
+        restore_addons=list(restore_addons) or None,
+        restore_database=restore_database,
+        restore_folders=list(restore_folders) or None,
+        restore_homeassistant=restore_homeassistant,
+    ))
+
+
+@backup_advanced.command("auto-generate")
+@click.confirmation_option(prompt="Trigger an automatic backup now?")
+@click.pass_context
+def backup_advanced_auto_generate(ctx):
+    """Trigger a backup using the stored automatic-backup configuration."""
+    emit(ctx, backup_advanced_core.generate_with_automatic_settings(make_client(ctx)))
+
+
+@backup_advanced.command("list-agents")
+@click.pass_context
+def backup_advanced_list_agents(ctx):
+    """List available backup storage agents (local, cloud, network, …)."""
+    emit(ctx, backup_advanced_core.list_agents(make_client(ctx)))
+
+
+@backup_advanced.command("get-config")
+@click.pass_context
+def backup_advanced_get_config(ctx):
+    """Read the current backup automation / schedule configuration."""
+    emit(ctx, backup_advanced_core.get_config(make_client(ctx)))
+
+
+@backup_advanced.command("update-config")
+@click.option("--body-json", default=None,
+              help="Raw JSON for the full payload (overrides per-field flags)")
+@click.option("--from-file", "from_file", type=click.Path(exists=True, dir_okay=False),
+              default=None, help="Read JSON payload from file")
+@click.option("--create-backup", "create_backup_json", default=None,
+              help="JSON for create_backup dict (agent_ids, include_*, name, password)")
+@click.option("--retention", "retention_json", default=None,
+              help='JSON for retention dict, e.g. \'{"copies": 3, "days": 30}\'')
+@click.option("--schedule", "schedule_json", default=None,
+              help='JSON for schedule dict, e.g. \'{"state": "daily"}\'')
+@click.option("--last-attempted", "last_attempted", default=None,
+              help="ISO-8601 timestamp")
+@click.option("--last-completed", "last_completed", default=None,
+              help="ISO-8601 timestamp")
+@click.option("--automatic/--no-automatic", "automatic", default=None)
+@click.confirmation_option(prompt="Update backup configuration?")
+@click.pass_context
+def backup_advanced_update_config(ctx, body_json, from_file,
+                                    create_backup_json, retention_json,
+                                    schedule_json, last_attempted, last_completed,
+                                    automatic):
+    """Update the backup automation configuration (at least one field required)."""
+    if from_file:
+        payload = json.loads(Path(from_file).read_text())
+    elif body_json:
+        payload = json.loads(body_json)
+    else:
+        payload = {}
+        if create_backup_json is not None:
+            payload["create_backup"] = json.loads(create_backup_json)
+        if retention_json is not None:
+            payload["retention"] = json.loads(retention_json)
+        if schedule_json is not None:
+            payload["schedule"] = json.loads(schedule_json)
+        if last_attempted is not None:
+            payload["last_attempted_automatic_backup"] = last_attempted
+        if last_completed is not None:
+            payload["last_completed_automatic_backup"] = last_completed
+        if automatic is not None:
+            payload["automatic_backups_configured"] = automatic
+    emit(ctx, backup_advanced_core.update_config(make_client(ctx), **payload))
+
+
+@backup_advanced.command("can-decrypt")
+@click.argument("backup_id")
+@click.argument("agent_id")
+@click.option("--password", required=True)
+@click.pass_context
+def backup_advanced_can_decrypt(ctx, backup_id, agent_id, password):
+    """Check whether the password decrypts the backup on download."""
+    emit(ctx, backup_advanced_core.can_decrypt_on_download(
+        make_client(ctx), backup_id=backup_id,
+        agent_id=agent_id, password=password,
+    ))
+
+
+# ────────────────────────────────────────────────────────── calendar-ws
+# The existing `calendar` group is REST-based; this one wraps the WS event
+# CRUD path (calendar/event/create|update|delete).
+
+@cli.group("calendar-ws")
+def calendar_ws():
+    """Calendar event CRUD via WebSocket — create/update/delete."""
+
+
+@calendar_ws.command("create")
+@click.argument("entity_id")
+@click.option("--body-json", default=None,
+              help="Inline JSON for the event dict")
+@click.option("--from-file", "from_file", type=click.Path(exists=True, dir_okay=False),
+              default=None, help="Read event JSON from a file")
+@click.confirmation_option(prompt="Create this calendar event?")
+@click.pass_context
+def calendar_ws_create(ctx, entity_id, body_json, from_file):
+    """Create a new event on a calendar entity (requires --body-json or --from-file)."""
+    if from_file:
+        event = json.loads(Path(from_file).read_text())
+    elif body_json:
+        event = json.loads(body_json)
+    else:
+        raise click.UsageError("Provide --body-json or --from-file")
+    emit(ctx, calendar_ws_core.create_event(
+        make_client(ctx), entity_id=entity_id, event=event,
+    ))
+
+
+@calendar_ws.command("update")
+@click.argument("entity_id")
+@click.option("--body-json", default=None,
+              help="Inline JSON for the event dict (must include uid)")
+@click.option("--from-file", "from_file", type=click.Path(exists=True, dir_okay=False),
+              default=None)
+@click.option("--recurrence-id", default=None,
+              help="ISO-8601 datetime for a recurring instance")
+@click.option("--recurrence-range", default=None,
+              type=click.Choice(["", "THISANDFUTURE"]))
+@click.confirmation_option(prompt="Update this calendar event?")
+@click.pass_context
+def calendar_ws_update(ctx, entity_id, body_json, from_file,
+                         recurrence_id, recurrence_range):
+    """Update an existing calendar event (event must include uid)."""
+    if from_file:
+        event = json.loads(Path(from_file).read_text())
+    elif body_json:
+        event = json.loads(body_json)
+    else:
+        raise click.UsageError("Provide --body-json or --from-file")
+    emit(ctx, calendar_ws_core.update_event(
+        make_client(ctx), entity_id=entity_id, event=event,
+        recurrence_id=recurrence_id, recurrence_range=recurrence_range,
+    ))
+
+
+@calendar_ws.command("delete")
+@click.argument("entity_id")
+@click.argument("uid")
+@click.option("--recurrence-id", default=None)
+@click.option("--recurrence-range", default=None,
+              type=click.Choice(["", "THISANDFUTURE"]))
+@click.confirmation_option(prompt="Delete this calendar event?")
+@click.pass_context
+def calendar_ws_delete(ctx, entity_id, uid, recurrence_id, recurrence_range):
+    """Delete a calendar event by uid."""
+    emit(ctx, calendar_ws_core.delete_event(
+        make_client(ctx), entity_id=entity_id, uid=uid,
+        recurrence_id=recurrence_id, recurrence_range=recurrence_range,
+    ))
+
+
+# ────────────────────────────────────────────────────────── diagnostics download
+# Sits under existing `diagnostics` group (already has list/get/device).
+
+@diagnostics.command("download")
+@click.argument("entry_id")
+@click.option("--device-id", default=None,
+              help="When set, downloads device diagnostics instead of entry-level")
+@click.option("-o", "--out", type=click.Path(), default=None,
+              help="Save to file instead of printing")
+@click.pass_context
+def diagnostics_download(ctx, entry_id, device_id, out):
+    """Download integration (or device) diagnostics bundle as JSON."""
+    client = make_client(ctx)
+    if device_id:
+        data = diagnostics_dl_core.download_device_diagnostics(
+            client, entry_id=entry_id, device_id=device_id,
+        )
+    else:
+        data = diagnostics_dl_core.download_config_entry_diagnostics(
+            client, entry_id=entry_id,
+        )
+    if out:
+        n = diagnostics_dl_core.save_diagnostics_to_file(data, out)
+        emit(ctx, {"saved": out, "bytes": n})
+    else:
+        emit(ctx, data)
+
+
+# ────────────────────────────────────────────────────────── entity registry extras
+# Subcommands on existing `entity` group.
+
+@entity.command("get")
+@click.argument("entity_id")
+@click.pass_context
+def entity_get_registry(ctx, entity_id):
+    """Retrieve a single entity registry entry (WS config/entity_registry/get)."""
+    emit(ctx, entity_registry_extras_core.get_entity_registry_entry(
+        make_client(ctx), entity_id=entity_id,
+    ))
+
+
+@entity.command("get-many")
+@click.argument("entity_ids", nargs=-1, required=True)
+@click.pass_context
+def entity_get_many(ctx, entity_ids):
+    """Retrieve multiple entity registry entries by id."""
+    emit(ctx, entity_registry_extras_core.get_entity_registry_entries(
+        make_client(ctx), entity_ids=list(entity_ids),
+    ))
+
+
+@entity.command("list-for-display")
+@click.pass_context
+def entity_list_for_display(ctx):
+    """List entity registry in the UI-optimised display format."""
+    emit(ctx, entity_registry_extras_core.list_entity_registry_for_display(
+        make_client(ctx),
+    ))
+
+
+@entity.command("remove")
+@click.argument("entity_id")
+@click.confirmation_option(prompt="Remove this entity from the registry?")
+@click.pass_context
+def entity_remove_registry(ctx, entity_id):
+    """Remove an entity from the registry (WS config/entity_registry/remove)."""
+    emit(ctx, entity_registry_extras_core.remove_entity_registry_entry(
+        make_client(ctx), entity_id=entity_id,
+    ))
+
+
+@entity.command("subscribe-config-entries")
+@click.pass_context
+def entity_subscribe_config_entries(ctx):
+    """One-shot snapshot of config_entries/subscribe state."""
+    emit(ctx, entity_registry_extras_core.subscribe_config_entries(make_client(ctx)))
+
+
+@entity.command("integration-setup-info")
+@click.pass_context
+def entity_integration_setup_info(ctx):
+    """Get integration setup timings + errors (WS integration/setup_info)."""
+    emit(ctx, entity_registry_extras_core.get_integration_setup_info(make_client(ctx)))
+
+
+@entity.command("statistic-during-period")
+@click.argument("statistic_id")
+@click.option("--fixed-period", default=None,
+              help='JSON for fixed_period, e.g. \'{"start_time":"...","end_time":"..."}\'')
+@click.option("--calendar", "calendar_json", default=None,
+              help="JSON for calendar period dict")
+@click.option("--rolling-window", default=None,
+              help="JSON for rolling_window dict")
+@click.option("--type", "types", multiple=True,
+              help="Statistic types to include (repeatable)")
+@click.option("--units", default=None,
+              help="JSON dict of unit overrides per statistic_id")
+@click.pass_context
+def entity_statistic_during_period(ctx, statistic_id, fixed_period,
+                                     calendar_json, rolling_window,
+                                     types, units):
+    """Query statistics for one statistic_id over a time period (singular)."""
+    emit(ctx, entity_registry_extras_core.statistic_during_period(
+        make_client(ctx),
+        statistic_id=statistic_id,
+        fixed_period=json.loads(fixed_period) if fixed_period else None,
+        calendar=json.loads(calendar_json) if calendar_json else None,
+        rolling_window=json.loads(rolling_window) if rolling_window else None,
+        types=list(types) or None,
+        units=json.loads(units) if units else None,
+    ))
+
+
+# ────────────────────────────────────────────────────────── frontend prefs
+
+@cli.group()
+def frontend():
+    """Frontend prefs — per-user data store + template render/preview."""
+
+
+@frontend.command("get-user-data")
+@click.option("--key", default=None,
+              help="Single key to read (omit for the whole store)")
+@click.pass_context
+def frontend_get_user_data(ctx, key):
+    """Read frontend user-data (WS frontend/get_user_data)."""
+    emit(ctx, frontend_prefs_core.get_user_data(make_client(ctx), key=key))
+
+
+@frontend.command("set-user-data")
+@click.argument("key")
+@click.option("--value", "value_str", default=None,
+              help="JSON-encoded value (preferred). Strings fall back to raw text.")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Read JSON value from a file")
+@click.confirmation_option(prompt="Write this key to frontend user-data?")
+@click.pass_context
+def frontend_set_user_data(ctx, key, value_str, from_file):
+    """Write a key/value pair to the frontend user-data store."""
+    if from_file:
+        value = json.loads(Path(from_file).read_text())
+    elif value_str is not None:
+        try:
+            value = json.loads(value_str)
+        except json.JSONDecodeError:
+            value = value_str
+    else:
+        raise click.UsageError("Provide --value or --from-file")
+    emit(ctx, frontend_prefs_core.set_user_data(
+        make_client(ctx), key=key, value=value,
+    ))
+
+
+@frontend.command("render-template")
+@click.option("--template", "template_str", default=None,
+              help="Inline Jinja2 template string")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Read template from a file")
+@click.option("--variables", default=None,
+              help="JSON dict of extra variables")
+@click.option("--timeout", type=float, default=None,
+              help="Render timeout in seconds")
+@click.pass_context
+def frontend_render_template(ctx, template_str, from_file, variables, timeout):
+    """One-shot render of a Jinja2 template via REST POST /api/template."""
+    if from_file:
+        tpl = Path(from_file).read_text()
+    elif template_str:
+        tpl = template_str
+    else:
+        raise click.UsageError("Provide --template or --from-file")
+    emit(ctx, frontend_prefs_core.render_template(
+        make_client(ctx),
+        template=tpl,
+        variables=json.loads(variables) if variables else None,
+        timeout=timeout,
+    ))
+
+
+@frontend.command("start-template-preview")
+@click.option("--template", "template_str", default=None)
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--variables", default=None,
+              help="JSON dict of extra variables")
+@click.pass_context
+def frontend_start_template_preview(ctx, template_str, from_file, variables):
+    """Send the initial WS template/start_preview subscription message.
+
+    Note: this only kicks off the subscription; consuming streamed events
+    requires the WS subscribe machinery in the underlying client.
+    """
+    if from_file:
+        tpl = Path(from_file).read_text()
+    elif template_str:
+        tpl = template_str
+    else:
+        raise click.UsageError("Provide --template or --from-file")
+    result = frontend_prefs_core.start_template_preview(
+        make_client(ctx),
+        template=tpl,
+        variables=json.loads(variables) if variables else None,
+    )
+    emit(ctx, {"started": True, "result": result})
+
+
+# ────────────────────────────────────────────────────────── network
+
+@cli.group()
+def network():
+    """Network adapters + internal/external/cloud URLs (WS network/*)."""
+
+
+@network.command("info")
+@click.pass_context
+def network_info(ctx):
+    """Get network adapter information."""
+    emit(ctx, network_core.info(make_client(ctx)))
+
+
+@network.command("configure")
+@click.option("--adapter", "configured_adapters", multiple=True, required=True,
+              help="Adapter name to enable (repeatable)")
+@click.confirmation_option(prompt="Apply this network adapter configuration?")
+@click.pass_context
+def network_configure(ctx, configured_adapters):
+    """Configure which network adapters are active."""
+    emit(ctx, network_core.configure(
+        make_client(ctx),
+        configured_adapters=list(configured_adapters),
+    ))
+
+
+@network.command("url")
+@click.pass_context
+def network_url(ctx):
+    """Get internal, external, and cloud URLs."""
+    emit(ctx, network_core.url(make_client(ctx)))
+
+
+# ────────────────────────────────────────────────────────── energy advanced
+# Subcommands on existing `energy` group.
+
+@energy.command("validate")
+@click.pass_context
+def energy_validate(ctx):
+    """Validate the current Energy dashboard preferences (WS energy/validate)."""
+    emit(ctx, energy_advanced_core.validate_energy_prefs(make_client(ctx)))
+
+
+@energy.command("solar-forecast")
+@click.pass_context
+def energy_solar_forecast(ctx):
+    """Solar production forecast for the next day (WS energy/solar_forecast)."""
+    emit(ctx, energy_advanced_core.solar_forecast(make_client(ctx)))
+
+
+@energy.command("fossil-consumption")
+@click.option("--start", "start_time", required=True, help="ISO-8601 start (UTC)")
+@click.option("--end", "end_time", required=True, help="ISO-8601 end (UTC)")
+@click.option("--energy-statistic-id", "energy_statistic_ids", multiple=True,
+              required=True,
+              help="Recorder statistic id for an energy source (repeatable)")
+@click.option("--co2-statistic-id", required=True,
+              help="Recorder statistic id for the CO2-intensity signal")
+@click.option("--period", default="hour",
+              type=click.Choice(["5minute", "hour", "day", "week", "month"]))
+@click.pass_context
+def energy_fossil_consumption(ctx, start_time, end_time,
+                                energy_statistic_ids, co2_statistic_id, period):
+    """Compute fossil-fuel energy consumption with the HA 2024+ signature."""
+    emit(ctx, energy_advanced_core.fossil_energy_consumption(
+        make_client(ctx),
+        start_time=start_time, end_time=end_time,
+        energy_statistic_ids=list(energy_statistic_ids),
+        co2_statistic_id=co2_statistic_id,
+        period=period,
+    ))
+
+
+@energy.command("save-prefs-structured")
+@click.option("--energy-sources", default=None,
+              help="JSON list of energy-source dicts (required)")
+@click.option("--device-consumption", default=None,
+              help="JSON list of device-consumption dicts")
+@click.option("--manual-statistic-id", "manual_statistic_ids", multiple=True,
+              help="Manually-configured statistic id (repeatable)")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Read the full payload from a JSON file")
+@click.confirmation_option(prompt="Replace Energy dashboard prefs?")
+@click.pass_context
+def energy_save_prefs_structured(ctx, energy_sources, device_consumption,
+                                   manual_statistic_ids, from_file):
+    """Save structured Energy prefs (energy_sources required)."""
+    if from_file:
+        payload = json.loads(Path(from_file).read_text())
+    else:
+        if not energy_sources:
+            raise click.UsageError("Provide --energy-sources or --from-file")
+        payload = {
+            "energy_sources": json.loads(energy_sources),
+        }
+        if device_consumption is not None:
+            payload["device_consumption"] = json.loads(device_consumption)
+        if manual_statistic_ids:
+            payload["manual_configured_statistic_ids"] = list(manual_statistic_ids)
+    emit(ctx, energy_advanced_core.save_prefs(make_client(ctx), **payload))
+
+
+# ────────────────────────────────────────────────────────── statistics admin
+# Subcommands on existing `statistics` group.
+
+@statistics.command("adjust-sum")
+@click.argument("statistic_id")
+@click.option("--start", "start_time", required=True, help="ISO-8601 UTC")
+@click.option("--adjustment", type=float, required=True,
+              help="Signed float to add to the stored sum")
+@click.option("--adjustment-unit", "adjustment_unit_of_measurement", default=None,
+              help="Unit for the adjustment value (defaults to stored unit)")
+@click.confirmation_option(prompt="Adjust the sum statistic? (destructive)")
+@click.pass_context
+def statistics_adjust_sum(ctx, statistic_id, start_time, adjustment,
+                            adjustment_unit_of_measurement):
+    """Adjust the stored sum of a statistic series from a point in time."""
+    emit(ctx, statistics_admin_core.adjust_sum_statistics(
+        make_client(ctx),
+        statistic_id=statistic_id,
+        start_time=start_time,
+        adjustment=adjustment,
+        adjustment_unit_of_measurement=adjustment_unit_of_measurement,
+    ))
+
+
+@statistics.command("change-unit")
+@click.argument("statistic_id")
+@click.option("--new-unit", "new_unit_of_measurement", required=True)
+@click.option("--old-unit", "old_unit_of_measurement", required=True)
+@click.confirmation_option(prompt="Convert all stored statistics to the new unit?")
+@click.pass_context
+def statistics_change_unit(ctx, statistic_id,
+                             new_unit_of_measurement, old_unit_of_measurement):
+    """Convert all stored statistics for a series to a new unit."""
+    emit(ctx, statistics_admin_core.change_statistics_unit(
+        make_client(ctx),
+        statistic_id=statistic_id,
+        new_unit_of_measurement=new_unit_of_measurement,
+        old_unit_of_measurement=old_unit_of_measurement,
+    ))
+
+
+@statistics.command("validate")
+@click.pass_context
+def statistics_validate(ctx):
+    """Run recorder validation; returns {statistic_id: [issue, ...]}."""
+    emit(ctx, statistics_admin_core.validate_statistics(make_client(ctx)))
+
+
+@statistics.command("update-issue")
+@click.argument("statistic_id")
+@click.option("--issue-type", required=True,
+              help="e.g. unsupported_state_class, units_changed")
+@click.confirmation_option(prompt="Update / clear this statistics issue?")
+@click.pass_context
+def statistics_update_issue(ctx, statistic_id, issue_type):
+    """Acknowledge or clear a recorder statistics issue."""
+    emit(ctx, statistics_admin_core.update_statistics_issues(
+        make_client(ctx),
+        statistic_id=statistic_id,
+        issue_type=issue_type,
+    ))
+
+
+@statistics.command("update-stored-metadata")
+@click.argument("statistic_id")
+@click.option("--unit", "unit_of_measurement", default=None,
+              help="New stored unit. Pass empty/omit to clear.")
+@click.confirmation_option(prompt="Update stored statistics metadata?")
+@click.pass_context
+def statistics_update_stored_metadata(ctx, statistic_id, unit_of_measurement):
+    """Update the stored unit_of_measurement for a statistic id."""
+    emit(ctx, statistics_admin_core.update_statistics_metadata(
+        make_client(ctx),
+        statistic_id=statistic_id,
+        unit_of_measurement=unit_of_measurement,
+    ))
+
+
+@statistics.command("import")
+@click.option("--metadata", "metadata_json", default=None,
+              help="Inline JSON for the metadata dict")
+@click.option("--stats", "stats_json", default=None,
+              help="Inline JSON for the stats list")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None,
+              help='File containing {"metadata": {...}, "stats": [...]}')
+@click.confirmation_option(prompt="Import these statistics rows?")
+@click.pass_context
+def statistics_import(ctx, metadata_json, stats_json, from_file):
+    """Import external or internal statistics into the recorder."""
+    if from_file:
+        payload = json.loads(Path(from_file).read_text())
+        metadata = payload["metadata"]
+        stats = payload["stats"]
+    else:
+        if not (metadata_json and stats_json):
+            raise click.UsageError(
+                "Provide --metadata+--stats together, or --from-file",
+            )
+        metadata = json.loads(metadata_json)
+        stats = json.loads(stats_json)
+    emit(ctx, statistics_admin_core.import_statistics(
+        make_client(ctx), metadata=metadata, stats=stats,
+    ))
+
+
+# ────────────────────────────────────────────────────────── helper previews
+
+@cli.group("helper-preview")
+def helper_preview():
+    """Live config-flow preview subscriptions for helper domains.
+
+    These are WebSocket subscription commands — this CLI only sends the
+    initial subscribe message; full event-stream consumption requires the
+    underlying client's ws_subscribe machinery.
+    """
+
+
+def _print_preview_event(event):
+    """Default on_event callback for helper-preview commands."""
+    click.echo(json.dumps(event, default=str))
+
+
+_HELPER_PREVIEW_DOMAINS = (
+    "group", "generic_camera", "mold_indicator", "statistics",
+    "threshold", "time_date", "switch_as_x",
+)
+
+
+@helper_preview.command("start")
+@click.option("--domain", required=True,
+              type=click.Choice(_HELPER_PREVIEW_DOMAINS),
+              help="Helper domain to preview")
+@click.option("--flow-id", required=True)
+@click.option("--flow-type", default="config_flow",
+              type=click.Choice(["config_flow", "options_flow"]))
+@click.option("--user-input", "user_input_json", default=None,
+              help="JSON dict of user input (required)")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Read user_input JSON from file")
+@click.option("--max-events", type=int, default=10, show_default=True,
+              help="Stop after N events")
+@click.pass_context
+def helper_preview_start(ctx, domain, flow_id, flow_type,
+                           user_input_json, from_file, max_events):
+    """Start a live <domain>/start_preview subscription for a helper config flow."""
+    if from_file:
+        user_input = json.loads(Path(from_file).read_text())
+    elif user_input_json:
+        user_input = json.loads(user_input_json)
+    else:
+        raise click.UsageError("Provide --user-input or --from-file")
+    helper_previews_core.start_helper_preview(
+        make_client(ctx),
+        domain=domain,
+        flow_id=flow_id,
+        flow_type=flow_type,
+        user_input=user_input,
+        on_event=_print_preview_event,
+        max_events=max_events,
+    )
+    emit(ctx, {"started": False, "stopped": True, "domain": domain})
+
+
+# ────────────────────────────────────────────────────────── history extras
+# New group `history-ext` (the existing `history` is a single command).
+
+@cli.group("history-ext")
+def history_ext():
+    """Long-history fallback — recorder states → long-term statistics."""
+
+
+@history_ext.command("with-stats-fallback")
+@click.argument("entity_id")
+@click.option("--start", "start_iso", required=True, help="ISO-8601 start time")
+@click.option("--end", "end_iso", default=None, help="ISO-8601 end (default: now)")
+@click.option("--period", default="hour",
+              type=click.Choice(["5minute", "hour", "day", "week", "month"]))
+@click.option("--value-field", default="mean",
+              type=click.Choice(["mean", "min", "max", "state", "sum", "change"]))
+@click.pass_context
+def history_ext_with_stats_fallback(ctx, entity_id, start_iso, end_iso,
+                                       period, value_field):
+    """Return a unified history list (recorder + statistics back-fill)."""
+    from datetime import datetime as _dt
+    start = _dt.fromisoformat(start_iso.replace("Z", "+00:00"))
+    end = _dt.fromisoformat(end_iso.replace("Z", "+00:00")) if end_iso else None
+    emit(ctx, history_ext_core.history_with_stats_fallback(
+        make_client(ctx),
+        entity_id=entity_id, start=start, end=end,
+        period=period, value_field=value_field,
+    ))
+
+
+@history_ext.command("retention-estimate")
+@click.argument("entity_id")
+@click.option("--probe-days", type=int, default=60, show_default=True)
+@click.pass_context
+def history_ext_retention_estimate(ctx, entity_id, probe_days):
+    """Estimate how far back the recorder retains states for an entity."""
+    emit(ctx, history_ext_core.recorder_retention_estimate(
+        make_client(ctx), entity_id=entity_id, probe_days=probe_days,
+    ))
+
+
+@history_ext.command("stats-to-samples")
+@click.argument("statistic_id")
+@click.option("--stats-json", default=None,
+              help="Inline JSON for the stats_response dict")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--value-field", default="mean",
+              type=click.Choice(["mean", "min", "max", "state", "sum", "change"]))
+@click.pass_context
+def history_ext_stats_to_samples(ctx, statistic_id, stats_json,
+                                     from_file, value_field):
+    """Flatten a recorder/statistics_during_period response to {when,value,source} rows."""
+    if from_file:
+        stats_resp = json.loads(Path(from_file).read_text())
+    elif stats_json:
+        stats_resp = json.loads(stats_json)
+    else:
+        raise click.UsageError("Provide --stats-json or --from-file")
+    emit(ctx, history_ext_core.statistics_to_samples(
+        stats_resp, statistic_id=statistic_id, value_field=value_field,
+    ))
+
+
+# ────────────────────────────────────────────────────────── history-logbook
+# Uses WS history/history_during_period which works around the REST
+# "first 24h only" gotcha — handy for arbitrary multi-day windows.
+
+@cli.group("history-logbook")
+def history_logbook():
+    """WS history + logbook — bypasses the REST first-24h-only gotcha."""
+
+
+@history_logbook.command("history-during-period")
+@click.option("--start", "start_time", required=True, help="RFC 3339 start_time")
+@click.option("--end", "end_time", default=None, help="RFC 3339 end_time")
+@click.option("--entity", "entity_ids", multiple=True, required=True,
+              help="entity_id (repeatable)")
+@click.option("--minimal-response", is_flag=True, default=False)
+@click.option("--no-attributes", is_flag=True, default=False)
+@click.option("--significant-only/--all-changes",
+              "significant_changes_only", default=True)
+@click.pass_context
+def history_logbook_during_period(ctx, start_time, end_time, entity_ids,
+                                     minimal_response, no_attributes,
+                                     significant_changes_only):
+    """Fetch full history for entities via WS history/history_during_period.
+
+    NOTE: unlike the REST `history` command this honours the full --start
+    → --end window rather than returning only the first 24h.
+    """
+    emit(ctx, history_logbook_core.history_during_period(
+        make_client(ctx),
+        start_time=start_time, end_time=end_time,
+        entity_ids=list(entity_ids),
+        minimal_response=minimal_response,
+        no_attributes=no_attributes,
+        significant_changes_only=significant_changes_only,
+    ))
+
+
+@history_logbook.command("history-stream")
+@click.option("--start", "start_time", required=True)
+@click.option("--end", "end_time", default=None)
+@click.option("--entity", "entity_ids", multiple=True, required=True)
+@click.option("--minimal-response", is_flag=True, default=False)
+@click.option("--no-attributes", is_flag=True, default=False)
+@click.option("--significant-only/--all-changes",
+              "significant_changes_only", default=True)
+@click.pass_context
+def history_logbook_stream(ctx, start_time, end_time, entity_ids,
+                              minimal_response, no_attributes,
+                              significant_changes_only):
+    """Initiate a history/stream subscription (initial backfill returned)."""
+    emit(ctx, history_logbook_core.history_stream(
+        make_client(ctx),
+        entity_ids=list(entity_ids),
+        start_time=start_time, end_time=end_time,
+        minimal_response=minimal_response,
+        no_attributes=no_attributes,
+        significant_changes_only=significant_changes_only,
+    ))
+
+
+@history_logbook.command("logbook-events")
+@click.option("--start", "start_time", required=True)
+@click.option("--end", "end_time", default=None)
+@click.option("--entity", "entity_ids", multiple=True,
+              help="Filter by entity_id (repeatable)")
+@click.option("--device", "device_ids", multiple=True,
+              help="Filter by device_id (repeatable)")
+@click.option("--context-id", default=None)
+@click.pass_context
+def history_logbook_events(ctx, start_time, end_time, entity_ids,
+                              device_ids, context_id):
+    """Fetch logbook events for a period (WS logbook/get_events)."""
+    emit(ctx, history_logbook_core.logbook_get_events(
+        make_client(ctx),
+        start_time=start_time, end_time=end_time,
+        entity_ids=list(entity_ids) or None,
+        device_ids=list(device_ids) or None,
+        context_id=context_id,
+    ))
+
+
+@history_logbook.command("logbook-stream")
+@click.option("--start", "start_time", required=True)
+@click.option("--end", "end_time", default=None)
+@click.option("--entity", "entity_ids", multiple=True)
+@click.option("--device", "device_ids", multiple=True)
+@click.pass_context
+def history_logbook_stream_cmd(ctx, start_time, end_time, entity_ids, device_ids):
+    """Initiate a logbook/event_stream subscription (initial backfill returned)."""
+    emit(ctx, history_logbook_core.logbook_event_stream(
+        make_client(ctx),
+        start_time=start_time, end_time=end_time,
+        entity_ids=list(entity_ids) or None,
+        device_ids=list(device_ids) or None,
+    ))
+
+
+# ────────────────────────────────────────────────────────── lovelace layout-lint
+# Sits under the existing `lovelace` group (read-only).
+
+@lovelace.command("layout-lint")
+@click.argument("url_path")
+@click.option("--rule", "rules", multiple=True,
+              help="Restrict to a subset of rule names (repeatable)")
+@click.option("--viewport", default="mobile",
+              type=click.Choice(["mobile", "desktop", "both"]))
+@click.option("--summary", is_flag=True, default=False,
+              help="Print issue counts by rule instead of full issues")
+@click.option("--format", "format_", default="auto",
+              type=click.Choice(["auto", "human", "json"]),
+              help="Output format. `auto` follows --json")
+@click.pass_context
+def lovelace_layout_lint(ctx, url_path, rules, viewport, summary, format_):
+    """Layout-quality lint for a dashboard (warnings/info only — never errors)."""
+    cfg = _fetch_dash_cfg(ctx, url_path)
+    issues = lovelace_layout_lint_core.lint_layout(
+        cfg,
+        rules=set(rules) if rules else None,
+        viewport=viewport,
+    )
+    if summary:
+        emit(ctx, lovelace_layout_lint_core.summarise_by_rule(issues))
+        return
+    if format_ == "human" or (format_ == "auto" and not ctx.obj.get("as_json")):
+        click.echo(lovelace_layout_lint_core.format_issues(issues))
+        return
+    emit(ctx, issues)
+
+
+# ────────────────────────────────────────────────────────── lovelace sections-ext
+# Layout-polish builders under existing `lovelace section` group.
+
+@lovelace_section.command("hero")
+@click.option("--card", "card_json", default=None,
+              help="Inline JSON for the inner card dict")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Read card JSON from file")
+@click.option("--column-span", type=int, default=4, show_default=True)
+@click.option("--heading-style", default="title",
+              type=click.Choice(["title", "subtitle", "default"]))
+@click.option("--top-margin/--no-top-margin", default=False)
+@click.pass_context
+def lovelace_section_hero(ctx, card_json, from_file, column_span,
+                            heading_style, top_margin):
+    """Build a hero section (single prominent card) — prints the JSON."""
+    if from_file:
+        card = json.loads(Path(from_file).read_text())
+    elif card_json:
+        card = json.loads(card_json)
+    else:
+        raise click.UsageError("Provide --card or --from-file")
+    emit(ctx, lovelace_sections_ext_core.hero_section(
+        card=card, column_span=column_span,
+        heading_style=heading_style, top_margin=top_margin,
+    ))
+
+
+@lovelace_section.command("spacer")
+@click.option("--column-span", type=int, default=4, show_default=True)
+@click.pass_context
+def lovelace_section_spacer(ctx, column_span):
+    """Build a blank spacer section."""
+    emit(ctx, lovelace_sections_ext_core.spacer_section(column_span=column_span))
+
+
+@lovelace_section.command("divider")
+@click.argument("label")
+@click.option("--column-span", type=int, default=4, show_default=True)
+@click.pass_context
+def lovelace_section_divider(ctx, label, column_span):
+    """Build a divider section containing only a heading card."""
+    emit(ctx, lovelace_sections_ext_core.divider_section(
+        label=label, column_span=column_span,
+    ))
+
+
+@lovelace_section.command("with-options")
+@click.option("--section-json", default=None,
+              help="Inline JSON for the section dict to mutate")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--heading-style", default=None,
+              type=click.Choice(["title", "subtitle", "default"]))
+@click.option("--top-margin/--no-top-margin", "top_margin", default=None)
+@click.option("--column-span", type=int, default=None)
+@click.option("--row-span", type=int, default=None)
+@click.pass_context
+def lovelace_section_with_options(ctx, section_json, from_file,
+                                    heading_style, top_margin,
+                                    column_span, row_span):
+    """Apply option fields to a section dict (returns the mutated copy)."""
+    if from_file:
+        section = json.loads(Path(from_file).read_text())
+    elif section_json:
+        section = json.loads(section_json)
+    else:
+        raise click.UsageError("Provide --section-json or --from-file")
+    emit(ctx, lovelace_sections_ext_core.with_section_options(
+        section,
+        heading_style=heading_style, top_margin=top_margin,
+        column_span=column_span, row_span=row_span,
+    ))
+
+
+# ────────────────────────────────────────────────────────── lovelace-views
+# View-type-aware builders under existing `lovelace view` group.
+
+@lovelace_view.command("build-sections")
+@click.option("--title", required=True)
+@click.option("--path", default=None)
+@click.option("--sections", default=None, help="JSON list of section dicts")
+@click.option("--sections-file", type=click.Path(exists=True, dir_okay=False),
+              default=None)
+@click.option("--max-columns", type=int, default=4, show_default=True)
+@click.option("--dense-section-placement/--no-dense", "dense_section_placement",
+              default=None)
+@click.option("--top-margin/--no-top-margin", "top_margin", default=None)
+@click.option("--icon", default=None)
+@click.option("--theme", default=None)
+@click.option("--subview", is_flag=True, default=False)
+@click.option("--back-path", default=None)
+@click.pass_context
+def lovelace_view_build_sections(ctx, title, path, sections, sections_file,
+                                    max_columns, dense_section_placement,
+                                    top_margin, icon, theme, subview, back_path):
+    """Build a `sections`-type view dict (modern HA layout)."""
+    if sections_file:
+        sec_list = json.loads(Path(sections_file).read_text())
+    elif sections:
+        sec_list = json.loads(sections)
+    else:
+        sec_list = None
+    emit(ctx, lovelace_views_core.view_sections(
+        title=title, path=path, sections=sec_list, max_columns=max_columns,
+        dense_section_placement=dense_section_placement, top_margin=top_margin,
+        icon=icon, theme=theme, subview=subview, back_path=back_path,
+    ))
+
+
+@lovelace_view.command("build-masonry")
+@click.option("--title", required=True)
+@click.option("--path", default=None)
+@click.option("--cards", default=None, help="JSON list of card dicts")
+@click.option("--cards-file", type=click.Path(exists=True, dir_okay=False),
+              default=None)
+@click.option("--icon", default=None)
+@click.option("--theme", default=None)
+@click.option("--subview", is_flag=True, default=False)
+@click.option("--back-path", default=None)
+@click.pass_context
+def lovelace_view_build_masonry(ctx, title, path, cards, cards_file,
+                                  icon, theme, subview, back_path):
+    """Build a legacy `masonry`-type view dict."""
+    if cards_file:
+        card_list = json.loads(Path(cards_file).read_text())
+    elif cards:
+        card_list = json.loads(cards)
+    else:
+        card_list = None
+    emit(ctx, lovelace_views_core.view_masonry(
+        title=title, path=path, cards=card_list,
+        icon=icon, theme=theme, subview=subview, back_path=back_path,
+    ))
+
+
+@lovelace_view.command("build-panel")
+@click.option("--title", required=True)
+@click.option("--path", default=None)
+@click.option("--card", "card_json", default=None, help="Inline JSON for the single card")
+@click.option("--card-file", type=click.Path(exists=True, dir_okay=False),
+              default=None)
+@click.option("--icon", default=None)
+@click.option("--theme", default=None)
+@click.option("--subview", is_flag=True, default=False)
+@click.option("--back-path", default=None)
+@click.pass_context
+def lovelace_view_build_panel(ctx, title, path, card_json, card_file,
+                                icon, theme, subview, back_path):
+    """Build a `panel`-type view dict (one card fills the viewport)."""
+    if card_file:
+        card = json.loads(Path(card_file).read_text())
+    elif card_json:
+        card = json.loads(card_json)
+    else:
+        raise click.UsageError("Provide --card or --card-file")
+    emit(ctx, lovelace_views_core.view_panel(
+        title=title, card=card, path=path,
+        icon=icon, theme=theme, subview=subview, back_path=back_path,
+    ))
+
+
+@lovelace_view.command("build-sidebar")
+@click.option("--title", required=True)
+@click.option("--path", default=None)
+@click.option("--cards", default=None)
+@click.option("--cards-file", type=click.Path(exists=True, dir_okay=False),
+              default=None)
+@click.option("--icon", default=None)
+@click.option("--theme", default=None)
+@click.option("--subview", is_flag=True, default=False)
+@click.option("--back-path", default=None)
+@click.pass_context
+def lovelace_view_build_sidebar(ctx, title, path, cards, cards_file,
+                                  icon, theme, subview, back_path):
+    """Build a `sidebar`-type view dict (deprecated but functional)."""
+    if cards_file:
+        card_list = json.loads(Path(cards_file).read_text())
+    elif cards:
+        card_list = json.loads(cards)
+    else:
+        card_list = None
+    emit(ctx, lovelace_views_core.view_sidebar(
+        title=title, path=path, cards=card_list,
+        icon=icon, theme=theme, subview=subview, back_path=back_path,
+    ))
+
+
+@lovelace_view.command("build-grid-layout")
+@click.option("--title", required=True)
+@click.option("--path", default=None)
+@click.option("--cards", default=None)
+@click.option("--cards-file", type=click.Path(exists=True, dir_okay=False),
+              default=None)
+@click.option("--grid-template-columns", default=None)
+@click.option("--grid-template-rows", default=None)
+@click.option("--grid-template-areas", default=None)
+@click.option("--grid-gap", default=None)
+@click.option("--max-cols", type=int, default=None)
+@click.option("--max-width", type=int, default=None)
+@click.option("--min-width", type=int, default=None)
+@click.option("--mediaquery", default=None, help="JSON dict of breakpoint overrides")
+@click.option("--icon", default=None)
+@click.option("--theme", default=None)
+@click.option("--subview", is_flag=True, default=False)
+@click.option("--back-path", default=None)
+@click.pass_context
+def lovelace_view_build_grid_layout(ctx, title, path, cards, cards_file,
+                                       grid_template_columns,
+                                       grid_template_rows,
+                                       grid_template_areas, grid_gap,
+                                       max_cols, max_width, min_width,
+                                       mediaquery, icon, theme,
+                                       subview, back_path):
+    """Build a `custom:grid-layout` view dict (layout-card plugin)."""
+    if cards_file:
+        card_list = json.loads(Path(cards_file).read_text())
+    elif cards:
+        card_list = json.loads(cards)
+    else:
+        card_list = None
+    emit(ctx, lovelace_views_core.view_grid_layout(
+        title=title, path=path, cards=card_list,
+        grid_template_columns=grid_template_columns,
+        grid_template_rows=grid_template_rows,
+        grid_template_areas=grid_template_areas,
+        grid_gap=grid_gap,
+        max_cols=max_cols, max_width=max_width, min_width=min_width,
+        mediaquery=json.loads(mediaquery) if mediaquery else None,
+        icon=icon, theme=theme, subview=subview, back_path=back_path,
+    ))
+
+
+@lovelace_view.command("build-masonry-layout")
+@click.option("--title", required=True)
+@click.option("--path", default=None)
+@click.option("--cards", default=None)
+@click.option("--cards-file", type=click.Path(exists=True, dir_okay=False),
+              default=None)
+@click.option("--width", type=int, default=None)
+@click.option("--max-cols", type=int, default=None)
+@click.option("--max-width", type=int, default=None)
+@click.option("--mediaquery", default=None)
+@click.option("--icon", default=None)
+@click.option("--theme", default=None)
+@click.option("--subview", is_flag=True, default=False)
+@click.option("--back-path", default=None)
+@click.pass_context
+def lovelace_view_build_masonry_layout(ctx, title, path, cards, cards_file,
+                                          width, max_cols, max_width,
+                                          mediaquery, icon, theme,
+                                          subview, back_path):
+    """Build a `custom:masonry-layout` view dict (layout-card plugin)."""
+    if cards_file:
+        card_list = json.loads(Path(cards_file).read_text())
+    elif cards:
+        card_list = json.loads(cards)
+    else:
+        card_list = None
+    emit(ctx, lovelace_views_core.view_masonry_layout(
+        title=title, path=path, cards=card_list,
+        width=width, max_cols=max_cols, max_width=max_width,
+        mediaquery=json.loads(mediaquery) if mediaquery else None,
+        icon=icon, theme=theme, subview=subview, back_path=back_path,
+    ))
+
+
+@lovelace_view.command("summaries")
+@click.argument("url_path")
+@click.pass_context
+def lovelace_view_summaries(ctx, url_path):
+    """Print compact summaries of every view in a dashboard."""
+    cfg = _fetch_dash_cfg(ctx, url_path)
+    emit(ctx, lovelace_views_core.list_view_summaries(cfg))
+
+
+@lovelace_view.command("set-max-columns")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.argument("n", type=int)
+@click.option("--dry-run", is_flag=True, default=False)
+@click.confirmation_option(prompt="Set max_columns on this view?")
+@click.pass_context
+def lovelace_view_set_max_columns(ctx, url_path, view_path, n, dry_run):
+    """Set max_columns on a sections view (in-place mutation + save)."""
+    cfg = _fetch_dash_cfg(ctx, url_path)
+    view = lovelace_paths_core.get_view(cfg, view_path)
+    lovelace_views_core.set_max_columns(view, n)
+    lovelace_paths_core.set_view(cfg, view_path, view)
+    emit(ctx, _push_dash_cfg(ctx, url_path, cfg, dry_run=dry_run))
+
+
+@lovelace_view.command("set-subview")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.option("--subview/--no-subview", default=True)
+@click.option("--back-path", default=None)
+@click.option("--dry-run", is_flag=True, default=False)
+@click.confirmation_option(prompt="Apply subview change?")
+@click.pass_context
+def lovelace_view_set_subview(ctx, url_path, view_path, subview, back_path, dry_run):
+    """Mark / unmark a view as a subview, optionally setting back_path."""
+    cfg = _fetch_dash_cfg(ctx, url_path)
+    view = lovelace_paths_core.get_view(cfg, view_path)
+    lovelace_views_core.set_subview(view, subview, back_path=back_path)
+    lovelace_paths_core.set_view(cfg, view_path, view)
+    emit(ctx, _push_dash_cfg(ctx, url_path, cfg, dry_run=dry_run))
+
+
+@lovelace_view.command("set-visibility")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.option("--conditions", default=None,
+              help="JSON for visibility conditions, `true`, `false`, or `null`")
+@click.option("--dry-run", is_flag=True, default=False)
+@click.confirmation_option(prompt="Apply visibility change?")
+@click.pass_context
+def lovelace_view_set_visibility(ctx, url_path, view_path, conditions, dry_run):
+    """Set visibility on a view (list of conds, bool, or null to clear)."""
+    cond = json.loads(conditions) if conditions is not None else None
+    cfg = _fetch_dash_cfg(ctx, url_path)
+    view = lovelace_paths_core.get_view(cfg, view_path)
+    lovelace_views_core.set_visibility(view, cond)
+    lovelace_paths_core.set_view(cfg, view_path, view)
+    emit(ctx, _push_dash_cfg(ctx, url_path, cfg, dry_run=dry_run))
+
+
+@lovelace_view.command("set-dense-section-placement")
+@click.argument("url_path")
+@click.argument("view_path")
+@click.option("--dense/--no-dense", default=True)
+@click.option("--dry-run", is_flag=True, default=False)
+@click.confirmation_option(prompt="Apply dense_section_placement change?")
+@click.pass_context
+def lovelace_view_set_dense(ctx, url_path, view_path, dense, dry_run):
+    """Toggle dense_section_placement on a sections view."""
+    cfg = _fetch_dash_cfg(ctx, url_path)
+    view = lovelace_paths_core.get_view(cfg, view_path)
+    lovelace_views_core.set_dense_section_placement(view, dense)
+    lovelace_paths_core.set_view(cfg, view_path, view)
+    emit(ctx, _push_dash_cfg(ctx, url_path, cfg, dry_run=dry_run))
+
+
+# ────────────────────────────────────────────────────────── state-stream
+
+@cli.group("state-stream")
+def state_stream():
+    """Live WS event subscriptions — events, state_changed, triggers."""
+
+
+def _print_event(event):
+    """Default on_event for state-stream subcommands."""
+    click.echo(json.dumps(event, default=str))
+
+
+@state_stream.command("events")
+@click.option("--event-type", default=None,
+              help="Filter to this event type (omit for all events)")
+@click.option("--max-events", type=int, default=10, show_default=True)
+@click.pass_context
+def state_stream_events(ctx, event_type, max_events):
+    """Subscribe to HA event bus events and print each one."""
+    state_stream_core.subscribe_events(
+        make_client(ctx),
+        event_type=event_type,
+        on_event=_print_event,
+        max_events=max_events,
+    )
+    emit(ctx, {"stopped": True, "max_events": max_events})
+
+
+@state_stream.command("state-changed")
+@click.option("--entity", "entity_ids", multiple=True,
+              help="Filter to these entity_ids (repeatable)")
+@click.option("--max-events", type=int, default=10, show_default=True)
+@click.pass_context
+def state_stream_state_changed(ctx, entity_ids, max_events):
+    """Subscribe to state_changed events, optionally entity-filtered."""
+    state_stream_core.subscribe_state_changed(
+        make_client(ctx),
+        entity_ids=list(entity_ids) or None,
+        on_change=_print_event,
+        max_events=max_events,
+    )
+    emit(ctx, {"stopped": True, "max_events": max_events})
+
+
+@state_stream.command("trigger")
+@click.option("--trigger", "trigger_json", default=None,
+              help="Inline JSON for the trigger dict")
+@click.option("--from-file", "from_file",
+              type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Read trigger JSON from a file")
+@click.option("--variables", default=None, help="JSON dict of variables")
+@click.option("--max-events", type=int, default=10, show_default=True)
+@click.pass_context
+def state_stream_trigger(ctx, trigger_json, from_file, variables, max_events):
+    """Subscribe to HA trigger evaluations and print each fired event."""
+    if from_file:
+        trig = json.loads(Path(from_file).read_text())
+    elif trigger_json:
+        trig = json.loads(trigger_json)
+    else:
+        raise click.UsageError("Provide --trigger or --from-file")
+    state_stream_core.subscribe_trigger(
+        make_client(ctx),
+        trigger=trig,
+        on_trigger=_print_event,
+        variables=json.loads(variables) if variables else None,
+        max_events=max_events,
+    )
+    emit(ctx, {"stopped": True, "max_events": max_events})
+
+
+@state_stream.command("collect")
+@click.option("--event-type", default=None)
+@click.option("--count", type=int, default=1, show_default=True)
+@click.option("--timeout-seconds", type=float, default=10.0, show_default=True)
+@click.pass_context
+def state_stream_collect(ctx, event_type, count, timeout_seconds):
+    """Synchronously collect N events and print them as a list."""
+    emit(ctx, state_stream_core.collect_events(
+        make_client(ctx),
+        event_type=event_type,
+        count=count,
+        timeout_seconds=timeout_seconds,
+    ))
+
+
+# ────────────────────────────────────────────────────────── trace-debug
+# Distinct group from the existing automation/script trace commands.
+
+@cli.group("trace-debug")
+def trace_debug():
+    """Trace introspection — WS trace/list, trace/get, trace/contexts."""
+
+
+@trace_debug.command("list")
+@click.option("--domain", default=None,
+              type=click.Choice(["automation", "script"]))
+@click.option("--item-id", default=None)
+@click.pass_context
+def trace_debug_list(ctx, domain, item_id):
+    """List trace summaries (optionally filtered by domain/item_id)."""
+    emit(ctx, trace_debug_core.list_traces(
+        make_client(ctx), domain=domain, item_id=item_id,
+    ))
+
+
+@trace_debug.command("get")
+@click.option("--domain", required=True,
+              type=click.Choice(["automation", "script"]))
+@click.option("--item-id", required=True)
+@click.option("--run-id", required=True)
+@click.pass_context
+def trace_debug_get(ctx, domain, item_id, run_id):
+    """Fetch the full trace dict for one run."""
+    emit(ctx, trace_debug_core.get_trace(
+        make_client(ctx), domain=domain, item_id=item_id, run_id=run_id,
+    ))
+
+
+@trace_debug.command("contexts")
+@click.option("--domain", default=None,
+              type=click.Choice(["automation", "script"]))
+@click.option("--item-id", default=None)
+@click.pass_context
+def trace_debug_contexts(ctx, domain, item_id):
+    """Return a mapping of context_id → trace coordinates."""
+    emit(ctx, trace_debug_core.list_contexts(
+        make_client(ctx), domain=domain, item_id=item_id,
+    ))
+
+
+# ────────────────────────────────────────────────────────── trace-debugger
+# Live breakpoint debugger (advanced). /* TODO refine UX */
+
+@cli.group("trace-debugger")
+def trace_debugger():
+    """Live breakpoint debugger for running scripts/automations.
+
+    /* TODO refine UX */ — these wrap the WS trace/debug/* commands. The
+    subscribe path is a streaming subscription in real HA (events fire on
+    each breakpoint hit) and consuming that stream requires the underlying
+    client's ws_subscribe machinery; the CLI here only sends the initial
+    subscribe message.
+    """
+
+
+@trace_debugger.command("list-breakpoints")
+@click.pass_context
+def trace_debugger_list_breakpoints(ctx):
+    """List currently registered breakpoints."""
+    emit(ctx, trace_debugger_core.list_breakpoints(make_client(ctx)))
+
+
+@trace_debugger.command("subscribe-breakpoints")
+@click.pass_context
+def trace_debugger_subscribe_breakpoints(ctx):
+    """Send the initial trace/debug/breakpoint/subscribe message.
+
+    Required before any set/clear breakpoint operations will be accepted.
+    """
+    emit(ctx, trace_debugger_core.subscribe_breakpoints(make_client(ctx)))
+
+
+@trace_debugger.command("set-breakpoint")
+@click.option("--domain", required=True,
+              type=click.Choice(["automation", "script"]))
+@click.option("--item-id", required=True)
+@click.option("--node", required=True,
+              help='Trace-node path, e.g. "action/0"')
+@click.option("--run-id", default=None,
+              help="Restrict the breakpoint to a specific run")
+@click.confirmation_option(prompt="Register this breakpoint?")
+@click.pass_context
+def trace_debugger_set_breakpoint(ctx, domain, item_id, node, run_id):
+    """Register a breakpoint on an automation/script trace node."""
+    emit(ctx, trace_debugger_core.set_breakpoint(
+        make_client(ctx),
+        domain=domain, item_id=item_id, node=node, run_id=run_id,
+    ))
+
+
+@trace_debugger.command("clear-breakpoint")
+@click.option("--domain", required=True,
+              type=click.Choice(["automation", "script"]))
+@click.option("--item-id", required=True)
+@click.option("--node", required=True)
+@click.option("--run-id", default=None)
+@click.confirmation_option(prompt="Clear this breakpoint?")
+@click.pass_context
+def trace_debugger_clear_breakpoint(ctx, domain, item_id, node, run_id):
+    """Remove a breakpoint (args must match the original set call)."""
+    emit(ctx, trace_debugger_core.clear_breakpoint(
+        make_client(ctx),
+        domain=domain, item_id=item_id, node=node, run_id=run_id,
+    ))
+
+
+@trace_debugger.command("step")
+@click.option("--domain", required=True,
+              type=click.Choice(["automation", "script"]))
+@click.option("--item-id", required=True)
+@click.option("--run-id", required=True)
+@click.confirmation_option(prompt="Step this paused run by one node?")
+@click.pass_context
+def trace_debugger_step(ctx, domain, item_id, run_id):
+    """Advance a paused run by one step."""
+    emit(ctx, trace_debugger_core.step_execution(
+        make_client(ctx),
+        domain=domain, item_id=item_id, run_id=run_id,
+    ))
+
+
+@trace_debugger.command("continue")
+@click.option("--domain", required=True,
+              type=click.Choice(["automation", "script"]))
+@click.option("--item-id", required=True)
+@click.option("--run-id", required=True)
+@click.confirmation_option(prompt="Resume this paused run?")
+@click.pass_context
+def trace_debugger_continue(ctx, domain, item_id, run_id):
+    """Resume a paused run until the next breakpoint."""
+    emit(ctx, trace_debugger_core.continue_execution(
+        make_client(ctx),
+        domain=domain, item_id=item_id, run_id=run_id,
+    ))
+
+
+@trace_debugger.command("stop")
+@click.option("--domain", required=True,
+              type=click.Choice(["automation", "script"]))
+@click.option("--item-id", required=True)
+@click.option("--run-id", required=True)
+@click.confirmation_option(prompt="Abort this paused run?")
+@click.pass_context
+def trace_debugger_stop(ctx, domain, item_id, run_id):
+    """Abort a paused run."""
+    emit(ctx, trace_debugger_core.stop_execution(
+        make_client(ctx),
+        domain=domain, item_id=item_id, run_id=run_id,
+    ))
 
 
 if __name__ == "__main__":
