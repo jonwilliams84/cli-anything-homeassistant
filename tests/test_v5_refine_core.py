@@ -145,16 +145,17 @@ class TestPowercalcSetTemplate:
             fake_client, "ENTRY",
             power_template="{{ 30 if is_state('fan.x','on') else 0 }}",
         )
-        # Three POSTs: open flow, advance to fixed, submit template
+        # Four POSTs: open flow, advance to fixed, submit template, reload
         path_seq = [c["path"] for c in fake_client.calls if c["verb"] == "POST"]
-        assert path_seq[-3:] == [
+        assert path_seq[-4:] == [
             "config/config_entries/options/flow",
             "config/config_entries/options/flow/FID",
             "config/config_entries/options/flow/FID",
+            "config/config_entries/entry/ENTRY/reload",
         ]
-        # Last payload is the template submission
-        last = fake_client.calls[-1]
-        assert last["payload"] == {
+        # The template submission is the POST before the reload
+        submit = [c for c in fake_client.calls if c["verb"] == "POST"][-2]
+        assert submit["payload"] == {
             "power_template": "{{ 30 if is_state('fan.x','on') else 0 }}",
         }
 
@@ -181,7 +182,11 @@ class TestPowercalcSetTemplate:
     def test_set_fixed_power_submits_number(self, fake_client):
         self._wire_fixed_menu(fake_client)
         powercalc_core.set_fixed_power(fake_client, "ENTRY", power=42.5)
-        assert fake_client.calls[-1]["payload"] == {"power": 42.5}
+        posts = [c for c in fake_client.calls if c["verb"] == "POST"]
+        # submit clears any stale template (it would otherwise shadow the
+        # constant); a reload follows so the change lands on the sensor.
+        assert posts[-2]["payload"] == {"power": 42.5, "power_template": ""}
+        assert posts[-1]["path"] == "config/config_entries/entry/ENTRY/reload"
 
 
 # ──────────────────────────────────────────────────────────── registry: remove + bulk

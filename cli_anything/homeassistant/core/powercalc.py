@@ -335,7 +335,7 @@ def _open_fixed_step(client, entry_id: str) -> str:
 
 
 def set_power_template(client, entry_id: str, *,
-                        power_template: str) -> dict:
+                        power_template: str, reload: bool = True) -> dict:
     """Replace the ``power_template`` on a fixed-mode virtual_power entry.
 
     The 6-line manual flow (options-init → options-configure
@@ -345,27 +345,217 @@ def set_power_template(client, entry_id: str, *,
         set_power_template(client, fan_entry_id,
             power_template="{{ 30 * ((state_attr('fan.x','percentage')|float(0))/100)**3 "
                             "if is_state('fan.x','on') else 0 }}")
+
+    Auto-reloads the entry after the write (``reload=False`` to skip) so the
+    new model takes effect on the sensor immediately — an options-flow
+    ``create_entry`` does not always reload the entry on its own, which is the
+    usual reason a freshly-written template "doesn't take".
     """
     if not entry_id:
         raise ValueError("entry_id is required")
     if not power_template:
         raise ValueError("power_template is required and must be non-empty")
     flow_id = _open_fixed_step(client, entry_id)
-    return _ce.options_flow_configure(
+    resp = _ce.options_flow_configure(
         client, flow_id, {"power_template": power_template},
     )
+    if reload:
+        try:
+            reload_entry(client, entry_id)
+        except Exception:  # noqa: BLE001 — reload is best-effort
+            pass
+    return resp
 
 
-def set_fixed_power(client, entry_id: str, *, power: float) -> dict:
+def set_fixed_power(client, entry_id: str, *, power: float,
+                    reload: bool = True) -> dict:
     """Replace the fixed ``power`` (constant W) on a fixed-mode entry.
 
-    Same flow as :func:`set_power_template` but submits ``power`` instead.
+    Submits ``power`` **and clears any existing** ``power_template`` — powercalc
+    gives a template precedence over the constant, so a stale template left in
+    place would silently shadow the new fixed value. Auto-reloads afterwards
+    (``reload=False`` to skip) so the change lands on the sensor immediately.
+
+    Note: this sets the **on-state** power. The **off-state** standby is a
+    separate field on the ``basic_options`` step — use :func:`set_standby`.
     """
     if not entry_id:
         raise ValueError("entry_id is required")
     if power is None:
         raise ValueError("power is required")
     flow_id = _open_fixed_step(client, entry_id)
-    return _ce.options_flow_configure(
-        client, flow_id, {"power": power},
+    resp = _ce.options_flow_configure(
+        client, flow_id, {"power": power, "power_template": ""},
     )
+    if reload:
+        try:
+            reload_entry(client, entry_id)
+        except Exception:  # noqa: BLE001 — reload is best-effort
+            pass
+    return resp
+
+
+# ── basic_options step: standby_power + source ─────────────────────────────
+
+def _open_basic_step(client, entry_id: str) -> str:
+    """Open a virtual_power entry's options flow and advance to the
+    ``basic_options`` step (where ``standby_power`` and the source
+    ``entity_id`` live — NOT the ``fixed`` step, which only has on-state
+    power). Mirrors :func:`_open_fixed_step`.
+    """
+    init = _ce.options_flow_init(client, entry_id)
+    flow_id = init.get("flow_id")
+    if not flow_id:
+        raise RuntimeError(
+            f"Could not open options flow for {entry_id}: {init!r}",
+        )
+    if init.get("type") == "menu":
+        if "basic_options" not in (init.get("menu_options") or []):
+            raise RuntimeError(
+                f"Entry {entry_id} options flow has no `basic_options` step "
+                f"(menu options: {init.get('menu_options')!r}).",
+            )
+        resp = _ce.options_flow_configure(
+            client, flow_id, {"next_step_id": "basic_options"},
+        )
+        if resp.get("type") != "form":
+            raise RuntimeError(
+                f"Expected form after selecting `basic_options`, got "
+                f"{resp.get('type')!r}: {resp!r}",
+            )
+    return flow_id
+
+
+def _source_entity_for(client, entry_id: str) -> str | None:
+    """Resolve the source entity_id for a virtual_power entry by joining the
+    entry title to its powercalc power sensor (``friendly_name`` minus the
+    " Power" suffix → ``source_entity``). Used so :func:`set_standby` can
+    re-send ``entity_id`` and never blank the source.
+    """
+    title = next((e.get("title") for e in list_entries(client)
+                  if e.get("entry_id") == entry_id), None)
+    if not title:
+        return None
+    target = title.strip()
+    states = client.get("states")
+    if not isinstance(states, list):
+        return None
+    for s in states:
+        a = s.get("attributes") or {}
+        if a.get("integration") != "powercalc":
+            continue
+        fn = a.get("friendly_name") or ""
+        for suffix in (" Power", " power"):
+            if fn.endswith(suffix):
+                fn = fn[:-len(suffix)]
+        if fn.strip() == target and a.get("source_entity"):
+            return a["source_entity"]
+    return None
+
+
+def set_standby(client, entry_id: str, *, standby_power: float,
+                source_entity: str | None = None,
+                create_energy_sensor: bool = True,
+                create_utility_meters: bool = False,
+                reload: bool = True) -> dict:
+    """Set the **off-state** ``standby_power`` (W) on a virtual_power entry.
+
+    standby_power lives on the ``basic_options`` step, not ``fixed`` — so
+    :func:`set_fixed_power` / :func:`set_power_template` cannot touch it. This
+    drives that step. The source ``entity_id`` is re-sent (resolved
+    automatically, or pass ``source_entity=`` to override) because submitting
+    ``basic_options`` without it would blank the entry's source.
+
+    Pairs with :func:`set_fixed_power`: ``set_fixed_power`` = on-state W,
+    ``set_standby`` = off-state W.
+    """
+    if not entry_id:
+        raise ValueError("entry_id is required")
+    if standby_power is None:
+        raise ValueError("standby_power is required")
+    src = source_entity or _source_entity_for(client, entry_id)
+    if not src:
+        raise RuntimeError(
+            f"Could not resolve the source entity for {entry_id}; pass "
+            f"source_entity= explicitly so the basic_options submit does not "
+            f"blank the source.",
+        )
+    flow_id = _open_basic_step(client, entry_id)
+    resp = _ce.options_flow_configure(client, flow_id, {
+        "entity_id": src,
+        "standby_power": standby_power,
+        "create_energy_sensor": create_energy_sensor,
+        "create_utility_meters": create_utility_meters,
+    })
+    if reload:
+        try:
+            reload_entry(client, entry_id)
+        except Exception:  # noqa: BLE001 — reload is best-effort
+            pass
+    return resp
+
+
+def read_entry(client, entry_id: str) -> dict:
+    """Best-effort read of a virtual_power entry's live + configured state.
+
+    The REST/WS config-entry list doesn't expose powercalc options, so we
+    combine two sources:
+      * the live power sensor's attributes (``calculation_mode``,
+        ``source_entity``) and current value — reliable; and
+      * the options-flow forms' ``suggested_value``s for ``power`` /
+        ``power_template`` / ``standby_power`` — surfaced when HA includes
+        them, else omitted.
+    """
+    entries = list_entries(client)
+    meta = next((e for e in entries if e.get("entry_id") == entry_id), None)
+    out: dict[str, Any] = {
+        "entry_id": entry_id,
+        "title": meta.get("title") if meta else None,
+        "state": meta.get("state") if meta else None,
+        "calculation_mode": None,
+        "source_entity": None,
+        "current_power_w": None,
+        "configured": {},
+    }
+    if meta:
+        target = (meta.get("title") or "").strip()
+        states = client.get("states")
+        if isinstance(states, list):
+            for s in states:
+                a = s.get("attributes") or {}
+                if a.get("integration") != "powercalc":
+                    continue
+                fn = a.get("friendly_name") or ""
+                for suffix in (" Power", " power"):
+                    if fn.endswith(suffix):
+                        fn = fn[:-len(suffix)]
+                if fn.strip() == target:
+                    out["calculation_mode"] = a.get("calculation_mode")
+                    out["source_entity"] = a.get("source_entity")
+                    try:
+                        out["current_power_w"] = float(s.get("state"))
+                    except (TypeError, ValueError):
+                        pass
+                    break
+    # Best-effort configured values from the options-flow forms.
+    try:
+        configured: dict[str, Any] = {}
+        for step, names in (("basic_options", ("standby_power",)),
+                            ("fixed", ("power", "power_template"))):
+            init = _ce.options_flow_init(client, entry_id)
+            fid = init.get("flow_id")
+            if not fid:
+                continue
+            form = (_ce.options_flow_configure(client, fid,
+                                               {"next_step_id": step})
+                    if init.get("type") == "menu" else init)
+            for f in (form.get("data_schema") or []):
+                n = f.get("name")
+                if n in names:
+                    val = f.get("suggested_value", f.get("default"))
+                    if val is not None:
+                        configured[n] = val
+        out["configured"] = configured
+    except Exception as exc:  # noqa: BLE001 — read is best-effort
+        out["configured_error"] = str(exc)
+    return out
