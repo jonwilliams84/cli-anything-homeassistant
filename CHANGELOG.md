@@ -4,6 +4,40 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.40.0] — 2026-06-02
+
+Noise rejection for the **active** powercalc calibrators (`calibrate`,
+`calibrate-template`). Previously they computed `delta = load − baseline`
+against the whole-home smart meter and blindly trusted the device under test
+was the only thing moving — so a kettle/microwave/another light switching
+mid-window silently poisoned the result. Now each measurement window is
+gated two ways and re-measured (then excluded) if either trips:
+
+### Added
+- **Variance gate** — rejects a window whose spread (max − min) exceeds
+  `--max-variance-w` (default 50 W). Catches large spikes from **untracked**
+  loads (no powercalc profile, no native sensor) — they show up as a blown
+  spread on the whole-home meter.
+- **Confounder watch** — before/after each window we snapshot OTHER tracked
+  devices and reject the window if any moved:
+  - source entities of other **powercalc** profiles (discrete on/off/bright
+    state change), and
+  - **natively-metered** entities (`device_class: power`, non-powercalc) whose
+    value moves beyond a 5 W epsilon.
+  Catches a neighbour toggling even when its draw is too small to trip the
+  variance gate.
+- `--max-variance-w` / `--max-retries` flags on both commands (set
+  `--max-variance-w 0` to disable the gate — legacy behaviour).
+- New result fields: `calibrate` → `noisy`; `calibrate-template` →
+  `baseline_noisy`, `excluded_steps`, and per-step `spread`/`attempts`/
+  `excluded`/`confounder`. Each measurement carries `spread`/`stdev`/
+  `attempts`/`accepted`/`confounder`.
+
+### Changed
+- A noisy run **never auto-applies**: `calibrate` skips the write when
+  `noisy`; `calibrate-template` fits the template only from clean steps and
+  refuses to apply on a poisoned baseline.
+
 ## [1.39.0] — 2026-05-29
 
 Safety + correctness refine. The headline change: most v6-listed agent

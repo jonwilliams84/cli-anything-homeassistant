@@ -325,6 +325,168 @@ class TestCalibrateTemplate:
                [0, 25, 50, 75, 100]
 
 
+# ─────────────────────────────────────────── noise-rejection gate (v1.40)
+
+class TestMeasureStable:
+    def test_clean_window_accepted_first_try(self):
+        client = _Client()
+        client.set("GET", "states/sensor.m", {"state": "1000"})
+        out = cal._measure_stable(client, "sensor.m", duration_seconds=0,
+                                  samples=4, max_spread_w=50, max_retries=2,
+                                  sleep=lambda _: None)
+        assert out["accepted"] is True
+        assert out["attempts"] == 1
+        assert out["spread"] == 0
+        assert out["confounder"] is None
+
+    def test_noisy_window_retried_then_rejected(self):
+        client = _Client()
+        # Every read alternates wildly → spread always huge → never settles.
+        seq = iter([{"state": "100"}, {"state": "2000"}] * 20)
+        client.get = lambda path, params=None: next(seq)
+        out = cal._measure_stable(client, "sensor.m", duration_seconds=0,
+                                  samples=3, max_spread_w=50, max_retries=2,
+                                  sleep=lambda _: None)
+        assert out["accepted"] is False
+        assert out["attempts"] == 3            # 1 + 2 retries
+        assert out["confounder"].startswith("spread>")
+
+    def test_noisy_then_clean_recovers(self):
+        client = _Client()
+        # First window noisy (100/2000), second window clean (500 flat).
+        seq = iter([{"state": "100"}, {"state": "2000"}, {"state": "100"}]
+                   + [{"state": "500"}] * 3)
+        client.get = lambda path, params=None: next(seq)
+        out = cal._measure_stable(client, "sensor.m", duration_seconds=0,
+                                  samples=3, max_spread_w=50, max_retries=2,
+                                  sleep=lambda _: None)
+        assert out["accepted"] is True
+        assert out["attempts"] == 2
+        assert out["mean"] == 500
+
+    def test_gate_disabled_passes_through(self):
+        client = _Client()
+        seq = iter([{"state": "100"}, {"state": "2000"}, {"state": "100"}])
+        client.get = lambda path, params=None: next(seq)
+        out = cal._measure_stable(client, "sensor.m", duration_seconds=0,
+                                  samples=3, max_spread_w=None,
+                                  sleep=lambda _: None)
+        assert out["accepted"] is True
+        assert out["attempts"] == 1
+
+
+class TestConfounderWatch:
+    def test_detects_tracked_state_change(self):
+        # A powercalc-profiled neighbour toggles between snapshots.
+        pre = {("state", "switch.kettle"): "off",
+               ("power", "sensor.fridge_power"): 150.0}
+        post = {("state", "switch.kettle"): "on",
+                ("power", "sensor.fridge_power"): 150.0}
+        assert cal._snapshot_changed(pre, post, epsilon_w=5) == "switch.kettle"
+
+    def test_detects_native_power_move(self):
+        pre = {("power", "sensor.fridge_power"): 150.0}
+        post = {("power", "sensor.fridge_power"): 320.0}
+        assert cal._snapshot_changed(pre, post, epsilon_w=5) == \
+            "sensor.fridge_power"
+
+    def test_ignores_small_jitter(self):
+        pre = {("power", "sensor.fridge_power"): 150.0}
+        post = {("power", "sensor.fridge_power"): 152.5}
+        assert cal._snapshot_changed(pre, post, epsilon_w=5) is None
+
+    def test_watchset_excludes_under_test_and_meter(self):
+        client = _Client()
+        client.responses[("GET", "states")] = [
+            {"entity_id": "sensor.office_zone_1_power",
+             "attributes": {"integration": "powercalc",
+                            "device_class": "power",
+                            "source_entity": "light.office_zone_1"}},
+            {"entity_id": "sensor.kettle_power",
+             "attributes": {"integration": "powercalc",
+                            "device_class": "power",
+                            "source_entity": "switch.kettle"}},
+            {"entity_id": "sensor.shelly_plug_power",   # native, not powercalc
+             "attributes": {"integration": "shelly",
+                            "device_class": "power"}},
+            {"entity_id": cal.DEFAULT_SMART_METER,
+             "attributes": {"device_class": "power"}},
+        ]
+        se, pe = cal._confounder_watchset(
+            client, exclude={"light.office_zone_1"},
+            smart_meter=cal.DEFAULT_SMART_METER)
+        # under-test source dropped; other powercalc source kept
+        assert se == ["switch.kettle"]
+        # native sensor kept; smart meter excluded
+        assert pe == ["sensor.shelly_plug_power"]
+
+    def test_calibrate_template_excludes_noisy_step(self):
+        """A mid-walk spike on one step → that step excluded from template."""
+        client = _Client()
+        # baseline 100 flat; step values clean except the 50% step, which
+        # spikes every attempt (spread 1400) so it exhausts its retries and
+        # is excluded. Each window consumes exactly samples*attempts reads.
+        flat = (
+            [100, 100, 100]                       # baseline — 1 attempt
+            + [129, 129, 129]                     # 64  — clean, +29
+            + [100, 1500, 130] * 3                # 128 — noisy, 1+2 retries
+            + [128, 128, 128]                     # 191 — clean, +28
+            + [129, 129, 129]                     # 255 — clean, +29
+        )
+        it = iter(flat)
+
+        def fake_get(path, params=None):
+            if path.startswith("states/"):
+                return {"state": str(next(it))}
+            if path == "states":
+                return []          # no confounder watch-set
+            return {}
+        client.get = fake_get
+
+        out = cal.calibrate_template(
+            client, "E_Z2",
+            source_entity="light.office_zone_2", attribute="brightness",
+            service_set="light.turn_on", state_arg="brightness",
+            service_off="light.turn_off",
+            states=[64, 128, 191, 255],
+            baseline_seconds=0, load_seconds=0, stabilisation_seconds=0,
+            samples=3, max_spread_w=50, max_retries=2,
+            apply_=False, sleep=lambda _: None,
+        )
+        by_val = {s["value"]: s for s in out["steps"]}
+        assert by_val[128]["excluded"] is True
+        assert by_val[64]["excluded"] is False
+        assert out["excluded_steps"] == 1
+        # Template built only from clean steps → no garbage from the spike
+        assert "1500" not in (out["template"] or "")
+
+    def test_calibrate_noisy_run_blocks_apply(self):
+        """A persistently-noisy baseline must prevent auto-apply."""
+        client = _Client()
+        # baseline always noisy (alternating), load flat — never settles
+        seq = iter([{"state": "100"}, {"state": "3000"}] * 30)
+        client.get = lambda path, params=None: (
+            next(seq) if path.startswith("states/") else
+            ([] if path == "states" else {}))
+        from cli_anything.homeassistant.core import powercalc as pc
+        orig = pc.set_fixed_power
+        seen = []
+        pc.set_fixed_power = lambda c, eid, *, power: seen.append((eid, power))
+        try:
+            out = cal.calibrate(
+                client, "E_NOISY",
+                service_on="switch.turn_on", target="switch.x",
+                baseline_seconds=0, load_seconds=0, stabilisation_seconds=0,
+                samples=3, max_spread_w=50, max_retries=1,
+                apply_=True, sleep=lambda _: None,
+            )
+        finally:
+            pc.set_fixed_power = orig
+        assert out["noisy"] is True
+        assert out["applied"] is False
+        assert seen == []          # never wrote despite apply_=True
+
+
 # ─────────────────────────────────────────── auto_calibrate (passive)
 
 class TestAutoCalibrate:
