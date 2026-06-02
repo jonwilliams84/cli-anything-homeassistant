@@ -421,6 +421,16 @@ These are paid in lost time. Read them before mutating anything.
   (v1.39.0+) via `lovelace_card_validate`; broken-config errors abort the
   write. Pass `--no-validate` to override (e.g. when the HACS plugin will
   be installed later).
+- **Active calibration is noise-gated (v1.40+), not noise-proof.**
+  `powercalc calibrate` / `calibrate-template` reject a measurement window if
+  the whole-home meter's spread exceeds `--max-variance-w` (default 50 W) OR
+  another tracked device toggles during it, retrying `--max-retries` times
+  then excluding it. A noisy run won't auto-apply; check `noisy` /
+  `excluded_steps` in the output. Still, calibrating a **small load against a
+  busy whole-home meter is marginal** — a ~15 W LED strip lives below the
+  noise floor of a 1 kW+ house. For small loads, point `--smart-meter` at a
+  per-circuit CT clamp / smart plug instead. Set `--max-variance-w 0` to
+  disable the gate.
 - **Powercalc group membership is REPLACE-on-write** at the API level.
   Use the wrapper `core/powercalc.py::add_group_members` /
   `remove_group_members` (or the dedicated CLI surface when wired) rather

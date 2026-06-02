@@ -29,6 +29,7 @@ caller's setup uses a different name they pass it explicitly.
 
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
@@ -38,6 +39,17 @@ from cli_anything.homeassistant.core import powercalc as _pc
 
 DEFAULT_SMART_METER = "sensor.smart_meter_electricity_power"
 DEFAULT_HOME_TOTAL = "sensor.power_home_total_power"
+
+# Noise-rejection defaults for the ACTIVE calibrators (calibrate /
+# calibrate_template). The whole-home smart meter is shared with every other
+# load in the house; if something else switches during a measurement window
+# the delta is poisoned. We gate each window on its within-window spread
+# (max − min): a discrete confounder (kettle, microwave) shows up as a huge
+# spread, gradual drift as a moderate one. Windows over the threshold are
+# re-measured up to ``max_retries`` times, then excluded rather than banked.
+# Set ``max_spread_w=None`` to disable gating entirely (legacy behaviour).
+DEFAULT_MAX_VARIANCE_W = 50.0
+DEFAULT_MAX_RETRIES = 2
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -84,13 +96,172 @@ def _measure(
         raise RuntimeError(
             f"got no usable readings from {entity_id!r} over {duration_seconds}s"
         )
+    mean = sum(raw) / len(raw)
+    spread = max(raw) - min(raw)
+    stdev = (
+        math.sqrt(sum((x - mean) ** 2 for x in raw) / len(raw))
+        if len(raw) > 1 else 0.0
+    )
     return {
         "n": len(raw),
-        "mean": sum(raw) / len(raw),
+        "mean": mean,
         "min": min(raw),
         "max": max(raw),
+        "spread": round(spread, 2),
+        "stdev": round(stdev, 2),
         "raw": raw,
     }
+
+
+DEFAULT_WATCH_EPSILON_W = 5.0
+
+
+def _confounder_watchset(client, *, exclude, smart_meter: str):
+    """Build the set of entities to watch for contamination during an active
+    measurement window — the two ways HA knows about a *load*:
+
+      * ``state_entities`` — the *source* entities of OTHER powercalc
+        profiles. Their discrete state (on / off / brightness) changes only
+        when that device is actuated, so a change inside our window means a
+        profiled device toggled — even if its draw was too small to move the
+        whole-home meter past the variance gate.
+      * ``power_entities`` — per-device power sensors provided NATIVELY by an
+        integration (``device_class == power``, not powercalc, not the
+        whole-home meter / home-total). A change in their value beyond an
+        epsilon means a natively-metered device's load moved.
+
+    ``exclude`` is the set of entity_ids tied to the device under test (its
+    source entity and/or own power sensor) — never watch those.
+    Returns ``([], [])`` if states can't be read (gate degrades gracefully).
+    """
+    states = client.get("states")
+    if not isinstance(states, list):
+        return [], []
+    excl = set(exclude or [])
+    excl.add(smart_meter)
+    excl.add(DEFAULT_HOME_TOTAL)
+    state_entities: set[str] = set()
+    power_entities: set[str] = set()
+    for s in states:
+        if not isinstance(s, dict):
+            continue
+        eid = s.get("entity_id")
+        a = s.get("attributes") or {}
+        if a.get("integration") == "powercalc":
+            src = a.get("source_entity")
+            if src and src not in excl:
+                state_entities.add(src)
+            continue
+        if a.get("device_class") == "power" and eid and eid not in excl:
+            power_entities.add(eid)
+    return sorted(state_entities - excl), sorted(power_entities - excl)
+
+
+def _snapshot(client, state_entities, power_entities) -> dict:
+    """One ``states`` fetch → {(kind, entity_id): value} for the watch-set."""
+    states = client.get("states")
+    by_id: dict = {}
+    if isinstance(states, list):
+        for s in states:
+            if isinstance(s, dict):
+                by_id[s.get("entity_id")] = s
+    snap: dict = {}
+    for eid in state_entities:
+        snap[("state", eid)] = (by_id.get(eid) or {}).get("state")
+    for eid in power_entities:
+        try:
+            snap[("power", eid)] = float((by_id.get(eid) or {}).get("state"))
+        except (TypeError, ValueError):
+            snap[("power", eid)] = None
+    return snap
+
+
+def _snapshot_changed(pre: dict | None, post: dict | None, *,
+                      epsilon_w: float) -> str | None:
+    """Return the entity_id of the first confounder that moved, else None.
+
+    Discrete ``state`` entries: any change counts (on/off/brightness).
+    ``power`` entries: a value move beyond ``epsilon_w`` (or
+    appearing/disappearing) counts.
+    """
+    if not pre or not post:
+        return None
+    for key, before in pre.items():
+        kind, eid = key
+        after = post.get(key)
+        if kind == "state":
+            if str(before) != str(after):
+                return eid
+        else:
+            if before is None or after is None:
+                if before != after:
+                    return eid
+            elif abs(after - before) > epsilon_w:
+                return eid
+    return None
+
+
+def _measure_stable(
+    client,
+    entity_id: str,
+    *,
+    duration_seconds: float,
+    samples: int = 6,
+    max_spread_w: float | None = DEFAULT_MAX_VARIANCE_W,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    watch_fn: Callable[[], dict] | None = None,
+    watch_epsilon_w: float = DEFAULT_WATCH_EPSILON_W,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict:
+    """``_measure`` with a two-part noise gate.
+
+    A window is rejected and re-measured (up to ``max_retries`` extra
+    attempts) if EITHER:
+
+      * its spread (max − min) exceeds ``max_spread_w`` — an untracked load
+        (kettle, microwave) spiked the whole-home meter mid-window; or
+      * ``watch_fn`` reports another tracked device changed across the window
+        — a profiled/natively-metered device toggled (caught even when too
+        small to trip the variance gate).
+
+    ``watch_fn`` (if given) is sampled immediately before and after the
+    window and returns a snapshot dict (see :func:`_snapshot`).
+
+    Returned dict is a normal ``_measure`` result plus:
+      * ``attempts`` — windows sampled (1 = clean first try).
+      * ``accepted`` — True if a clean window was obtained, False if every
+        attempt was contaminated (caller should exclude this reading).
+      * ``confounder`` — None when clean, else a short reason
+        (``"spread>NNw"`` or ``"changed:<entity_id>"``) from the last attempt.
+
+    ``max_spread_w=None`` disables both gates (single measurement, always
+    accepted) — the pre-v1.40 behaviour.
+    """
+    attempts = 0
+    last: dict = {}
+    while True:
+        attempts += 1
+        pre = watch_fn() if watch_fn else None
+        last = _measure(client, entity_id, duration_seconds=duration_seconds,
+                        samples=samples, sleep=sleep)
+        post = watch_fn() if watch_fn else None
+
+        spread_ok = max_spread_w is None or last["spread"] <= max_spread_w
+        moved = (_snapshot_changed(pre, post, epsilon_w=watch_epsilon_w)
+                 if watch_fn else None)
+
+        if spread_ok and not moved:
+            return {**last, "attempts": attempts, "accepted": True,
+                    "confounder": None}
+        if attempts > max_retries:
+            reason = (f"changed:{moved}" if moved
+                      else f"spread>{max_spread_w:g}w")
+            return {**last, "attempts": attempts, "accepted": False,
+                    "confounder": reason}
+        # Brief settle before retrying so we don't just re-sample the same
+        # transient. Bounded so a 0-duration test window doesn't stall.
+        if duration_seconds > 0:
+            sleep(min(duration_seconds, 5))
 
 
 def _history_series(
@@ -376,6 +547,8 @@ def calibrate(
     samples: int = 6,
     service_off: str | None = None,
     apply_: bool = False,
+    max_spread_w: float | None = DEFAULT_MAX_VARIANCE_W,
+    max_retries: int = DEFAULT_MAX_RETRIES,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
     """Active single-shot calibration for a fixed-power device.
@@ -388,31 +561,52 @@ def calibrate(
       4. Read ``load_seconds`` of smart-meter samples.
       5. delta = load.mean − baseline.mean
       6. If ``service_off`` given, fire it (returns device to baseline).
-      7. If ``apply=True`` and delta > 0, call
+      7. If ``apply=True`` and delta > 0 **and the run wasn't noisy**, call
          :func:`powercalc.set_fixed_power(entry_id, delta)`.
 
-    Returns a result dict with baseline/load means, the delta, the
-    entry's previous fixed power (when discoverable), and an ``applied``
-    flag.
+    Noise gate: each window is re-measured if its spread exceeds
+    ``max_spread_w`` (something else on the meter moved); after ``max_retries``
+    the window is accepted-as-noisy and the result is flagged ``noisy: True``.
+    A noisy run never auto-applies. ``max_spread_w=None`` disables the gate.
+
+    Returns a result dict with baseline/load means (each carrying
+    ``spread``/``attempts``/``accepted``), the delta, the entry's previous
+    fixed power (when discoverable), a ``noisy`` flag, and an ``applied`` flag.
     """
     if not entry_id:
         raise ValueError("entry_id is required")
     if not service_on:
         raise ValueError("service_on is required")
 
-    baseline = _measure(client, smart_meter,
-                        duration_seconds=baseline_seconds,
-                        samples=samples, sleep=sleep)
+    # Watch OTHER tracked devices (powercalc-profiled + natively-metered) for
+    # toggles during each window; the device under test (its target) is
+    # excluded. Disabled when the gate is off.
+    watch_fn = None
+    if max_spread_w is not None:
+        excl = {target} if isinstance(target, str) else set()
+        se, pe = _confounder_watchset(client, exclude=excl,
+                                      smart_meter=smart_meter)
+        if se or pe:
+            watch_fn = lambda: _snapshot(client, se, pe)  # noqa: E731
+
+    baseline = _measure_stable(client, smart_meter,
+                               duration_seconds=baseline_seconds,
+                               samples=samples, max_spread_w=max_spread_w,
+                               max_retries=max_retries, watch_fn=watch_fn,
+                               sleep=sleep)
 
     _call_service(client, service_on, target=target)
     if stabilisation_seconds > 0:
         sleep(stabilisation_seconds)
 
-    load = _measure(client, smart_meter,
-                    duration_seconds=load_seconds,
-                    samples=samples, sleep=sleep)
+    load = _measure_stable(client, smart_meter,
+                           duration_seconds=load_seconds,
+                           samples=samples, max_spread_w=max_spread_w,
+                           max_retries=max_retries, watch_fn=watch_fn,
+                           sleep=sleep)
 
     delta_w = round(load["mean"] - baseline["mean"], 1)
+    noisy = not (baseline["accepted"] and load["accepted"])
 
     # Discover previous fixed power on the entry (best-effort).
     previous: float | None = None
@@ -430,7 +624,7 @@ def calibrate(
             pass
 
     applied = False
-    if apply_ and delta_w > 0:
+    if apply_ and delta_w > 0 and not noisy:
         _pc.set_fixed_power(client, entry_id, power=delta_w)
         applied = True
 
@@ -440,6 +634,7 @@ def calibrate(
         "baseline": baseline,
         "load": load,
         "delta_w": delta_w,
+        "noisy": noisy,
         "previous_fixed_power": previous,
         "applied": applied,
         "service_on": service_on,
@@ -502,11 +697,20 @@ def calibrate_template(
     load_seconds: float = 20,
     samples: int = 5,
     apply_: bool = False,
+    max_spread_w: float | None = DEFAULT_MAX_VARIANCE_W,
+    max_retries: int = DEFAULT_MAX_RETRIES,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
     """Walk ``source_entity`` through each value in ``states`` and measure
     delta per state. Build a piecewise power_template that maps the
     ``attribute`` to the matching wattage.
+
+    Noise gate (v1.40+): each step's window is re-measured if its spread
+    exceeds ``max_spread_w``; a step that stays noisy after ``max_retries``
+    is flagged ``excluded: True`` and dropped from the fitted template rather
+    than poisoning it. If the baseline window itself is noisy the whole
+    result is flagged ``baseline_noisy: True`` and never auto-applies.
+    ``max_spread_w=None`` disables the gate.
 
     Args:
       source_entity: e.g. ``"fan.dining_room_fan_main_fan"``.
@@ -532,25 +736,43 @@ def calibrate_template(
     if not states:
         raise ValueError("states must be non-empty")
 
+    # Watch OTHER tracked devices for toggles during each window; the device
+    # under test (its source entity) is excluded. Disabled when gate is off.
+    watch_fn = None
+    if max_spread_w is not None:
+        se, pe = _confounder_watchset(client, exclude={source_entity},
+                                      smart_meter=smart_meter)
+        if se or pe:
+            watch_fn = lambda: _snapshot(client, se, pe)  # noqa: E731
+
     # Take baseline with device off
     _call_service(client, service_off, target=source_entity)
     sleep(stabilisation_seconds)
-    baseline = _measure(client, smart_meter,
-                        duration_seconds=baseline_seconds,
-                        samples=samples, sleep=sleep)
+    baseline = _measure_stable(client, smart_meter,
+                               duration_seconds=baseline_seconds,
+                               samples=samples, max_spread_w=max_spread_w,
+                               max_retries=max_retries, watch_fn=watch_fn,
+                               sleep=sleep)
+    baseline_noisy = not baseline["accepted"]
 
     steps: list[dict] = []
     for v in states:
         _call_service(client, service_set, target=source_entity,
                        service_data={state_arg: v})
         sleep(stabilisation_seconds)
-        load = _measure(client, smart_meter,
-                        duration_seconds=load_seconds,
-                        samples=samples, sleep=sleep)
+        load = _measure_stable(client, smart_meter,
+                               duration_seconds=load_seconds,
+                               samples=samples, max_spread_w=max_spread_w,
+                               max_retries=max_retries, watch_fn=watch_fn,
+                               sleep=sleep)
         steps.append({
             "value": v,
             "load_mean": load["mean"],
             "delta_w": round(load["mean"] - baseline["mean"], 1),
+            "spread": load["spread"],
+            "attempts": load["attempts"],
+            "excluded": not load["accepted"],
+            "confounder": load["confounder"],
         })
 
     # Switch off after the walk
@@ -559,13 +781,20 @@ def calibrate_template(
     except Exception:
         pass
 
-    template = _state_template(
-        source_entity, attribute,
-        [(s["value"], max(s["delta_w"], 0)) for s in steps],
-    )
+    # Only fit the template from clean steps — noisy ones would distort it.
+    clean = [s for s in steps if not s["excluded"]]
+    excluded_count = len(steps) - len(clean)
+    template: str | None = None
+    if clean:
+        template = _state_template(
+            source_entity, attribute,
+            [(s["value"], max(s["delta_w"], 0)) for s in clean],
+        )
 
     applied = False
-    if apply_:
+    # Don't auto-apply a template built on a poisoned baseline or with no
+    # clean steps to fit.
+    if apply_ and template is not None and not baseline_noisy:
         _pc.set_power_template(client, entry_id, power_template=template)
         applied = True
 
@@ -574,6 +803,8 @@ def calibrate_template(
         "source_entity": source_entity,
         "attribute": attribute,
         "baseline_mean_w": baseline["mean"],
+        "baseline_noisy": baseline_noisy,
+        "excluded_steps": excluded_count,
         "steps": steps,
         "template": template,
         "applied": applied,

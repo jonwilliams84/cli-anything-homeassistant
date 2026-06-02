@@ -8106,12 +8106,20 @@ def powercalc_audit(ctx, smart_meter, home_total, hours, top_n):
               help="Load measurement duration (default 30s)")
 @click.option("--samples", type=int, default=6,
               help="Samples per measurement window (default 6)")
+@click.option("--max-variance-w", "max_variance_w", type=float, default=50.0,
+              help="Reject+retry a measurement window whose spread (max−min) "
+                   "exceeds this many watts — i.e. another load moved during "
+                   "it (default 50; 0 or negative disables the gate)")
+@click.option("--max-retries", "max_retries", type=int, default=2,
+              help="Extra attempts for a noisy window before giving up "
+                   "(default 2)")
 @click.option("--apply", "apply_", is_flag=True, default=False,
               help="Write the measured delta into the entry's fixed power")
 @click.pass_context
 def powercalc_calibrate(ctx, entry_id, service_on, target, service_off,
                          smart_meter, baseline_seconds, stabilisation_seconds,
-                         load_seconds, samples, apply_):
+                         load_seconds, samples, max_variance_w, max_retries,
+                         apply_):
     """Active single-shot calibration for a FIXED-POWER device.
 
     Reads smart-meter baseline → fires --service-on → waits for
@@ -8139,6 +8147,8 @@ def powercalc_calibrate(ctx, entry_id, service_on, target, service_off,
         "load_seconds": load_seconds,
         "samples": samples,
         "service_off": service_off,
+        "max_spread_w": (max_variance_w if max_variance_w > 0 else None),
+        "max_retries": max_retries,
         "apply_": apply_,
     }
     if smart_meter:
@@ -8169,6 +8179,14 @@ def powercalc_calibrate(ctx, entry_id, service_on, target, service_off,
               type=float, default=15)
 @click.option("--load-seconds", "load_seconds", type=float, default=20)
 @click.option("--samples", type=int, default=5)
+@click.option("--max-variance-w", "max_variance_w", type=float, default=50.0,
+              help="Reject+retry a step whose smart-meter window spread "
+                   "(max−min) exceeds this many watts; persistently-noisy "
+                   "steps are excluded from the fitted template "
+                   "(default 50; 0 or negative disables the gate)")
+@click.option("--max-retries", "max_retries", type=int, default=2,
+              help="Extra attempts for a noisy step before excluding it "
+                   "(default 2)")
 @click.option("--apply", "apply_", is_flag=True, default=False,
               help="Write the generated power_template into the entry")
 @click.pass_context
@@ -8176,7 +8194,8 @@ def powercalc_calibrate_template(ctx, entry_id, source_entity, attribute,
                                   service_set, state_arg, service_off,
                                   states, smart_meter, baseline_seconds,
                                   stabilisation_seconds, load_seconds,
-                                  samples, apply_):
+                                  samples, max_variance_w, max_retries,
+                                  apply_):
     """Active multi-step calibration for a VARIABLE device.
 
     Walks the device through each value in --states, measures the
@@ -8213,6 +8232,8 @@ def powercalc_calibrate_template(ctx, entry_id, source_entity, attribute,
         "stabilisation_seconds": stabilisation_seconds,
         "load_seconds": load_seconds,
         "samples": samples,
+        "max_spread_w": (max_variance_w if max_variance_w > 0 else None),
+        "max_retries": max_retries,
         "apply_": apply_,
     }
     if smart_meter:
