@@ -4,6 +4,34 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.41.0] — 2026-06-02
+
+Powercalc editing gaps exposed while setting a lamp's standby power. The only
+way to set off-state power on an existing entry was hand-driving the options
+flow; there was no way to read an entry's configured options back; and
+`set-power` could be silently shadowed by a stale template.
+
+### Added
+- **`powercalc set-standby <entry> <watts>`** — set the OFF-state
+  `standby_power` on an existing virtual_power entry. It lives on the
+  `basic_options` step (not `fixed`), so `set-power`/`set-template` never
+  reached it. The source `entity_id` is auto-resolved and re-sent so the
+  submit can't blank the entry's source (`--source` to override). Pairs with
+  `set-power`: on-state W vs off-state W.
+- **`powercalc show <entry>`** — read an entry's live + configured state
+  (`calculation_mode`, `source_entity`, current W, and best-effort
+  `power`/`power_template`/`standby_power`). The config-entry list doesn't
+  expose powercalc options; previously you had to infer them from the sensor.
+
+### Changed / fixed
+- **`set-power` now clears any stale `power_template`** before writing the
+  constant — powercalc gives a template precedence over the fixed value, so a
+  leftover template silently shadowed the new number.
+- **`set-power` / `set-template` now auto-reload the entry** after writing
+  (`reload=False` to skip) so the change lands on the sensor immediately — an
+  options-flow `create_entry` didn't always reload on its own, the usual
+  reason a freshly-written value "didn't take".
+
 ## [1.40.0] — 2026-06-02
 
 Noise rejection for the **active** powercalc calibrators (`calibrate`,

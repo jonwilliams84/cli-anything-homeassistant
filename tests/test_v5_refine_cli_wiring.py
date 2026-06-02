@@ -51,10 +51,12 @@ class TestPowercalcCli:
         r = _invoke(runner, "powercalc", "set-template", "ENTRY",
                     "{{ 42 if is_state('fan.x','on') else 0 }}")
         assert r.exit_code == 0, r.output
-        last = fake_client.calls[-1]
-        assert last["payload"] == {
+        posts = [c for c in fake_client.calls if c["verb"] == "POST"]
+        # submission is the POST before the auto-reload
+        assert posts[-2]["payload"] == {
             "power_template": "{{ 42 if is_state('fan.x','on') else 0 }}",
         }
+        assert posts[-1]["path"] == "config/config_entries/entry/ENTRY/reload"
 
     def test_set_power(self, runner, fake_client):
         fake_client.responses[
@@ -65,7 +67,9 @@ class TestPowercalcCli:
         ] = {"flow_id": "FID", "type": "form", "step_id": "fixed"}
         r = _invoke(runner, "powercalc", "set-power", "ENTRY", "25")
         assert r.exit_code == 0, r.output
-        assert fake_client.calls[-1]["payload"] == {"power": 25.0}
+        posts = [c for c in fake_client.calls if c["verb"] == "POST"]
+        assert posts[-2]["payload"] == {"power": 25.0, "power_template": ""}
+        assert posts[-1]["path"] == "config/config_entries/entry/ENTRY/reload"
 
     def test_reload_multi(self, runner, fake_client):
         r = _invoke(runner, "powercalc", "reload", "ent_a", "ent_b")

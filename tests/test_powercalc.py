@@ -359,3 +359,124 @@ class TestCreateVirtualPower:
         # The 5th POST is the assign_groups submission.
         assign_call = flow_client.calls[4]
         assert assign_call["payload"] == {"group": ["group-a", "group-b"]}
+
+
+# ── set-power / set-template hardening (v1.41) ──────────────────────────────
+
+def _posts(client):
+    return [c for c in client.calls if c["verb"] == "POST"]
+
+
+class TestSetFixedPowerHardening:
+    def test_clears_template_and_reloads(self, flow_client):
+        flow_client.queue_posts(
+            {"flow_id": "F1", "type": "menu",
+             "menu_options": ["basic_options", "fixed", "advanced_options"]},
+            {"type": "form", "step_id": "fixed"},
+            {"type": "create_entry"},
+            {"require_restart": False},          # reload
+        )
+        powercalc.set_fixed_power(flow_client, "E1", power=7.4)
+        p = _posts(flow_client)
+        submit = p[2]["payload"]
+        assert submit["power"] == 7.4
+        assert submit["power_template"] == ""        # sibling cleared
+        assert p[-1]["path"] == "config/config_entries/entry/E1/reload"
+
+    def test_reload_can_be_disabled(self, flow_client):
+        flow_client.queue_posts(
+            {"flow_id": "F1", "type": "menu", "menu_options": ["fixed"]},
+            {"type": "form"},
+            {"type": "create_entry"},
+        )
+        powercalc.set_fixed_power(flow_client, "E1", power=5, reload=False)
+        assert all("/reload" not in c.get("path", "") for c in flow_client.calls)
+
+
+class TestSetPowerTemplateHardening:
+    def test_reloads_after_write(self, flow_client):
+        flow_client.queue_posts(
+            {"flow_id": "F", "type": "menu", "menu_options": ["fixed"]},
+            {"type": "form"},
+            {"type": "create_entry"},
+            {},                                   # reload
+        )
+        powercalc.set_power_template(
+            flow_client, "E1",
+            power_template="{{ 5 if is_state('light.x','on') else 0 }}")
+        p = _posts(flow_client)
+        assert p[2]["payload"]["power_template"].startswith("{{")
+        assert p[-1]["path"].endswith("/reload")
+
+    def test_empty_template_raises(self, flow_client):
+        with pytest.raises(ValueError):
+            powercalc.set_power_template(flow_client, "E1", power_template="")
+
+
+# ── set-standby (v1.41) ─────────────────────────────────────────────────────
+
+class TestSetStandby:
+    def test_drives_basic_options_resends_source_reloads(self, flow_client):
+        flow_client.queue_posts(
+            {"flow_id": "F", "type": "menu",
+             "menu_options": ["basic_options", "fixed"]},
+            {"type": "form", "step_id": "basic_options"},
+            {"type": "create_entry"},
+            {},                                   # reload
+        )
+        powercalc.set_standby(flow_client, "E1", standby_power=1.0,
+                              source_entity="light.jonlamp")
+        p = _posts(flow_client)
+        assert p[1]["payload"] == {"next_step_id": "basic_options"}
+        submit = p[2]["payload"]
+        assert submit["standby_power"] == 1.0
+        assert submit["entity_id"] == "light.jonlamp"   # source preserved
+        assert p[-1]["path"].endswith("/reload")
+
+    def test_no_basic_step_raises(self, flow_client):
+        flow_client.queue_posts(
+            {"flow_id": "F", "type": "menu", "menu_options": ["fixed"]},
+        )
+        with pytest.raises(RuntimeError):
+            powercalc.set_standby(flow_client, "E1", standby_power=1.0,
+                                  source_entity="light.x", reload=False)
+
+    def test_requires_standby_value(self, flow_client):
+        with pytest.raises(ValueError):
+            powercalc.set_standby(flow_client, "E1", standby_power=None,
+                                  source_entity="light.x")
+
+    def test_unresolvable_source_raises(self, flow_client, monkeypatch):
+        # No source passed and resolution finds nothing → refuse rather than
+        # blank the entry's source.
+        monkeypatch.setattr(powercalc, "list_entries",
+                            lambda c, **k: [{"entry_id": "E1", "title": "X"}])
+        flow_client.set_get("states", [])
+        with pytest.raises(RuntimeError):
+            powercalc.set_standby(flow_client, "E1", standby_power=1.0)
+
+
+# ── read_entry / show (v1.41) ───────────────────────────────────────────────
+
+class TestReadEntry:
+    def test_surfaces_live_sensor_attrs(self, flow_client, monkeypatch):
+        monkeypatch.setattr(
+            powercalc, "list_entries",
+            lambda c, **k: [{"entry_id": "E1", "title": "jonlamp",
+                             "state": "loaded"}])
+        flow_client.set_get("states", [{
+            "entity_id": "sensor.jonlamp_power",
+            "state": "1.00",
+            "attributes": {"integration": "powercalc",
+                           "calculation_mode": "fixed",
+                           "source_entity": "light.jonlamp",
+                           "friendly_name": "jonlamp Power"},
+        }])
+        # options-flow probes for configured values (best-effort) — let them
+        # no-op by returning a flow with no usable flow_id.
+        flow_client.queue_posts({"flow_id": None}, {"flow_id": None})
+        out = powercalc.read_entry(flow_client, "E1")
+        assert out["title"] == "jonlamp"
+        assert out["calculation_mode"] == "fixed"
+        assert out["source_entity"] == "light.jonlamp"
+        assert out["current_power_w"] == 1.0

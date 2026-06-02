@@ -431,6 +431,15 @@ These are paid in lost time. Read them before mutating anything.
   noise floor of a 1 kW+ house. For small loads, point `--smart-meter` at a
   per-circuit CT clamp / smart plug instead. Set `--max-variance-w 0` to
   disable the gate.
+- **Powercalc on-state vs off-state power are two different commands.**
+  `powercalc set-power <entry> <W>` sets the ON-state fixed power (the `fixed`
+  step). The OFF-state standby is a separate field on the `basic_options`
+  step — use `powercalc set-standby <entry> <W>` (v1.41+). So "1 W off / 7.4 W
+  on" is `set-power 7.4` + `set-standby 1.0`, not a template. `set-standby`
+  re-sends the source `entity_id` so it can't blank the entry. Read current
+  config (mode, source, configured power/standby) with `powercalc show
+  <entry>` — the config-entry list doesn't expose powercalc options. Both
+  `set-power` and `set-template` auto-reload the entry so the change lands.
 - **Powercalc group membership is REPLACE-on-write** at the API level.
   Use the wrapper `core/powercalc.py::add_group_members` /
   `remove_group_members` (or the dedicated CLI surface when wired) rather

@@ -7823,6 +7823,41 @@ def powercalc_set_power(ctx, entry_id, power):
     ))
 
 
+@powercalc.command("set-standby")
+@click.argument("entry_id")
+@click.argument("standby_power", type=float)
+@click.option("--source", "source_entity", default=None,
+              help="Source entity_id to re-send (auto-resolved if omitted; "
+                   "pass it if resolution fails so the source isn't blanked)")
+@click.pass_context
+def powercalc_set_standby(ctx, entry_id, standby_power, source_entity):
+    """Set the OFF-state standby power (W) on a virtual_power entry.
+
+    standby_power lives on the basic_options step — `set-power` / `set-template`
+    can't reach it. Pairs with `set-power` (on-state W). Example:
+
+      powercalc set-power   <entry_id> 7.4    # on  = 7.4 W
+      powercalc set-standby <entry_id> 1.0    # off = 1.0 W
+    """
+    emit(ctx, powercalc_core.set_standby(
+        make_client(ctx), entry_id,
+        standby_power=standby_power, source_entity=source_entity,
+    ))
+
+
+@powercalc.command("show")
+@click.argument("entry_id")
+@click.pass_context
+def powercalc_show(ctx, entry_id):
+    """Show a virtual_power entry's live + configured state.
+
+    Surfaces calculation_mode, source_entity, the current power reading, and
+    (best-effort) the configured fixed power / template / standby_power — the
+    options the config-entry list does not expose.
+    """
+    emit(ctx, powercalc_core.read_entry(make_client(ctx), entry_id))
+
+
 @powercalc.command("reload")
 @click.argument("entry_ids", nargs=-1, required=True)
 @click.pass_context
