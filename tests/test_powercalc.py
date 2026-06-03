@@ -88,7 +88,61 @@ class TestGetGroupMembers:
             powercalc.get_group_members(flow_client, "")
 
 
-# ── set_group_members ──────────────────────────────────────────────────────
+# ── group_custom form helpers ──────────────────────────────────────────────
+
+def _field(name, val):
+    """A data_schema field carrying its current value where powercalc puts it:
+    under description.suggested_value (NOT top-level — the bug we fixed)."""
+    f = {"name": name}
+    if val is not None:
+        f["description"] = {"suggested_value": val}
+    return f
+
+
+def group_form(flow_id="f1", member=None, power=None, energy=None, sub=None):
+    return {"flow_id": flow_id, "type": "form", "step_id": "group_custom",
+            "data_schema": [
+                _field("group_member_sensors", member),
+                _field("group_power_entities", power),
+                _field("group_energy_entities", energy),
+                _field("sub_groups", sub),
+            ]}
+
+
+def _menu():
+    return {"flow_id": "f1", "type": "menu",
+            "menu_options": ["basic_options", "group_custom"]}
+
+
+def _final_submit_payload(client):
+    """Payload of the POST that submits the membership form (the one whose
+    payload carries the group_* lists)."""
+    for c in reversed(client.calls):
+        if c["verb"] == "POST" and isinstance(c.get("payload"), dict) \
+                and any(k.startswith("group_") for k in c["payload"]):
+            return c["payload"]
+    raise AssertionError(f"no membership submit found in {client.calls}")
+
+
+# ── get_group_config ────────────────────────────────────────────────────────
+
+class TestGetGroupConfig:
+    def test_reads_suggested_value_from_description(self, flow_client):
+        flow_client.queue_posts(
+            _menu(),
+            group_form(power=["sensor.a_power"], energy=["sensor.a_energy"],
+                       member=["m1"]),
+        )
+        cfg = powercalc.get_group_config(flow_client, "E1")
+        assert cfg["group_power_entities"] == ["sensor.a_power"]
+        assert cfg["group_energy_entities"] == ["sensor.a_energy"]
+        assert cfg["group_member_sensors"] == ["m1"]
+        assert cfg["sub_groups"] == []
+        # flow is aborted (read-only)
+        assert any(c["verb"] == "DELETE" for c in flow_client.calls)
+
+
+# ── set_group_members — preserve-on-write + verify ──────────────────────────
 
 class TestSetGroupMembers:
     def test_empty_entry_id_raises(self, flow_client):
@@ -101,36 +155,64 @@ class TestSetGroupMembers:
         with pytest.raises(ValueError, match="at least one of"):
             powercalc.set_group_members(flow_client, "abc")
 
-    def test_submits_only_provided_fields(self, flow_client):
-        # init returns a menu; advance step returns a form; submit returns create_entry
+    def test_omitted_fields_are_resent_not_blanked(self, flow_client):
+        """The headline fix for the spot-loss bug: setting only energy must
+        RESEND the existing member + power lists, never blank them."""
         flow_client.queue_posts(
-            {"flow_id": "f1", "type": "menu",
-             "menu_options": ["basic_options", "group_custom"]},
-            {"flow_id": "f1", "type": "form", "step_id": "group_custom"},
-            {"flow_id": "f1", "type": "create_entry"},
+            _menu(),
+            group_form(member=["m1", "m2"], power=["sensor.a_power"]),  # open
+            {"type": "create_entry"},                                   # submit
+            {},                                                          # reload
+            _menu(),                                                     # verify open
+            group_form(member=["m1", "m2"], power=["sensor.a_power"],
+                       energy=["sensor.a_energy"]),                      # verify read
         )
         powercalc.set_group_members(
-            flow_client, "entry-xyz",
-            power_entities=["sensor.a_power", "sensor.b_power"],
+            flow_client, "E1", energy_entities=["sensor.a_energy"],
         )
-        # Final POST should contain ONLY group_power_entities.
-        final = flow_client.calls[-1]
-        assert final["payload"] == {
-            "group_power_entities": ["sensor.a_power", "sensor.b_power"],
-        }
+        submit = _final_submit_payload(flow_client)
+        assert submit["group_member_sensors"] == ["m1", "m2"]   # preserved
+        assert submit["group_power_entities"] == ["sensor.a_power"]  # preserved
+        assert submit["group_energy_entities"] == ["sensor.a_energy"]  # new
 
-    def test_sub_groups_uses_correct_field_name(self, flow_client):
+    def test_reloads_after_write(self, flow_client):
         flow_client.queue_posts(
-            {"flow_id": "f1", "type": "menu",
-             "menu_options": ["basic_options", "group_custom"]},
-            {"flow_id": "f1", "type": "form", "step_id": "group_custom"},
-            {"flow_id": "f1", "type": "create_entry"},
+            _menu(), group_form(power=["sensor.a_power"]),
+            {"type": "create_entry"}, {},
+            _menu(), group_form(power=["sensor.b_power"]),
         )
         powercalc.set_group_members(
-            flow_client, "entry-xyz", sub_groups=["entry-a", "entry-b"],
+            flow_client, "E1", power_entities=["sensor.b_power"],
         )
-        final = flow_client.calls[-1]
-        assert final["payload"] == {"sub_groups": ["entry-a", "entry-b"]}
+        assert any(c.get("path", "").endswith("/reload")
+                   for c in flow_client.calls)
+
+    def test_verify_raises_when_write_does_not_persist(self, flow_client):
+        """If the read-back doesn't match what we asked for, raise — this is
+        the silent non-persistence that bit us across an HA restart."""
+        flow_client.queue_posts(
+            _menu(), group_form(power=["sensor.a_power"]),
+            {"type": "create_entry"}, {},
+            _menu(), group_form(power=["sensor.a_power"]),  # stored != wanted
+        )
+        with pytest.raises(RuntimeError, match="did not persist"):
+            powercalc.set_group_members(
+                flow_client, "E1", power_entities=["sensor.b_power"],
+            )
+
+    def test_no_verify_skips_readback(self, flow_client):
+        flow_client.queue_posts(
+            _menu(), group_form(power=["sensor.a_power"]),
+            {"type": "create_entry"}, {},
+        )
+        powercalc.set_group_members(
+            flow_client, "E1", power_entities=["sensor.b_power"],
+            verify=False,
+        )
+        # only one group_custom open (no verify re-read)
+        opens = [c for c in flow_client.calls
+                 if c.get("payload") == {"next_step_id": "group_custom"}]
+        assert len(opens) == 1
 
     def test_no_menu_raises_if_group_custom_missing(self, flow_client):
         flow_client.queue_posts(
@@ -143,109 +225,137 @@ class TestSetGroupMembers:
             )
 
 
-# ── add_group_members — the headline safety guarantee ──────────────────────
+# ── add_group_members — read-config-merge (not sensor-attr) ─────────────────
 
 class TestAddGroupMembers:
-    def test_merges_with_existing_members(self, flow_client):
-        """The critical property: ADD must not REPLACE.
-
-        Existing members: [a, b, c]. Caller adds [d]. Final POST must
-        contain [a, b, c, d], not just [d].
-        """
-        flow_client.set_get("states/sensor.power_kitchen_power", {
-            "state": "0", "attributes": {
-                "entities": ["sensor.a_power", "sensor.b_power", "sensor.c_power"],
-            },
-        })
+    def test_merges_member_sensors_from_config(self, flow_client):
+        """ADD must not REPLACE, and must read the CONFIGURED list (not the
+        resolved leaf list, which was the never-persisting bug)."""
         flow_client.queue_posts(
-            {"flow_id": "f1", "type": "menu",
-             "menu_options": ["basic_options", "group_custom"]},
-            {"flow_id": "f1", "type": "form", "step_id": "group_custom"},
-            {"flow_id": "f1", "type": "create_entry"},
+            _menu(), group_form(member=["m1", "m2"]),     # read config
+            _menu(), group_form(member=["m1", "m2"]),     # set: open
+            {"type": "create_entry"}, {},                  # submit + reload
+            _menu(), group_form(member=["m1", "m2", "m3"]),  # verify
         )
         powercalc.add_group_members(
-            flow_client, "kitchen-entry",
-            sensor_entity_id="sensor.power_kitchen_power",
-            entities=["sensor.d_power"],
+            flow_client, "E1", member_sensors=["m3"],
         )
-        final_payload = flow_client.calls[-1]["payload"]
-        assert final_payload["group_power_entities"] == [
-            "sensor.a_power", "sensor.b_power",
-            "sensor.c_power", "sensor.d_power",
-        ]
+        submit = _final_submit_payload(flow_client)
+        assert submit["group_member_sensors"] == ["m1", "m2", "m3"]
+
+    def test_adds_power_and_energy_together(self, flow_client):
+        flow_client.queue_posts(
+            _menu(), group_form(power=["sensor.a_power"],
+                                energy=["sensor.a_energy"]),
+            _menu(), group_form(power=["sensor.a_power"],
+                                energy=["sensor.a_energy"]),
+            {"type": "create_entry"}, {},
+            _menu(), group_form(power=["sensor.a_power", "sensor.b_power"],
+                                energy=["sensor.a_energy", "sensor.b_energy"]),
+        )
+        powercalc.add_group_members(
+            flow_client, "E1",
+            power_entities=["sensor.b_power"],
+            energy_entities=["sensor.b_energy"],
+        )
+        submit = _final_submit_payload(flow_client)
+        assert submit["group_power_entities"] == [
+            "sensor.a_power", "sensor.b_power"]
+        assert submit["group_energy_entities"] == [
+            "sensor.a_energy", "sensor.b_energy"]
 
     def test_dedup_preserves_existing_order(self, flow_client):
-        flow_client.set_get("states/sensor.power_x_power", {
-            "attributes": {"entities": ["sensor.a", "sensor.b"]},
-        })
         flow_client.queue_posts(
-            {"flow_id": "f1", "type": "menu",
-             "menu_options": ["group_custom"]},
-            {"flow_id": "f1", "type": "form", "step_id": "group_custom"},
-            {"flow_id": "f1", "type": "create_entry"},
+            _menu(), group_form(power=["sensor.a", "sensor.b"]),
+            _menu(), group_form(power=["sensor.a", "sensor.b"]),
+            {"type": "create_entry"}, {},
+            _menu(), group_form(power=["sensor.a", "sensor.b", "sensor.c"]),
         )
-        # Asking to add `a` (already present) + `c` (new) — order preserved,
-        # `a` not duplicated.
         powercalc.add_group_members(
-            flow_client, "x", sensor_entity_id="sensor.power_x_power",
-            entities=["sensor.a", "sensor.c"],
+            flow_client, "E1", power_entities=["sensor.a", "sensor.c"],
         )
-        final = flow_client.calls[-1]["payload"]["group_power_entities"]
-        assert final == ["sensor.a", "sensor.b", "sensor.c"]
+        submit = _final_submit_payload(flow_client)
+        assert submit["group_power_entities"] == [
+            "sensor.a", "sensor.b", "sensor.c"]
 
-    def test_empty_entities_raises(self, flow_client):
-        with pytest.raises(ValueError, match="non-empty"):
-            powercalc.add_group_members(
-                flow_client, "x",
-                sensor_entity_id="sensor.power_x_power", entities=[],
-            )
-
-    def test_empty_sensor_entity_raises(self, flow_client):
-        with pytest.raises(ValueError, match="sensor_entity_id"):
-            powercalc.add_group_members(
-                flow_client, "x", sensor_entity_id="",
-                entities=["sensor.a"],
-            )
+    def test_nothing_to_add_raises(self, flow_client):
+        with pytest.raises(ValueError, match="at least one of"):
+            powercalc.add_group_members(flow_client, "E1")
 
 
 # ── remove_group_members ───────────────────────────────────────────────────
 
 class TestRemoveGroupMembers:
-    def test_removes_only_named_entities(self, flow_client):
-        flow_client.set_get("states/sensor.power_x_power", {
-            "attributes": {"entities": [
-                "sensor.a_power", "sensor.b_power", "sensor.c_power",
-            ]},
-        })
+    def test_removes_only_named_from_config(self, flow_client):
         flow_client.queue_posts(
-            {"flow_id": "f1", "type": "menu",
-             "menu_options": ["group_custom"]},
-            {"flow_id": "f1", "type": "form", "step_id": "group_custom"},
-            {"flow_id": "f1", "type": "create_entry"},
+            _menu(), group_form(power=["sensor.a_power", "sensor.b_power",
+                                       "sensor.c_power"]),               # read
+            _menu(), group_form(power=["sensor.a_power", "sensor.b_power",
+                                       "sensor.c_power"]),               # set open
+            {"type": "create_entry"}, {},
+            _menu(), group_form(power=["sensor.a_power", "sensor.c_power"]),
         )
         powercalc.remove_group_members(
-            flow_client, "x", sensor_entity_id="sensor.power_x_power",
-            entities=["sensor.b_power"],
+            flow_client, "E1", power_entities=["sensor.b_power"],
         )
-        final = flow_client.calls[-1]["payload"]["group_power_entities"]
-        assert final == ["sensor.a_power", "sensor.c_power"]
+        submit = _final_submit_payload(flow_client)
+        assert submit["group_power_entities"] == [
+            "sensor.a_power", "sensor.c_power"]
 
-    def test_removing_all_yields_empty_list(self, flow_client):
-        flow_client.set_get("states/sensor.power_x_power", {
-            "attributes": {"entities": ["sensor.a_power"]},
-        })
-        flow_client.queue_posts(
-            {"flow_id": "f1", "type": "menu",
-             "menu_options": ["group_custom"]},
-            {"flow_id": "f1", "type": "form", "step_id": "group_custom"},
-            {"flow_id": "f1", "type": "create_entry"},
+    def test_nothing_to_remove_raises(self, flow_client):
+        with pytest.raises(ValueError, match="at least one of"):
+            powercalc.remove_group_members(flow_client, "E1")
+
+
+# ── energy_siblings_for ─────────────────────────────────────────────────────
+
+class TestEnergySiblings:
+    def test_pairs_existing_energy_sensor(self, flow_client):
+        states = [
+            {"entity_id": "sensor.spot_1_energy",
+             "attributes": {"device_class": "energy"}},
+            {"entity_id": "sensor.ev_charger_energy",
+             "attributes": {"device_class": "power"}},  # wrong dc → not a twin
+        ]
+        out = powercalc.energy_siblings_for(
+            flow_client,
+            ["sensor.spot_1_power", "sensor.ev_charger_power",
+             "sensor.no_such_power"],
+            states=states,
         )
-        powercalc.remove_group_members(
-            flow_client, "x", sensor_entity_id="sensor.power_x_power",
-            entities=["sensor.a_power"],
+        assert out["siblings"] == {
+            "sensor.spot_1_power": "sensor.spot_1_energy"}
+        assert set(out["no_sibling"]) == {
+            "sensor.ev_charger_power", "sensor.no_such_power"}
+
+
+# ── find_groups_containing ──────────────────────────────────────────────────
+
+class TestFindGroupsContaining:
+    def test_matches_member_and_power(self, flow_client, monkeypatch):
+        monkeypatch.setattr(powercalc, "list_entries", lambda c, **k: [
+            {"entry_id": "G1", "title": "Kitchen"},
+            {"entry_id": "G2", "title": "Lighting"},
+            {"entry_id": "G3", "title": "Unrelated"},
+        ])
+        cfgs = {
+            "G1": {"group_member_sensors": ["LEAF"], "group_power_entities": [],
+                   "group_energy_entities": [], "sub_groups": []},
+            "G2": {"group_member_sensors": [],
+                   "group_power_entities": ["sensor.leaf_power"],
+                   "group_energy_entities": [], "sub_groups": []},
+            "G3": {"group_member_sensors": ["other"],
+                   "group_power_entities": [], "group_energy_entities": [],
+                   "sub_groups": []},
+        }
+        monkeypatch.setattr(powercalc, "get_group_config",
+                            lambda c, eid: cfgs[eid])
+        out = powercalc.find_groups_containing(
+            flow_client, entry_ids=["LEAF"],
+            power_entities=["sensor.leaf_power"],
         )
-        final = flow_client.calls[-1]["payload"]["group_power_entities"]
-        assert final == []
+        ids = {g["entry_id"] for g in out}
+        assert ids == {"G1", "G2"}
 
 
 # ── create_virtual_power — the second safety guarantee ─────────────────────
