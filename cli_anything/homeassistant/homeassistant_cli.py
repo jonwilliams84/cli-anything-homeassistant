@@ -7878,61 +7878,121 @@ def powercalc_group():
 @click.argument("sensor_entity_id")
 @click.pass_context
 def powercalc_group_members(ctx, sensor_entity_id):
-    """List the resolved entity list for a group's power sensor."""
+    """List the RESOLVED leaf entity list for a group's power sensor
+    (state.attributes.entities — what powercalc actually sums)."""
     emit(ctx, powercalc_core.get_group_members(
         make_client(ctx), sensor_entity_id,
     ))
 
 
+@powercalc_group.command("config")
+@click.argument("entry_id")
+@click.pass_context
+def powercalc_group_config(ctx, entry_id):
+    """Show a group's CONFIGURED membership lists (member_sensors,
+    power_entities, energy_entities, sub_groups, area) — the editable config,
+    read from the options form. This is the source of truth the safe writers
+    use, not the resolved leaf list."""
+    emit(ctx, powercalc_core.get_group_config(make_client(ctx), entry_id))
+
+
 @powercalc_group.command("add-members")
 @click.option("--entry-id", required=True, help="Group's config-entry id")
-@click.option("--sensor", "sensor_entity_id", required=True,
-              help="Group's power sensor entity_id (used to read current list)")
-@click.option("--member", "entities", multiple=True, required=True,
-              help="Power sensor entity_id to add (repeatable)")
+@click.option("--member", "member_sensors", multiple=True,
+              help="Powercalc config-entry id to add as a member sensor "
+                   "(rolls up power AND energy automatically; repeatable)")
+@click.option("--power-entity", "power_entities", multiple=True,
+              help="External power sensor entity_id to add (repeatable)")
+@click.option("--energy-entity", "energy_entities", multiple=True,
+              help="External energy sensor entity_id to add (repeatable)")
+@click.option("--no-verify", "verify", is_flag=True, default=True,
+              flag_value=False, help="Skip the read-back persistence check")
 @click.pass_context
-def powercalc_group_add_members(ctx, entry_id, sensor_entity_id, entities):
-    """SAFELY add members (read current list, merge, write back)."""
+def powercalc_group_add_members(ctx, entry_id, member_sensors,
+                                power_entities, energy_entities, verify):
+    """SAFELY add members (read current config, merge, write, reload, verify).
+
+    Prefer --member (config-entry ids) for powercalc leaves: power and energy
+    both roll up. Use --power-entity/--energy-entity (paired) for external
+    sensors."""
     emit(ctx, powercalc_core.add_group_members(
         make_client(ctx), entry_id,
-        sensor_entity_id=sensor_entity_id, entities=list(entities),
+        member_sensors=list(member_sensors) or None,
+        power_entities=list(power_entities) or None,
+        energy_entities=list(energy_entities) or None,
+        verify=verify,
     ))
 
 
 @powercalc_group.command("remove-members")
 @click.option("--entry-id", required=True, help="Group's config-entry id")
-@click.option("--sensor", "sensor_entity_id", required=True)
-@click.option("--member", "entities", multiple=True, required=True,
+@click.option("--member", "member_sensors", multiple=True,
+              help="Member config-entry id to drop (repeatable)")
+@click.option("--power-entity", "power_entities", multiple=True,
               help="Power sensor entity_id to drop (repeatable)")
+@click.option("--energy-entity", "energy_entities", multiple=True,
+              help="Energy sensor entity_id to drop (repeatable)")
+@click.option("--no-verify", "verify", is_flag=True, default=True,
+              flag_value=False, help="Skip the read-back persistence check")
 @click.pass_context
-def powercalc_group_remove_members(ctx, entry_id, sensor_entity_id, entities):
-    """SAFELY remove members (read current list, filter, write back)."""
+def powercalc_group_remove_members(ctx, entry_id, member_sensors,
+                                   power_entities, energy_entities, verify):
+    """SAFELY remove members (read current config, filter, write, reload,
+    verify)."""
     emit(ctx, powercalc_core.remove_group_members(
         make_client(ctx), entry_id,
-        sensor_entity_id=sensor_entity_id, entities=list(entities),
+        member_sensors=list(member_sensors) or None,
+        power_entities=list(power_entities) or None,
+        energy_entities=list(energy_entities) or None,
+        verify=verify,
     ))
 
 
 @powercalc_group.command("set-members")
 @click.option("--entry-id", required=True)
+@click.option("--member", "member_sensors", multiple=True,
+              help="Replacement member config-entry id list (repeatable)")
 @click.option("--power-entity", "power_entities", multiple=True,
-              help="Replacement power-sensor list (repeatable). Pass --power-entity= once with empty value to clear.")
-@click.option("--sub-group", "sub_groups", multiple=True,
-              help="Replacement sub_groups list (repeatable)")
+              help="Replacement power-sensor list (repeatable)")
 @click.option("--energy-entity", "energy_entities", multiple=True,
               help="Replacement energy-sensor list (repeatable)")
-@click.confirmation_option(prompt="REPLACE all group members. Continue?")
+@click.option("--sub-group", "sub_groups", multiple=True,
+              help="Replacement sub_groups list (repeatable)")
+@click.option("--no-verify", "verify", is_flag=True, default=True,
+              flag_value=False, help="Skip the read-back persistence check")
+@click.confirmation_option(prompt="REPLACE the supplied group lists. Continue?")
 @click.pass_context
-def powercalc_group_set_members(ctx, entry_id, power_entities,
-                                sub_groups, energy_entities):
-    """DESTRUCTIVE: replace a group's membership lists with the provided
-    sets. Prefer add-members / remove-members unless you really do want
-    to overwrite the whole list."""
+def powercalc_group_set_members(ctx, entry_id, member_sensors, power_entities,
+                                energy_entities, sub_groups, verify):
+    """DESTRUCTIVE per field: replace the supplied membership lists. Fields you
+    omit keep their current value (re-sent automatically so they aren't
+    blanked). Prefer add-members / remove-members for incremental edits."""
     emit(ctx, powercalc_core.set_group_members(
         make_client(ctx), entry_id,
+        member_sensors=list(member_sensors) if member_sensors else None,
         power_entities=list(power_entities) if power_entities else None,
-        sub_groups=list(sub_groups) if sub_groups else None,
         energy_entities=list(energy_entities) if energy_entities else None,
+        sub_groups=list(sub_groups) if sub_groups else None,
+        verify=verify,
+    ))
+
+
+@powercalc_group.command("groups-of")
+@click.option("--entry-id", "entry_ids", multiple=True,
+              help="Member config-entry id to search for (repeatable)")
+@click.option("--power-entity", "power_entities", multiple=True,
+              help="Power sensor entity_id to search for (repeatable)")
+@click.option("--energy-entity", "energy_entities", multiple=True,
+              help="Energy sensor entity_id to search for (repeatable)")
+@click.pass_context
+def powercalc_group_groups_of(ctx, entry_ids, power_entities, energy_entities):
+    """List every group whose config references the given member(s) — the
+    snapshot a safe delete+recreate restores from."""
+    emit(ctx, powercalc_core.find_groups_containing(
+        make_client(ctx),
+        entry_ids=list(entry_ids) or None,
+        power_entities=list(power_entities) or None,
+        energy_entities=list(energy_entities) or None,
     ))
 
 

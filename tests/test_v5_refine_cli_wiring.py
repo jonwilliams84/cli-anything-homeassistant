@@ -90,30 +90,32 @@ class TestPowercalcCli:
         assert json.loads(r.output) == ["sensor.a", "sensor.b"]
 
     def test_group_add_members_uses_safe_merge(self, runner, fake_client):
-        # current group state
-        fake_client.set("GET", "states/sensor.power_dining",
-                        {"state": "1", "attributes":
-                            {"entities": ["sensor.existing"]}})
-        # group options-flow open returns the group_custom menu
+        # group options-flow open returns the group_custom menu; the form
+        # carries the current member list where powercalc puts it.
         fake_client.responses[
             ("POST", "config/config_entries/options/flow")
         ] = {"flow_id": "FID", "type": "menu",
              "menu_options": ["group_custom"]}
         fake_client.responses[
             ("POST", "config/config_entries/options/flow/FID")
-        ] = {"flow_id": "FID", "type": "form"}
+        ] = {"flow_id": "FID", "type": "form", "step_id": "group_custom",
+             "data_schema": [
+                 {"name": "group_member_sensors",
+                  "description": {"suggested_value": ["m-existing"]}},
+             ]}
         r = _invoke(runner, "powercalc", "group", "add-members",
                     "--entry-id", "GE",
-                    "--sensor", "sensor.power_dining",
-                    "--member", "sensor.new1",
-                    "--member", "sensor.new2")
+                    "--member", "m-new1",
+                    "--member", "m-new2",
+                    "--no-verify")
         assert r.exit_code == 0, r.output
-        # Final POST should submit the MERGED list, not just the new ones
-        last = fake_client.calls[-1]
-        assert last["payload"] == {
-            "group_power_entities": ["sensor.existing", "sensor.new1",
-                                     "sensor.new2"],
-        }
+        # The submit POST must carry the MERGED member list, not just the new.
+        submit = next(
+            c for c in reversed(fake_client.calls)
+            if c["verb"] == "POST" and isinstance(c.get("payload"), dict)
+            and "group_member_sensors" in c["payload"])
+        assert submit["payload"]["group_member_sensors"] == [
+            "m-existing", "m-new1", "m-new2"]
 
     def test_group_set_members_requires_confirm(self, runner, fake_client):
         # No --yes / no piped 'y' → aborts

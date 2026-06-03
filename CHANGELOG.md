@@ -4,6 +4,54 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.42.0] — 2026-06-03
+
+Safe powercalc **group membership** editing. A 2026-06-02 session migrated 30
+spotlights linear→fixed by delete+recreate and silently lost them from their
+area + energy rollups: the recreate didn't re-add them, a repair via the old
+`add_group_members` wrote the *resolved leaf list* back into the wrong field
+and never persisted across a restart, and nothing ever touched the energy
+side. This release rebuilds the group wrappers so that can't happen, and
+restores the rollups.
+
+### Fixed
+- **`get_group_config` reads the configured lists correctly.** The current
+  values live under each form field's `description.suggested_value`; the old
+  code read the top-level `suggested_value`/`default`, which powercalc leaves
+  empty here, so reads silently came back blank. `read_entry` had the same bug
+  and is fixed too.
+- **Writes preserve every field you don't touch.** The group `group_custom`
+  form clears any optional field you omit, so setting only the energy list used
+  to blank the member/power lists. `set_group_members` now reads the current
+  config and resends all membership fields (member_sensors, power, energy,
+  sub_groups) plus area/floor, mutating only what you asked.
+- **Writes are reloaded and read-back-verified.** An options-flow
+  `create_entry` doesn't guarantee the entry reloaded, so a membership could
+  read correct in-session yet evaporate on the next HA restart. Writers now
+  reload the entry and re-read the stored config, raising if it didn't persist.
+- **Power and energy roll up together.** `add_group_members` /
+  `set_group_members` take `energy_entities` alongside `power_entities`, and
+  `member_sensors` (powercalc config-entry ids) rolls up both automatically.
+
+### Added
+- **`powercalc group config <entry>`** — show a group's configured membership
+  lists (the editable source of truth), distinct from `group members` (the
+  resolved leaf list a group power sensor actually sums).
+- **`powercalc group groups-of`** — list every group whose config references a
+  given member/sensor: the snapshot a safe delete+recreate restores from.
+- **`energy_siblings_for` / `find_groups_containing` /
+  `recreate_preserving_groups`** — helpers to derive a power sensor's matching
+  energy sensor, discover a member's groups, and (because powercalc's options
+  flow exposes no in-place mode change) wrap a `linear→fixed` delete+recreate
+  with snapshot→delete→recreate→restore so the round-trip can't strip rollups.
+
+### Changed
+- `powercalc group add-members` / `remove-members` now take `--member`
+  (config-entry id), `--power-entity`, and `--energy-entity` instead of the old
+  `--sensor` + `--member` (power-only) form, and reload + verify by default
+  (`--no-verify` to skip). `set-members` likewise gained `--member` /
+  `--energy-entity`.
+
 ## [1.41.0] — 2026-06-02
 
 Powercalc editing gaps exposed while setting a lamp's standby power. The only

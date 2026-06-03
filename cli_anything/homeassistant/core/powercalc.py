@@ -1,23 +1,55 @@
 """Powercalc helpers — safe operations on virtual-power entries and groups.
 
-Powercalc's config-entry options-flow API has two undocumented footguns that
-this module exists to defuse:
+Powercalc's config-entry options-flow API has several undocumented footguns
+that this module exists to defuse:
 
-1. **Group membership is REPLACE-on-write.** Submitting
-   ``{"group_power_entities": [new_id]}`` to a group's options flow does NOT
-   append — it wipes the existing list. ``add_group_members`` /
-   ``remove_group_members`` fetch the current state and submit the merged
-   list so a typo can't blow away 92 entries.
+1. **Group membership is REPLACE-on-write, AND omitted fields are cleared.**
+   Submitting ``{"group_power_entities": [new_id]}`` to a group's options flow
+   does NOT append — it wipes the existing list AND blanks every other
+   membership field you didn't resend (``group_member_sensors``,
+   ``group_energy_entities``, ``sub_groups``, ``area`` …). The safe writers
+   here read the current config off the flow form first and resend every
+   field, so editing one list can't silently drop the others.
 
-2. **Fixed-mode powercalc on a ``binary_sensor`` source silently no-ops.** The
+2. **The configured membership is only readable from the options form.** The
+   config-entry REST list does not expose powercalc options, and a group power
+   sensor's ``entities`` attribute is the *resolved leaf list*, not the
+   configured one (a member-sensor group resolves to leaf ``*_power`` ids that
+   are NOT what you'd write back). Read config with :func:`get_group_config`,
+   which pulls each field's ``description.suggested_value`` off the form — the
+   only reliable source. (The old code read ``suggested_value``/``default`` at
+   the top level, which powercalc leaves empty here, so reads came back blank.)
+
+3. **A group write is not trustworthy until reloaded and read back.** An
+   options-flow ``create_entry`` response does not guarantee the entry
+   reloaded, so a freshly-written membership can read correct in-session yet
+   evaporate on the next HA restart. The safe writers reload the entry and
+   then re-read the stored config to confirm it actually changed.
+
+4. **Power and energy roll up separately.** A group's ``group_power_entities``
+   feeds the ``*_power`` rollup; ``group_energy_entities`` feeds the
+   ``*_energy`` rollup. Populate only the power list and the energy dashboard
+   silently shows nothing (or the entry falls back to integrating group power,
+   which resets on reload). The safe add/set writers take both, and
+   :func:`energy_siblings_for` derives the matching ``*_energy`` ids.
+
+5. **Fixed-mode powercalc on a ``binary_sensor`` source silently no-ops.** The
    options form accepts ``power: 3000`` gated on ``binary_sensor.*`` without
    complaint, but the resulting power sensor never leaves 0 W. The relay can
    close and the dashboard estimate doesn't budge. ``create_virtual_power``
    refuses this combination and steers callers to ``power_template`` instead.
 
+6. **Calculation mode cannot be changed in place.** Powercalc's options flow
+   exposes no step to switch a ``linear`` entry to ``fixed`` (the menu only
+   offers the current mode's step). The only route is delete + recreate — and
+   *deleting* a grouped entry cascades it out of every ``group_member_sensors``
+   rollup silently. :func:`recreate_preserving_groups` wraps that round-trip:
+   snapshot every group the entry belongs to, delete, recreate, restore.
+
 Background: a 2026-05-12 session lost 92+ entities across 4 groups to (1),
-and missed a 3 900 W immersion-heater cycle to (2). Both bugs are silent
-in raw API usage.
+missed a 3 900 W immersion-heater cycle to (5), and a 2026-06-02 session
+stripped 30 spotlights out of their area + energy rollups via (2)/(3)/(6).
+All of these are silent in raw API usage.
 """
 
 from __future__ import annotations
@@ -36,11 +68,25 @@ _BAD_FIXED_DOMAINS = frozenset({"binary_sensor"})
 
 # ── group membership ───────────────────────────────────────────────────────
 
-def get_group_members(client, sensor_entity_id: str) -> list[str]:
-    """Return the resolved entity list for a powercalc group's power sensor.
+# The membership list fields on the powercalc `group_custom` options form, and
+# the kwarg each maps to in this module's writers.
+_GROUP_LIST_FIELDS = (
+    "group_member_sensors",   # member powercalc config-entry IDs → power+energy
+    "group_power_entities",   # external power sensor entity IDs   → power rollup
+    "group_energy_entities",  # external energy sensor entity IDs  → energy rollup
+    "sub_groups",             # child powercalc group config-entry IDs
+)
+# Scalar fields we resend verbatim so a list edit doesn't blank them.
+_GROUP_SCALAR_FIELDS = ("area", "floor")
 
-    Reads ``state.attributes.entities``. For groups built via ``sub_groups``
-    this is the *flattened leaf list*, not the sub-group config-entry IDs.
+
+def get_group_members(client, sensor_entity_id: str) -> list[str]:
+    """Return the *resolved leaf* entity list for a group's power sensor.
+
+    Reads ``state.attributes.entities`` — the flattened leaf list powercalc
+    actually sums. For a member-sensor or sub-group rollup this is NOT what you
+    write back into the config (those leaves are derived); use
+    :func:`get_group_config` for the editable configuration.
     """
     if not sensor_entity_id:
         raise ValueError("sensor_entity_id is required")
@@ -48,11 +94,24 @@ def get_group_members(client, sensor_entity_id: str) -> list[str]:
     return list(state.get("attributes", {}).get("entities", []))
 
 
-def _open_group_custom(client, entry_id: str) -> str:
-    """Open the options flow on a group entry and advance to `group_custom`.
+def _form_current_value(field: dict) -> Any:
+    """Pull the current stored value out of an options-form field descriptor.
 
-    Returns the flow_id, ready for a subsequent POST with the desired payload.
-    Raises if the entry's options flow doesn't expose a `group_custom` step.
+    Powercalc surfaces it under ``description.suggested_value`` (NOT the
+    top-level ``suggested_value``/``default``, which it leaves unset for these
+    fields — the cause of the silent blank reads). Falls back to the top-level
+    keys for forms that do populate them.
+    """
+    desc = field.get("description") or {}
+    if "suggested_value" in desc:
+        return desc["suggested_value"]
+    return field.get("suggested_value", field.get("default"))
+
+
+def _open_group_custom(client, entry_id: str) -> dict:
+    """Open a group entry's options flow, advance to `group_custom`, and return
+    the resulting **form** descriptor (which carries ``flow_id`` plus the
+    current field values). Raises if the entry exposes no `group_custom` step.
     """
     init = client.post(
         "config/config_entries/options/flow", {"handler": entry_id},
@@ -65,6 +124,7 @@ def _open_group_custom(client, entry_id: str) -> str:
     if init.get("type") == "menu":
         options = init.get("menu_options") or []
         if "group_custom" not in options:
+            client.delete(f"config/config_entries/options/flow/{flow_id}")
             raise RuntimeError(
                 f"Entry {entry_id} options-flow has no `group_custom` step "
                 f"(menu options: {options}). Not a powercalc group entry?",
@@ -78,92 +138,385 @@ def _open_group_custom(client, entry_id: str) -> str:
                 f"Expected `form` after selecting group_custom, got "
                 f"{resp.get('type')!r}: {resp!r}",
             )
-    return flow_id
+        return resp
+    return init
+
+
+def _form_field_map(form: dict) -> dict[str, dict]:
+    return {f.get("name"): f for f in (form.get("data_schema") or [])}
+
+
+def get_group_config(client, entry_id: str) -> dict:
+    """Read a powercalc group's **configured** membership lists.
+
+    Returns a dict with keys ``group_member_sensors``, ``group_power_entities``,
+    ``group_energy_entities``, ``sub_groups`` (each a list, possibly empty) and
+    ``area`` / ``floor`` (scalar or None). This is the editable config — the
+    source of truth for the safe writers — not the resolved leaf list.
+
+    Opens, reads, and aborts the options flow (no mutation).
+    """
+    if not entry_id:
+        raise ValueError("entry_id is required")
+    form = _open_group_custom(client, entry_id)
+    flow_id = form.get("flow_id")
+    fields = _form_field_map(form)
+    out: dict[str, Any] = {}
+    for name in _GROUP_LIST_FIELDS:
+        f = fields.get(name)
+        val = _form_current_value(f) if f else None
+        out[name] = list(val) if isinstance(val, list) else []
+    for name in _GROUP_SCALAR_FIELDS:
+        f = fields.get(name)
+        out[name] = _form_current_value(f) if f else None
+    if flow_id:
+        try:
+            client.delete(f"config/config_entries/options/flow/{flow_id}")
+        except Exception:  # noqa: BLE001 — abort is best-effort
+            pass
+    return out
+
+
+def _diff_lists(a: list, b: list) -> bool:
+    """True if two membership lists differ as *sets* (order-insensitive)."""
+    return set(a or []) != set(b or [])
 
 
 def set_group_members(client, entry_id: str, *,
+                       member_sensors: list[str] | None = None,
                        power_entities: list[str] | None = None,
-                       sub_groups: list[str] | None = None,
                        energy_entities: list[str] | None = None,
-                       ) -> dict:
-    """REPLACE a group's membership with the supplied list(s).
+                       sub_groups: list[str] | None = None,
+                       reload: bool = True,
+                       verify: bool = True) -> dict:
+    """REPLACE a group's membership, preserving every field you don't touch.
 
-    Each list-typed kwarg is independent. Kwargs left as ``None`` are simply
-    not submitted (powercalc keeps the existing value). To clear a field,
-    pass ``[]``.
+    Reads the current config first and resends *all* membership fields, so
+    setting (say) only ``energy_entities`` cannot blank ``member_sensors`` or
+    ``power_entities`` — the omitted-field-clears-it footgun. Any kwarg left as
+    ``None`` keeps its current value; pass ``[]`` to genuinely clear a list.
 
-    DESTRUCTIVE: this is the operation that wipes membership if used wrong.
-    Prefer :func:`add_group_members` / :func:`remove_group_members` unless
-    you really do want to replace the whole list.
+    With ``reload`` (default), the entry is reloaded after the write. With
+    ``verify`` (default), the stored config is re-read and compared to what was
+    requested; a mismatch raises ``RuntimeError`` (a write that "took" in the
+    flow response but did not persist). Returns the flow response augmented
+    with a ``_verified`` block.
+
+    DESTRUCTIVE per field: prefer :func:`add_group_members` /
+    :func:`remove_group_members` for incremental edits.
     """
     if not entry_id:
         raise ValueError("entry_id is required")
-    payload: dict[str, Any] = {}
-    if power_entities is not None:
-        payload["group_power_entities"] = list(power_entities)
-    if sub_groups is not None:
-        payload["sub_groups"] = list(sub_groups)
-    if energy_entities is not None:
-        payload["group_energy_entities"] = list(energy_entities)
-    if not payload:
+    if all(v is None for v in
+           (member_sensors, power_entities, energy_entities, sub_groups)):
         raise ValueError(
-            "Provide at least one of power_entities / sub_groups / "
-            "energy_entities",
+            "Provide at least one of member_sensors / power_entities / "
+            "energy_entities / sub_groups",
         )
-    flow_id = _open_group_custom(client, entry_id)
-    return client.post(
+
+    form = _open_group_custom(client, entry_id)
+    flow_id = form["flow_id"]
+    fields = _form_field_map(form)
+    current = {n: (_form_current_value(fields[n]) if n in fields else None)
+               for n in (*_GROUP_LIST_FIELDS, *_GROUP_SCALAR_FIELDS)}
+
+    desired = {
+        "group_member_sensors": member_sensors,
+        "group_power_entities": power_entities,
+        "group_energy_entities": energy_entities,
+        "sub_groups": sub_groups,
+    }
+    payload: dict[str, Any] = {}
+    for name in _GROUP_LIST_FIELDS:
+        if name not in fields:
+            continue
+        val = desired[name]
+        payload[name] = list(val) if val is not None else \
+            (list(current[name]) if isinstance(current[name], list) else [])
+    # Resend scalar fields verbatim so they aren't cleared.
+    for name in _GROUP_SCALAR_FIELDS:
+        if name in fields and current[name] not in (None, ""):
+            payload[name] = current[name]
+
+    resp = client.post(
         f"config/config_entries/options/flow/{flow_id}", payload,
     )
+    # Walk any trailing confirm steps. Bounded so a flow that keeps returning a
+    # form (or a fake that always does) can't spin forever.
+    for _ in range(6):
+        if resp.get("type") != "form":
+            break
+        resp = client.post(
+            f"config/config_entries/options/flow/{flow_id}", {},
+        )
+
+    if reload:
+        try:
+            reload_entry(client, entry_id)
+        except Exception:  # noqa: BLE001 — reload is best-effort
+            pass
+
+    if verify:
+        stored = get_group_config(client, entry_id)
+        mismatches = {}
+        for name in _GROUP_LIST_FIELDS:
+            if desired[name] is None:
+                continue
+            if _diff_lists(stored.get(name) or [], desired[name]):
+                mismatches[name] = {
+                    "wanted": sorted(desired[name]),
+                    "stored": sorted(stored.get(name) or []),
+                }
+        if mismatches:
+            raise RuntimeError(
+                f"Group {entry_id}: write did not persist for "
+                f"{list(mismatches)} — {mismatches}",
+            )
+        resp = {**resp, "_verified": {"stored": stored}}
+    return resp
 
 
 def add_group_members(client, entry_id: str, *,
-                       sensor_entity_id: str,
-                       entities: Iterable[str]) -> dict:
-    """SAFELY add entities to a group's ``group_power_entities`` list.
+                       member_sensors: Iterable[str] | None = None,
+                       power_entities: Iterable[str] | None = None,
+                       energy_entities: Iterable[str] | None = None,
+                       reload: bool = True, verify: bool = True) -> dict:
+    """SAFELY add members to a group (read current config → merge → write).
 
-    Reads the current resolved entity list from the group's power sensor,
-    merges in the new ones (de-duplicated, original order preserved), and
-    submits the full merged list. Prevents the REPLACE-on-write footgun.
+    Reads the *configured* lists via :func:`get_group_config` (not the resolved
+    leaf list — that was the bug that wrote derived ids back and never stuck),
+    merges in the new members per field (de-duplicated, order preserved), and
+    writes via :func:`set_group_members` (which reloads + verifies).
 
-    Only works for groups configured with flat ``group_power_entities``,
-    not for sub-group-based rollups. For sub-group rollups, edit the leaf
-    group instead and let the cascade carry the change upward.
+    Prefer ``member_sensors`` (powercalc config-entry IDs) when the leaves are
+    powercalc entries: powercalc then rolls up both their power and energy
+    automatically. Use ``power_entities`` / ``energy_entities`` for external
+    (non-powercalc) sensors, and pair them (see :func:`energy_siblings_for`).
     """
     if not entry_id:
         raise ValueError("entry_id is required")
-    if not sensor_entity_id:
+    adds = {
+        "member_sensors": list(member_sensors) if member_sensors else [],
+        "power_entities": list(power_entities) if power_entities else [],
+        "energy_entities": list(energy_entities) if energy_entities else [],
+    }
+    if not any(adds.values()):
         raise ValueError(
-            "sensor_entity_id is required to read current members safely",
+            "Provide at least one of member_sensors / power_entities / "
+            "energy_entities to add",
         )
-    new_entities = list(entities)
-    if not new_entities:
-        raise ValueError("entities must be a non-empty iterable")
-    current = get_group_members(client, sensor_entity_id)
-    merged = list(dict.fromkeys(current + new_entities))
-    return set_group_members(client, entry_id, power_entities=merged)
+    cfg = get_group_config(client, entry_id)
+    merged = {
+        "member_sensors": list(dict.fromkeys(
+            (cfg["group_member_sensors"] or []) + adds["member_sensors"])),
+        "power_entities": list(dict.fromkeys(
+            (cfg["group_power_entities"] or []) + adds["power_entities"])),
+        "energy_entities": list(dict.fromkeys(
+            (cfg["group_energy_entities"] or []) + adds["energy_entities"])),
+    }
+    return set_group_members(
+        client, entry_id,
+        member_sensors=merged["member_sensors"] if adds["member_sensors"]
+        else None,
+        power_entities=merged["power_entities"] if adds["power_entities"]
+        else None,
+        energy_entities=merged["energy_entities"] if adds["energy_entities"]
+        else None,
+        reload=reload, verify=verify,
+    )
 
 
 def remove_group_members(client, entry_id: str, *,
-                          sensor_entity_id: str,
-                          entities: Iterable[str]) -> dict:
-    """SAFELY remove entities from a group's ``group_power_entities`` list.
+                          member_sensors: Iterable[str] | None = None,
+                          power_entities: Iterable[str] | None = None,
+                          energy_entities: Iterable[str] | None = None,
+                          reload: bool = True, verify: bool = True) -> dict:
+    """SAFELY remove members from a group (read current config → filter → write).
 
-    Reads the current resolved entity list, removes the supplied entities,
-    and submits what's left. If the resulting list is empty an empty list
-    is submitted (caller's choice whether to also delete the group entry).
+    Reads the configured lists, drops the supplied members per field, and writes
+    back what remains (reload + verify). Fields with nothing to remove are left
+    untouched.
     """
     if not entry_id:
         raise ValueError("entry_id is required")
-    if not sensor_entity_id:
+    drops = {
+        "member_sensors": set(member_sensors or ()),
+        "power_entities": set(power_entities or ()),
+        "energy_entities": set(energy_entities or ()),
+    }
+    if not any(drops.values()):
         raise ValueError(
-            "sensor_entity_id is required to read current members safely",
+            "Provide at least one of member_sensors / power_entities / "
+            "energy_entities to remove",
         )
-    drop = set(entities)
-    if not drop:
-        raise ValueError("entities must be a non-empty iterable")
-    current = get_group_members(client, sensor_entity_id)
-    remaining = [e for e in current if e not in drop]
-    return set_group_members(client, entry_id, power_entities=remaining)
+    cfg = get_group_config(client, entry_id)
+    return set_group_members(
+        client, entry_id,
+        member_sensors=([e for e in (cfg["group_member_sensors"] or [])
+                         if e not in drops["member_sensors"]]
+                        if drops["member_sensors"] else None),
+        power_entities=([e for e in (cfg["group_power_entities"] or [])
+                         if e not in drops["power_entities"]]
+                        if drops["power_entities"] else None),
+        energy_entities=([e for e in (cfg["group_energy_entities"] or [])
+                          if e not in drops["energy_entities"]]
+                         if drops["energy_entities"] else None),
+        reload=reload, verify=verify,
+    )
+
+
+# ── power↔energy sibling derivation + group discovery ──────────────────────
+
+def energy_siblings_for(client, power_entities: Iterable[str], *,
+                        states: list[dict] | None = None) -> dict:
+    """Map each ``*_power`` sensor to its matching powercalc ``*_energy`` sensor.
+
+    Powercalc names an entry's energy sensor by swapping the ``_power`` suffix
+    for ``_energy``. This validates that the sibling actually exists and carries
+    ``device_class: energy`` before trusting it — external/derived power sensors
+    (real meters, EV chargers) legitimately have no powercalc energy twin.
+
+    Returns ``{"siblings": {power_id: energy_id, ...},
+    "no_sibling": [power_id, ...]}``.
+    """
+    if states is None:
+        states = client.get("states")
+    by_id = {s["entity_id"]: s for s in states if isinstance(s, dict)}
+
+    def is_energy(eid: str) -> bool:
+        s = by_id.get(eid)
+        return bool(s) and (s.get("attributes") or {}).get(
+            "device_class") == "energy"
+
+    siblings: dict[str, str] = {}
+    no_sibling: list[str] = []
+    for pe in power_entities:
+        cand = pe[:-len("_power")] + "_energy" if pe.endswith("_power") else None
+        if cand and is_energy(cand):
+            siblings[pe] = cand
+        else:
+            no_sibling.append(pe)
+    return {"siblings": siblings, "no_sibling": no_sibling}
+
+
+def find_groups_containing(client, *, entry_ids: Iterable[str] | None = None,
+                            power_entities: Iterable[str] | None = None,
+                            energy_entities: Iterable[str] | None = None,
+                            ) -> list[dict]:
+    """Find every powercalc group whose config references the given members.
+
+    Scans all powercalc group entries' configured lists (via
+    :func:`get_group_config`). Matches ``entry_ids`` against
+    ``group_member_sensors`` / ``sub_groups`` and ``power_entities`` /
+    ``energy_entities`` against the respective lists.
+
+    Returns ``[{entry_id, title, matched: {field: [ids]}}, ...]`` — the
+    snapshot a safe delete+recreate restores from.
+    """
+    want_entries = set(entry_ids or ())
+    want_power = set(power_entities or ())
+    want_energy = set(energy_entities or ())
+    out: list[dict] = []
+    for e in list_entries(client):
+        eid = e.get("entry_id")
+        try:
+            cfg = get_group_config(client, eid)
+        except Exception:  # noqa: BLE001 — not a group / unreadable
+            continue
+        matched: dict[str, list] = {}
+        for field, want in (
+            ("group_member_sensors", want_entries),
+            ("sub_groups", want_entries),
+            ("group_power_entities", want_power),
+            ("group_energy_entities", want_energy),
+        ):
+            hit = [x for x in (cfg.get(field) or []) if x in want]
+            if hit:
+                matched[field] = hit
+        if matched:
+            out.append({"entry_id": eid, "title": e.get("title"),
+                        "matched": matched})
+    return out
+
+
+def recreate_preserving_groups(client, *, entry_id: str, recreate,
+                                verify: bool = True) -> dict:
+    """Delete a virtual_power entry and recreate it WITHOUT losing its rollups.
+
+    Powercalc cannot change an entry's calculation mode in place, so a
+    ``linear → fixed`` migration needs delete + recreate — but deleting a
+    grouped entry cascades it out of every ``group_member_sensors`` rollup, and
+    the recreate does not re-add it. This wraps the round-trip:
+
+      1. Snapshot every group referencing ``entry_id`` (member/sub-group) or its
+         power/energy sensors.
+      2. Delete the entry.
+      3. Call ``recreate()`` — a zero-arg callable that creates the replacement
+         (e.g. ``lambda: create_virtual_power(...)``) and returns its flow
+         response. Recreating with the same name+source yields the same sensor
+         entity IDs, so entity-id-based (power/energy) memberships survive on
+         their own; only member/sub-group references need restoring.
+      4. Restore the snapshotted memberships via :func:`add_group_members`.
+
+    Returns ``{created, snapshot, restored}``. The new config-entry ID differs
+    from the old, so member-sensor groups are re-added with the new ID.
+    """
+    if not entry_id:
+        raise ValueError("entry_id is required")
+    if not callable(recreate):
+        raise ValueError("recreate must be a zero-arg callable")
+
+    psensor = esensor = None
+    info = read_entry(client, entry_id)
+    # resolve this entry's power/energy sensor ids for entity-id snapshots
+    for s in client.get("states"):
+        a = s.get("attributes") or {}
+        if a.get("integration") != "powercalc":
+            continue
+        fn = (a.get("friendly_name") or "").strip()
+        base = fn
+        for suf in (" Power", " power", " Energy", " energy"):
+            if base.endswith(suf):
+                base = base[:-len(suf)]
+        if base.strip() == (info.get("title") or "").strip():
+            dc = a.get("device_class")
+            if dc == "power":
+                psensor = s["entity_id"]
+            elif dc == "energy":
+                esensor = s["entity_id"]
+
+    snapshot = find_groups_containing(
+        client, entry_ids=[entry_id],
+        power_entities=[psensor] if psensor else None,
+        energy_entities=[esensor] if esensor else None,
+    )
+    _ce.delete_entry(client, entry_id)
+    created = recreate()
+    new_entry_id = (created.get("result", {}) or {}).get("entry_id") \
+        if isinstance(created, dict) else None
+
+    restored = []
+    for g in snapshot:
+        m = g["matched"]
+        kwargs: dict[str, Any] = {}
+        if new_entry_id and (m.get("group_member_sensors")
+                             or m.get("sub_groups")):
+            kwargs["member_sensors"] = [new_entry_id]
+        # entity-id memberships survive recreate (same sensor ids) but re-add
+        # defensively in case the cascade touched them.
+        if psensor and m.get("group_power_entities"):
+            kwargs["power_entities"] = [psensor]
+        if esensor and m.get("group_energy_entities"):
+            kwargs["energy_entities"] = [esensor]
+        if kwargs:
+            try:
+                add_group_members(client, g["entry_id"], verify=verify,
+                                  **kwargs)
+                restored.append({"group": g["entry_id"], "added": kwargs})
+            except Exception as exc:  # noqa: BLE001 — report, don't abort
+                restored.append({"group": g["entry_id"], "error": str(exc)})
+    return {"created": created, "new_entry_id": new_entry_id,
+            "snapshot": snapshot, "restored": restored}
 
 
 # ── virtual_power creation ────────────────────────────────────────────────
@@ -552,7 +905,7 @@ def read_entry(client, entry_id: str) -> dict:
             for f in (form.get("data_schema") or []):
                 n = f.get("name")
                 if n in names:
-                    val = f.get("suggested_value", f.get("default"))
+                    val = _form_current_value(f)
                     if val is not None:
                         configured[n] = val
         out["configured"] = configured
