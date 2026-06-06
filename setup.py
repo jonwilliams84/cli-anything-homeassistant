@@ -20,6 +20,14 @@ setup(
         # ML-adjacent dep; no scipy/sklearn needed.
         "numpy>=1.24",
     ],
+    extras_require={
+        # `pip install -e '.[test]'` — unit tests need pytest; the e2e
+        # tests boot a real Home Assistant in a temp config dir.
+        "test": [
+            "pytest>=7.0",
+            "homeassistant",
+        ],
+    },
     entry_points={
         "console_scripts": [
             "cli-anything-homeassistant=cli_anything.homeassistant.homeassistant_cli:main",
