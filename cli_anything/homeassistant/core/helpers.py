@@ -148,6 +148,19 @@ def input_select_update(client, entity_id: str, *,
         raise ValueError(f"expected input_select.* entity_id, got {entity_id!r}")
     if options is None and name is None and icon is None and initial is None:
         raise ValueError("nothing to update — pass options/name/icon/initial")
+    # HA's input_select/update REPLACES the whole item and requires `name`,
+    # so a partial update (e.g. options-only) is rejected with
+    # "required key not provided @ data['name']". Backfill name/icon from the
+    # current state so callers can change just the options.
+    if name is None or icon is None:
+        try:
+            attrs = _get_state(client, entity_id).get("attributes", {})
+            if name is None:
+                name = attrs.get("friendly_name")
+            if icon is None:
+                icon = attrs.get("icon")
+        except Exception:  # pragma: no cover — best-effort backfill
+            pass
     payload: dict = {"input_select_id": entity_id.split(".", 1)[1]}
     if options is not None:
         if not isinstance(options, list) or not options:
