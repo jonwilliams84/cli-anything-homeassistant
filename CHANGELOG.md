@@ -4,6 +4,24 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.44.0] — 2026-06-20
+
+Gap surfaced while migrating the Haier hOn integration off the dead
+`Andre0512/hon` onto a maintained fork: the `hacs` group could `install`/
+`remove`/`refresh` but had **no way to register a custom repository**, forcing a
+hand-rolled `hacs/repositories/add` WebSocket call.
+
+### Added
+- **`hacs add <owner/repo> [--category]`** — register a custom repository (the
+  frontend's "Custom repositories" dialog) via the `hacs/repositories/add` WS
+  command. `install` only works on repos HACS already knows, so a brand-new
+  fork must be added here first. Validates the `owner/repo` slug and the
+  category (`integration` default; also `plugin`/`theme`/`appdaemon`/
+  `python_script`/`netdaemon`/`template`). Typical flow:
+  `hacs add owner/repo` → `hacs refresh owner/repo` → `hacs install owner/repo`.
+  Note HACS's own API is plural for `repositories/list` + `repositories/add`
+  but singular (`repository/*`) for everything else.
+
 ## [1.43.0] — 2026-06-12
 
 Gaps surfaced during a long session building a switchable HA TTS-persona

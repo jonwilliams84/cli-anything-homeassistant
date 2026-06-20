@@ -4960,6 +4960,19 @@ def hacs_show(ctx, ident):
     emit(ctx, hacs_core.show(make_client(ctx), ident))
 
 
+@hacs.command("add")
+@click.argument("repository")
+@click.option("--category", default="integration",
+              type=click.Choice(list(hacs_core.CATEGORIES)),
+              help="HACS category for the custom repo (default: integration)")
+@click.pass_context
+def hacs_add(ctx, repository, category):
+    """Register a custom repository by GitHub 'owner/repo' slug — the
+    'Custom repositories' dialog. Follow with `hacs refresh <repo>` then
+    `hacs install <repo>` to download it."""
+    emit(ctx, hacs_core.add_repo(make_client(ctx), repository, category=category))
+
+
 @hacs.command("install")
 @click.argument("ident")
 @click.option("--version", default=None,
