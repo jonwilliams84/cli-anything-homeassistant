@@ -4,6 +4,52 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.44.0] — 2026-06-20
+
+Gap surfaced while migrating the Haier hOn integration off the dead
+`Andre0512/hon` onto a maintained fork: the `hacs` group could `install`/
+`remove`/`refresh` but had **no way to register a custom repository**, forcing a
+hand-rolled `hacs/repositories/add` WebSocket call.
+
+### Added
+- **`hacs add <owner/repo> [--category]`** — register a custom repository (the
+  frontend's "Custom repositories" dialog) via the `hacs/repositories/add` WS
+  command. `install` only works on repos HACS already knows, so a brand-new
+  fork must be added here first. Validates the `owner/repo` slug and the
+  category (`integration` default; also `plugin`/`theme`/`appdaemon`/
+  `python_script`/`netdaemon`/`template`). Typical flow:
+  `hacs add owner/repo` → `hacs refresh owner/repo` → `hacs install owner/repo`.
+  Note HACS's own API is plural for `repositories/list` + `repositories/add`
+  but singular (`repository/*`) for everything else.
+
+## [1.43.0] — 2026-06-12
+
+Gaps surfaced during a long session building a switchable HA TTS-persona
+(input_select + script + multi-voice Wyoming). Three friction points fixed.
+
+### Added
+- **`helpers input-select update`** — PERSISTENT option/name/icon/initial edit
+  via the `input_select/update` storage-collection WS command. Unlike
+  `set-options` (the `input_select.set_options` *service*, runtime-only — it
+  silently reverts on HA restart), this survives restart. The wrapper was
+  missing even though the `input_select_update` core fn already existed.
+- **`ws <type>`** — raw WebSocket escape hatch. Sends any WS command with a
+  payload built from repeatable `-D key=value` (JSON-parsed) and/or
+  `--data-json`, handling the connect/auth/`id` handshake. Covers WS commands
+  that have no dedicated subcommand (storage-collection updates, niche calls).
+
+### Fixed
+- **No more Python traceback on a wrong-domain entity.** Typed-group commands
+  (e.g. `select set input_select.foo`) raise `ValueError` from the core
+  domain-prefix check; `main()` only caught `HomeAssistantError`, so it dumped
+  a raw traceback. It now catches `ValueError` too and prints a clean
+  `error: expected select.* entity_id, got 'input_select.foo'`.
+- **`input_select_update` options-only update no longer rejected.** HA's
+  `input_select/update` REPLACES the whole item and *requires* `name`, so an
+  options-only update failed with `required key not provided @ data['name']`.
+  It now backfills `name`/`icon` from the current state when omitted, so you
+  can change just the options.
+
 ## [1.42.0] — 2026-06-03
 
 Safe powercalc **group membership** editing. A 2026-06-02 session migrated 30

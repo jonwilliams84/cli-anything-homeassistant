@@ -1148,6 +1148,28 @@ class TestHACS:
         with pytest.raises(KeyError):
             hacs_core.remove(fake_client, "nope-doesnt-exist")
 
+    def test_add_repo_passes_slug_and_category(self, fake_client):
+        fake_client.set_ws("hacs/repositories/add", {"success": True})
+        hacs_core.add_repo(fake_client, "jonwilliams84/hon", category="integration")
+        last = fake_client.ws_calls[-1]
+        assert last["type"] == "hacs/repositories/add"
+        assert last["payload"] == {"repository": "jonwilliams84/hon",
+                                    "category": "integration"}
+
+    def test_add_repo_defaults_to_integration(self, fake_client):
+        fake_client.set_ws("hacs/repositories/add", {"success": True})
+        hacs_core.add_repo(fake_client, "owner/thing")
+        assert fake_client.ws_calls[-1]["payload"]["category"] == "integration"
+
+    def test_add_repo_rejects_bad_slug(self, fake_client):
+        for bad in ("noslash", "too/many/slashes", "/leading", "trailing/"):
+            with pytest.raises(ValueError, match="owner/repo"):
+                hacs_core.add_repo(fake_client, bad)
+
+    def test_add_repo_rejects_bad_category(self, fake_client):
+        with pytest.raises(ValueError, match="category"):
+            hacs_core.add_repo(fake_client, "owner/repo", category="bogus")
+
 
 # ────────────────────────────────────────────────────────── subentries
 

@@ -4,10 +4,14 @@ Wraps the WebSocket API the HACS frontend itself uses:
 
   - ``hacs/info``                — overall HACS status (version, stage, categories)
   - ``hacs/repositories/list``   — every known repo (default ~3000, with ~30-100 installed)
+  - ``hacs/repositories/add``    — register a custom repository (the "Custom repositories" dialog)
   - ``hacs/repository/info``     — full metadata for one repo
   - ``hacs/repository/download`` — install (download files + register Lovelace resource)
   - ``hacs/repository/remove``   — uninstall (delete files + remove resource registration)
   - ``hacs/repository/refresh``  — refresh metadata from upstream
+
+Note the plural/singular split in HACS's own API: ``list`` and ``add`` are
+``hacs/repositories/*``; everything else is ``hacs/repository/*``.
 
 (`info()` is also exported as `hacs_info` for unambiguous `from X import` usage.)
 """
@@ -15,6 +19,13 @@ Wraps the WebSocket API the HACS frontend itself uses:
 from __future__ import annotations
 
 from typing import Any, Optional
+
+# HACS repo categories (depends on the user's HACS config, but these are the
+# built-in ones the frontend offers when adding a custom repository).
+CATEGORIES = (
+    "integration", "plugin", "theme",
+    "appdaemon", "python_script", "netdaemon", "template",
+)
 
 
 def info(client) -> dict:
@@ -83,6 +94,31 @@ def find_repo(client, ident: str) -> Optional[dict]:
     if len(installed_substr) == 1:
         return installed_substr[0]
     return None
+
+
+def add_repo(client, repository: str, *, category: str = "integration") -> Any:
+    """Register a *custom* repository with HACS — the programmatic equivalent of
+    the frontend's "Custom repositories" dialog.
+
+    ``install`` only works on repos HACS already knows about; a brand-new
+    ``owner/repo`` must be added here first. After adding, HACS fetches the
+    repo's metadata asynchronously (a few seconds), so the usual flow is::
+
+        hacs add owner/repo --category integration
+        hacs refresh owner/repo      # let HACS read its releases
+        hacs install owner/repo      # download it
+
+    ``repository`` must be the ``owner/repo`` GitHub slug (not a URL or id).
+    """
+    if not repository or repository.count("/") != 1 or repository.startswith("/") \
+            or repository.endswith("/"):
+        raise ValueError(
+            f"repository must be the 'owner/repo' GitHub slug, got {repository!r}")
+    if category not in CATEGORIES:
+        raise ValueError(
+            f"category must be one of {', '.join(CATEGORIES)}, got {category!r}")
+    return client.ws_call("hacs/repositories/add",
+                            {"repository": repository, "category": category})
 
 
 def show(client, ident: str) -> dict:

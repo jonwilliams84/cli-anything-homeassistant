@@ -5,7 +5,7 @@ with open("cli_anything/homeassistant/README.md") as f:
 
 setup(
     name="cli-anything-homeassistant",
-    version="1.42.0",
+    version="1.44.0",
     description="CLI harness for Home Assistant — control your smart home from the command line",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -20,6 +20,14 @@ setup(
         # ML-adjacent dep; no scipy/sklearn needed.
         "numpy>=1.24",
     ],
+    extras_require={
+        # `pip install -e '.[test]'` — unit tests need pytest; the e2e
+        # tests boot a real Home Assistant in a temp config dir.
+        "test": [
+            "pytest>=7.0",
+            "homeassistant",
+        ],
+    },
     entry_points={
         "console_scripts": [
             "cli-anything-homeassistant=cli_anything.homeassistant.homeassistant_cli:main",

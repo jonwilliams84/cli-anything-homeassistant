@@ -314,7 +314,10 @@ def main():
         sys.argv = [rest[0], *hoist, *rest[1:]]
     try:
         cli(obj={})
-    except HomeAssistantError as exc:
+    except (HomeAssistantError, ValueError) as exc:
+        # ValueError is raised by core fns for user-input validation
+        # (e.g. wrong entity-domain prefix); present it cleanly instead of
+        # dumping a Python traceback.
         _abort(str(exc))
 
 
@@ -1822,6 +1825,46 @@ def whoami_cmd(ctx):
     emit(ctx, auth_tokens_core.current_user(make_client(ctx)))
 
 
+@cli.command("ws")
+@click.argument("msg_type")
+@click.option("--data", "-D", "data", multiple=True, metavar="KEY=VALUE",
+              help="Payload field as key=value (repeatable). Values are JSON-parsed "
+                   "when possible, else treated as a string.")
+@click.option("--data-json", default=None,
+              help="Full payload as a JSON object string (merged with -D fields).")
+@click.pass_context
+def ws_cmd(ctx, msg_type, data, data_json):
+    """Send a raw WebSocket command to HA and print the result.
+
+    Escape hatch for WS commands that don't have a dedicated subcommand
+    (storage-collection updates, niche registry calls, …). The connection,
+    auth handshake and message `id` are handled for you — pass only the
+    command `type` and its payload.
+
+    Examples:
+      ws config/area_registry/list
+      ws input_select/update -D input_select_id=voice_persona -D 'options=["A","B"]'
+      ws --data-json '{"input_text_id":"note","value":"hi"}' input_text/update
+    """
+    payload: dict = {}
+    if data_json:
+        parsed = json.loads(data_json)
+        if not isinstance(parsed, dict):
+            click.echo("error: --data-json must be a JSON object", err=True)
+            sys.exit(1)
+        payload.update(parsed)
+    for kv in data:
+        if "=" not in kv:
+            click.echo(f"error: --data must be key=value, got {kv!r}", err=True)
+            sys.exit(1)
+        key, raw = kv.split("=", 1)
+        try:
+            payload[key] = json.loads(raw)
+        except (ValueError, json.JSONDecodeError):
+            payload[key] = raw
+    emit(ctx, make_client(ctx).ws_call(msg_type, payload or None))
+
+
 # ──────────────────────────────────────────────────────── entity references
 
 @cli.command("entity-references")
@@ -3099,6 +3142,40 @@ def helpers_input_select_create(ctx, name, options, icon, initial):
     emit(ctx, helpers_core.input_select_create(
         make_client(ctx), name=name, options=list(options),
         icon=icon, initial=initial,
+    ))
+
+
+@helpers_input_select.command("update")
+@click.argument("entity_id")
+@click.argument("options", nargs=-1)
+@click.option("--from-file", type=click.Path(exists=True, dir_okay=False),
+              help="Read options as a JSON list from a file (alternative to args)")
+@click.option("--name", default=None, help="New display name")
+@click.option("--icon", default=None, help="mdi:xxx icon")
+@click.option("--initial", default=None, help="Initial selected option")
+@click.pass_context
+def helpers_input_select_update(ctx, entity_id, options, from_file, name, icon, initial):
+    """PERSISTENTLY update a UI-managed input_select (storage WS).
+
+    Unlike `set-options` (runtime-only — reverts on HA restart), this writes to
+    .storage/input_select via the `input_select/update` WS command and survives
+    restart. Pass new options as positional args (or --from-file for a JSON
+    list), and/or --name/--icon/--initial. At least one must be given.
+
+    Example:
+      helpers input-select update input_select.voice_persona \\
+        Alexa Attenborough Crabtree --initial Attenborough
+    """
+    if from_file:
+        opts = json.loads(open(from_file).read())
+        if not isinstance(opts, list):
+            click.echo("error: --from-file must contain a JSON list", err=True)
+            sys.exit(1)
+    else:
+        opts = list(options) or None
+    emit(ctx, helpers_core.input_select_update(
+        make_client(ctx), entity_id,
+        options=opts, name=name, icon=icon, initial=initial,
     ))
 
 
@@ -4881,6 +4958,19 @@ def hacs_list(ctx, installed, category, pattern):
 @click.pass_context
 def hacs_show(ctx, ident):
     emit(ctx, hacs_core.show(make_client(ctx), ident))
+
+
+@hacs.command("add")
+@click.argument("repository")
+@click.option("--category", default="integration",
+              type=click.Choice(list(hacs_core.CATEGORIES)),
+              help="HACS category for the custom repo (default: integration)")
+@click.pass_context
+def hacs_add(ctx, repository, category):
+    """Register a custom repository by GitHub 'owner/repo' slug — the
+    'Custom repositories' dialog. Follow with `hacs refresh <repo>` then
+    `hacs install <repo>` to download it."""
+    emit(ctx, hacs_core.add_repo(make_client(ctx), repository, category=category))
 
 
 @hacs.command("install")
