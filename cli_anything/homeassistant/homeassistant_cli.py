@@ -1495,22 +1495,69 @@ def _trace_start(trace: dict):
     return dt
 
 
+def flatten_trace_vars(full: dict) -> dict:
+    """Flatten a trace to the data agents actually want: per-step changed
+    variables + service calls (the `line`/`description`/`say`/persona values and
+    the notify/tts/script calls), instead of hand-digging the deeply-nested
+    ``trace[step][].changed_variables`` / ``result.params``.
+    """
+    tr = full.get("trace", {}) or {}
+    steps = []
+    for path, nodes in tr.items():
+        for node in (nodes if isinstance(nodes, list) else [nodes]):
+            if not isinstance(node, dict):
+                continue
+            entry: dict = {}
+            cv = node.get("changed_variables") or {}
+            # Drop the bulky standing context (this/trigger) — keep the real vars.
+            vars_ = {k: v for k, v in cv.items() if k not in ("this", "trigger")}
+            if vars_:
+                entry["changed_variables"] = vars_
+            res = node.get("result") or {}
+            params = res.get("params") if isinstance(res, dict) else None
+            if isinstance(params, dict) and params.get("domain"):
+                entry["service_call"] = {
+                    "service": f"{params.get('domain')}.{params.get('service')}",
+                    "data": params.get("service_data"),
+                    "target": params.get("target") or None,
+                }
+            if entry:
+                entry["path"] = path
+                steps.append(entry)
+    return {
+        "run_id": full.get("run_id"),
+        "start": full.get("timestamp", {}).get("start"),
+        "error": full.get("error"),
+        "script_execution": full.get("script_execution"),
+        "steps": steps,
+    }
+
+
 @automation.command("trace")
 @click.argument("entity_id")
-@click.option("--run-id", default=None,
-              help="Specific run_id to fetch (default: most recent)")
+@click.argument("run_id_arg", required=False, default=None)
+@click.option("--run-id", "run_id_opt", default=None,
+              help="Specific run_id to fetch (default: most recent). May also be "
+                   "given as a positional argument after ENTITY_ID.")
 @click.option("--summary", is_flag=True, default=False,
               help="Compact: just trigger / condition outcomes / "
                    "result, instead of the full action-by-action trace")
+@click.option("--vars", "show_vars", is_flag=True, default=False,
+              help="Flatten to per-step changed variables + service calls (the "
+                   "line/description/say/persona values and notify/tts/script calls).")
 @click.pass_context
-def automation_trace(ctx, entity_id, run_id, summary):
+def automation_trace(ctx, entity_id, run_id_arg, run_id_opt, summary, show_vars):
     """Fetch a single execution trace.
 
-    Use this when an automation didn't fire (or fired wrong) and you
-    want to know why: which trigger ran, did the conditions pass, did
-    any action fail.
+    Use this when an automation didn't fire (or fired wrong) and you want to know
+    why: which trigger ran, did the conditions pass, did any action fail. The
+    run_id may be passed positionally (matching `traces` output) or via --run-id.
     """
+    run_id = run_id_opt or run_id_arg
     full = automation_core.get_trace(make_client(ctx), entity_id, run_id=run_id)
+    if show_vars:
+        emit(ctx, flatten_trace_vars(full))
+        return
     if not summary:
         emit(ctx, full)
         return
@@ -1567,12 +1614,18 @@ def script_traces(ctx, entity_id):
 
 @script.command("trace")
 @click.argument("entity_id")
-@click.option("--run-id", default=None,
-              help="Specific run id (default: most recent)")
+@click.argument("run_id_arg", required=False, default=None)
+@click.option("--run-id", "run_id_opt", default=None,
+              help="Specific run id (default: most recent). May also be given "
+                   "positionally after ENTITY_ID.")
+@click.option("--vars", "show_vars", is_flag=True, default=False,
+              help="Flatten to per-step changed variables + service calls.")
 @click.pass_context
-def script_trace(ctx, entity_id, run_id):
+def script_trace(ctx, entity_id, run_id_arg, run_id_opt, show_vars):
     """Fetch the full trace dict for a single script run."""
-    emit(ctx, script_core.get_trace(make_client(ctx), entity_id, run_id))
+    run_id = run_id_opt or run_id_arg
+    full = script_core.get_trace(make_client(ctx), entity_id, run_id)
+    emit(ctx, flatten_trace_vars(full) if show_vars else full)
 
 
 # ──────────────────────────────────────────────────────────────────────── domain helpers

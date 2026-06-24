@@ -4,6 +4,16 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.45.0] — 2026-06-24
+
+### Added
+- `automation trace` / `script trace`: accept the **run_id positionally**
+  (`automation trace <entity> <run_id>`, matching `traces` output) in addition to
+  `--run-id`, and a new **`--vars`** flag that flattens the trace to per-step
+  changed variables + service calls — the `line`/`description`/`say`/persona
+  values and the notify/tts/script calls — instead of forcing a hand-dig of the
+  deeply-nested `trace[step][].changed_variables` / `result.params`.
+
 ## [1.44.0] — 2026-06-20
 
 Gap surfaced while migrating the Haier hOn integration off the dead

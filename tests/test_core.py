@@ -926,6 +926,35 @@ class TestScriptTraces:
         assert get_call["payload"]["run_id"] == "r2"
 
 
+class TestFlattenTraceVars:
+    """`automation/script trace --vars` surfaces per-step changed vars + service
+    calls instead of forcing a hand-dig of the deeply-nested trace."""
+
+    def test_extracts_changed_vars_and_service_calls(self):
+        from cli_anything.homeassistant.homeassistant_cli import flatten_trace_vars
+        full = {
+            "run_id": "r9",
+            "timestamp": {"start": "2026-06-24T16:06:23+00:00"},
+            "trace": {
+                "action/0": [{"changed_variables": {
+                    "description": "A person in the garden", "this": {"big": "ctx"}}}],
+                "action/1": [{"result": {"params": {
+                    "domain": "script", "service": "persona_announce",
+                    "service_data": {"say": "Spoken line"}, "target": {}}}}],
+                "trigger/0": [{"changed_variables": {"trigger": {"x": 1}}}],  # dropped
+            },
+        }
+        out = flatten_trace_vars(full)
+        assert out["run_id"] == "r9"
+        steps = out["steps"]
+        cv = next(s for s in steps if "changed_variables" in s)["changed_variables"]
+        assert cv == {"description": "A person in the garden"}  # `this` dropped
+        call = next(s for s in steps if "service_call" in s)["service_call"]
+        assert call["service"] == "script.persona_announce"
+        assert call["data"]["say"] == "Spoken line"
+        assert all("trigger" not in (s.get("changed_variables") or {}) for s in steps)
+
+
 # ────────────────────────────────────────────────────────── energy / themes / calendars / tts
 
 from cli_anything.homeassistant.core import energy as energy_core
