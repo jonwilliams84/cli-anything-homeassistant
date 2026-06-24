@@ -81,8 +81,8 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `entity-references`| Find every automation/script/scene/dashboard that names a given entity.                        |
 | `helpers`          | input_select / input_boolean / input_button / input_number / input_text / input_datetime / counter / timer / schedule. |
 | `template-helper`  | Create/update template-derived sensors/binary_sensors/etc.                                     |
-| `automation`       | `list`, `trigger`, `toggle`, `turn-on`/`turn-off`, `reload`, traces (`traces`, `trace-get`).   |
-| `script`           | `list`, `run`, `reload`, traces.                                                               |
+| `automation`       | `list`, `trigger`, `toggle`, `turn-on`/`turn-off`, `reload`, traces (`traces`; `trace <entity> [run_id] [--vars]` — run_id positional or `--run-id`; `--vars` flattens to per-step changed vars + service calls). |
+| `script`           | `list`, `run`, `reload`, `traces`, `trace <entity> [run_id] [--vars]`.                          |
 | `scene`            | `list`, `activate`, `apply` (ad-hoc), `create` (snapshot), `reload`.                            |
 | `blueprint`        | `list`, `import`, `save`, `delete`, `substitute` (dry-run render).                              |
 | `config-entry`     | List/get/reload/delete/update + options flows (`options-init`/`options-configure`/`options-set`). |
