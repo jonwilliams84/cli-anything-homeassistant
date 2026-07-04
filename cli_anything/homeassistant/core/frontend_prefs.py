@@ -113,7 +113,7 @@ def render_template(
         payload["variables"] = variables
     if timeout is not None:
         payload["timeout"] = timeout
-    result = client.post("api/template", payload)
+    result = client.post("template", payload)
     # HA returns the rendered text as a plain string; FakeClient may return a
     # dict stub in tests.  Coerce to str for a consistent return type.
     return result if isinstance(result, str) else str(result)
