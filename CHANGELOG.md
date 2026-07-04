@@ -4,6 +4,58 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.46.0] — 2026-07-04
+
+New **`alarmo`** group: full CLI coverage for the [Alarmo](https://github.com/nielsfaber/alarmo)
+custom integration (HACS alarm system). Alarmo exposes three API surfaces —
+the `alarmo` domain services, WebSocket reads (`alarmo/config`,
+`alarmo/areas`, …), and REST writes (`/api/alarmo/*`) — all now wrapped.
+
+### Added
+- **`alarmo arm <entity>`** — call the `alarmo/arm` service with `--mode`
+  (away/night/home/vacation/custom), `--code`, `--skip-delay`, `--force`.
+- **`alarmo disarm <entity>`** — `alarmo/disarm` service with `--code`,
+  `--skip-delay`.
+- **`alarmo enable-user <name>`** / **`alarmo disable-user <name>`** —
+  grant/revoke arm/disarm permissions for an Alarmo user.
+- **`alarmo config`** — read Alarmo's global config via the `alarmo/config`
+  WS command (code requirements, MQTT, master, ...).
+- **`alarmo config-set --data-json`** — partial config update via the
+  `/api/alarmo/config` REST view. Destructive — `--dry-run` previews the
+  body, `--yes` skips confirmation (required non-TTY).
+- **`alarmo areas`** / **`alarmo area-create`** / **`alarmo area-delete`** —
+  list, create/rename, and delete Alarmo areas (the `alarmo/areas` WS read +
+  `/api/alarmo/area` REST write). `area-delete` is destructive: `--dry-run`
+  previews, `--yes` skips confirmation.
+- **`alarmo sensor-show <entity>`** — read one sensor's full Alarmo config
+  via the `alarmo/sensors` WS command. Validates `binary_sensor.*` /
+  `sensor.*` entity domain.
+- **`alarmo sensor-remove <entity>`** — remove a sensor from Alarmo via
+  `POST /api/alarmo/sensors {"entity_id":..., "remove": true}`. The
+  original use case: removing a dead/ghost sensor that no longer exists in
+  HA but still blocks arming. Safety: `--dry-run` previews the REST body,
+  `--yes` skips confirmation; in a TTY without `--yes` it prints the
+  sensor's current config first, then prompts naming the entity and effect.
+- **`alarmo sensor-update <entity>`** — update fields on an Alarmo sensor
+  via `POST /api/alarmo/sensors`. Typed flags: `--type`
+  (door/window/motion/tamper/environmental/other), `--modes`
+  (comma-separated armed_away/armed_home/armed_night/armed_vacation/
+  armed_custom_bypass), `--allow-open`/`--no-allow-open`,
+  `--always-on`/`--no-always-on`, `--auto-bypass`/`--no-auto-bypass`,
+  `--trigger-unavailable`/`--no-trigger-unavailable`,
+  `--arm-on-close`/`--no-arm-on-close`, `--area`, `--enabled`/`--disabled`,
+  `--group`. Only fields the user actually passed on the command line are
+  sent (Click `ParameterSource` detection) — unset fields are never
+  clobbered. Same `--dry-run` / `--yes` / TTY-confirm safety as
+  `sensor-remove`.
+- **`alarmo sensors`** / **`alarmo users`** / **`alarmo automations`** /
+  **`alarmo sensor-groups`** / **`alarmo entities`** — five WS-backed list
+  readers for Alarmo's internal registries.
+- New core module `cli_anything/homeassistant/core/alarmo.py` (pure
+  functions, one per operation, callable from Python directly).
+- 93 unit tests covering core functions + CLI wiring + safety guards
+  (`tests/test_alarmo.py`).
+
 ## [1.45.0] — 2026-06-24
 
 ### Added

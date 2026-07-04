@@ -80,6 +80,7 @@ from cli_anything.homeassistant.core import conversation_advanced as conversatio
 from cli_anything.homeassistant.core import device_automation as device_automation_core
 from cli_anything.homeassistant.core import expose_entity as expose_entity_core
 from cli_anything.homeassistant.core import hacs as hacs_core
+from cli_anything.homeassistant.core import alarmo as alarmo_core
 from cli_anything.homeassistant.core import hardware_info as hardware_info_core
 from cli_anything.homeassistant.core import logger_ws as logger_ws_core
 from cli_anything.homeassistant.core import media_source as media_source_core
@@ -6017,6 +6018,323 @@ def alarm_disarm(ctx, entity_id, code):
     emit(ctx, service_shortcuts_core.alarm_disarm(
         make_client(ctx), entity_id, code=code,
     ))
+
+
+# ──────────────────────────────────────────────────────── alarmo
+
+
+@cli.group()
+def alarmo():
+    """Alarmo custom integration — arm/disarm + config/sensor/area management."""
+
+
+@alarmo.command("arm")
+@click.argument("entity_id")
+@click.option("--code", default=None, help="Alarmo user code (if required)")
+@click.option("--mode", default=None,
+              type=click.Choice(list(alarmo_core.ARM_MODES)),
+              help="Arm mode (default: panel's configured default)")
+@click.option("--skip-delay", is_flag=True, default=False,
+              help="Skip the exit delay countdown")
+@click.option("--force", is_flag=True, default=False,
+              help="Arm even if a sensor is open (bypass safety check)")
+@click.pass_context
+def alarmo_arm(ctx, entity_id, code, mode, skip_delay, force):
+    """Arm an Alarmo alarm panel."""
+    emit(ctx, alarmo_core.arm(
+        make_client(ctx), entity_id, code=code, mode=mode,
+        skip_delay=skip_delay, force=force,
+    ))
+
+
+@alarmo.command("disarm")
+@click.argument("entity_id")
+@click.option("--code", default=None, help="Alarmo user code (if required)")
+@click.option("--skip-delay", is_flag=True, default=False,
+              help="Skip the entry delay countdown")
+@click.pass_context
+def alarmo_disarm(ctx, entity_id, code, skip_delay):
+    """Disarm an Alarmo alarm panel."""
+    emit(ctx, alarmo_core.disarm(
+        make_client(ctx), entity_id, code=code, skip_delay=skip_delay,
+    ))
+
+
+@alarmo.command("enable-user")
+@click.argument("name")
+@click.pass_context
+def alarmo_enable_user(ctx, name):
+    """Re-grant arm/disarm permissions to an Alarmo user."""
+    emit(ctx, alarmo_core.enable_user(make_client(ctx), name=name))
+
+
+@alarmo.command("disable-user")
+@click.argument("name")
+@click.pass_context
+def alarmo_disable_user(ctx, name):
+    """Revoke arm/disarm permissions from an Alarmo user."""
+    emit(ctx, alarmo_core.disable_user(make_client(ctx), name=name))
+
+
+@alarmo.command("config")
+@click.pass_context
+def alarmo_config(ctx):
+    """Show Alarmo's global config (code requirements, MQTT, master, ...)."""
+    emit(ctx, alarmo_core.get_config(make_client(ctx)))
+
+
+@alarmo.command("config-set")
+@click.option("--data-json", default=None,
+              help="JSON partial config to merge (only fields you pass change)")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the REST path and JSON body; send nothing")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="Skip confirmation (required for scripted / non-TTY use)")
+@click.pass_context
+def alarmo_config_set(ctx, data_json, dry_run, yes):
+    """Update Alarmo's global config."""
+    import json as _json
+    if not data_json:
+        raise click.UsageError("--data-json is required")
+    try:
+        config = _json.loads(data_json)
+    except _json.JSONDecodeError as exc:
+        raise click.UsageError(f"invalid JSON: {exc}")
+    body = {"path": "alarmo/config", "json": config}
+    if dry_run:
+        emit(ctx, {"dry_run": True, **body})
+        return
+    if not yes and not click.confirm(
+        "Update Alarmo global config — this changes alarm system behaviour?",
+        default=False,
+    ):
+        raise click.ClickException("aborted")
+    emit(ctx, alarmo_core.update_config(make_client(ctx), config))
+
+
+@alarmo.command("areas")
+@click.pass_context
+def alarmo_areas(ctx):
+    """List all Alarmo areas."""
+    emit(ctx, alarmo_core.list_areas(make_client(ctx)))
+
+
+@alarmo.command("area-create")
+@click.option("--name", required=True, help="Display name for the area")
+@click.option("--area-id", default=None,
+              help="Pass to rename an existing area; omit to create new")
+@click.option("--modes-json", default=None,
+              help="JSON per-mode timing config (away/home/night/custom/vacation)")
+@click.pass_context
+def alarmo_area_create(ctx, name, area_id, modes_json):
+    """Create or rename an Alarmo area."""
+    import json as _json
+    modes = None
+    if modes_json:
+        try:
+            modes = _json.loads(modes_json)
+        except _json.JSONDecodeError as exc:
+            raise click.UsageError(f"invalid JSON for --modes-json: {exc}")
+    emit(ctx, alarmo_core.create_area(
+        make_client(ctx), name=name, area_id=area_id, modes=modes,
+    ))
+
+
+@alarmo.command("area-delete")
+@click.argument("area_id")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the REST path and JSON body; send nothing")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="Skip confirmation (required for scripted / non-TTY use)")
+@click.pass_context
+def alarmo_area_delete(ctx, area_id, dry_run, yes):
+    """Delete an Alarmo area by id."""
+    body = {"path": "alarmo/area",
+            "json": {"area_id": area_id, "remove": True}}
+    if dry_run:
+        emit(ctx, {"dry_run": True, **body})
+        return
+    if not yes and not click.confirm(
+        f"Delete Alarmo area {area_id!r}?", default=False,
+    ):
+        raise click.ClickException("aborted")
+    emit(ctx, alarmo_core.delete_area(make_client(ctx), area_id))
+
+
+@alarmo.command("sensors")
+@click.pass_context
+def alarmo_sensors(ctx):
+    """List all sensors registered with Alarmo."""
+    emit(ctx, alarmo_core.list_sensors(make_client(ctx)))
+
+
+@alarmo.command("sensor-show")
+@click.argument("entity_id")
+@click.pass_context
+def alarmo_sensor_show(ctx, entity_id):
+    """Show one sensor's full Alarmo config."""
+    emit(ctx, alarmo_core.sensor_show(make_client(ctx), entity_id))
+
+
+@alarmo.command("sensor-remove")
+@click.argument("entity_id")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the REST path and JSON body; send nothing")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="Skip confirmation (required for scripted / non-TTY use)")
+@click.pass_context
+def alarmo_sensor_remove(ctx, entity_id, dry_run, yes):
+    """Remove a sensor from Alarmo — it will no longer trigger or block arming."""
+    body = {"path": "alarmo/sensors",
+            "json": {"entity_id": entity_id, "remove": True}}
+    if dry_run:
+        emit(ctx, {"dry_run": True, **body})
+        return
+    # In TTY without --yes: show current config first, then confirm.
+    if not yes:
+        client = make_client(ctx)
+        try:
+            current = alarmo_core.sensor_show(client, entity_id)
+        except (KeyError, Exception):
+            current = None
+        if current is not None:
+            click.echo("Current config:")
+            click.echo(json.dumps(current, indent=2, default=str))
+        else:
+            click.echo(f"(sensor {entity_id!r} not currently registered)")
+        if not click.confirm(
+            f"Remove sensor {entity_id!r} from Alarmo — "
+            "it will no longer trigger or block arming?",
+            default=False,
+        ):
+            raise click.ClickException("aborted")
+    emit(ctx, alarmo_core.sensor_remove(make_client(ctx), entity_id))
+
+
+@alarmo.command("sensor-update")
+@click.argument("entity_id")
+@click.option("--type", "sensor_type", default=None,
+              type=click.Choice(list(alarmo_core.SENSOR_TYPES)),
+              help="Sensor type (door/window/motion/tamper/environmental/other)")
+@click.option("--modes", default=None,
+              help="Comma-separated armed modes "
+                   "(armed_away,armed_home,armed_night,armed_vacation,armed_custom_bypass)")
+@click.option("--allow-open/--no-allow-open", "allow_open", default=None,
+              help="Allow arming when this sensor is open")
+@click.option("--always-on/--no-always-on", "always_on", default=None,
+              help="Sensor is always active (triggers in all modes)")
+@click.option("--auto-bypass/--no-auto-bypass", "auto_bypass", default=None,
+              help="Automatically bypass when open at arm time")
+@click.option("--trigger-unavailable/--no-trigger-unavailable",
+              "trigger_unavailable", default=None,
+              help="Trigger the alarm when this sensor becomes unavailable")
+@click.option("--arm-on-close/--no-arm-on-close", "arm_on_close", default=None,
+              help="Arm the alarm when this sensor closes (door/window)")
+@click.option("--area", default=None, help="Area ID to assign the sensor to")
+@click.option("--enabled/--disabled", "enabled", default=None,
+              help="Enable (default) or disable the sensor in Alarmo")
+@click.option("--group", default=None, help="Sensor group ID")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the REST path and JSON body; send nothing")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="Skip confirmation (required for scripted / non-TTY use)")
+@click.pass_context
+def alarmo_sensor_update(ctx, entity_id, sensor_type, modes, allow_open,
+                          always_on, auto_bypass, trigger_unavailable,
+                          arm_on_close, area, enabled, group, dry_run, yes):
+    """Update fields on an Alarmo sensor — only fields you pass are sent."""
+    # Build the fields dict from ONLY the flags the user actually set.
+    # Click's ParameterSource tells us whether a value came from the
+    # command line, a default, or an environment variable. The keys here
+    # are the Click parameter dest names (second arg to @click.option),
+    # not the flag names.
+    sources = ctx.get_parameter_source
+    fields: dict = {}
+    # Map: Click dest name -> Alarmo API field name -> value
+    flag_map = {
+        ("sensor_type", "type"): sensor_type,
+        ("allow_open", "allow_open"): allow_open,
+        ("always_on", "always_on"): always_on,
+        ("auto_bypass", "auto_bypass"): auto_bypass,
+        ("trigger_unavailable", "trigger_unavailable"): trigger_unavailable,
+        ("arm_on_close", "arm_on_close"): arm_on_close,
+        ("area", "area"): area,
+        ("enabled", "enabled"): enabled,
+        ("group", "group"): group,
+    }
+    for dest, api_name in flag_map:
+        if sources(dest) == click.core.ParameterSource.COMMANDLINE:
+            fields[api_name] = flag_map[(dest, api_name)]
+
+    # --modes is a comma-separated string, parsed separately.
+    if sources("modes") == click.core.ParameterSource.COMMANDLINE and modes is not None:
+        parsed_modes = [m.strip() for m in modes.split(",") if m.strip()]
+        for m in parsed_modes:
+            if m not in alarmo_core.SENSOR_ARM_MODES:
+                raise click.UsageError(
+                    f"invalid mode {m!r}; must be one of "
+                    f"{', '.join(alarmo_core.SENSOR_ARM_MODES)}")
+        fields["modes"] = parsed_modes
+
+    if not fields:
+        raise click.UsageError(
+            "at least one field to update is required "
+            "(see --type, --modes, --allow-open, --area, etc.)")
+
+    body = {"path": "alarmo/sensors",
+            "json": {"entity_id": entity_id, **fields}}
+    if dry_run:
+        emit(ctx, {"dry_run": True, **body})
+        return
+
+    if not yes:
+        client = make_client(ctx)
+        try:
+            current = alarmo_core.sensor_show(client, entity_id)
+        except (KeyError, Exception):
+            current = None
+        if current is not None:
+            click.echo("Current config:")
+            click.echo(json.dumps(current, indent=2, default=str))
+        else:
+            click.echo(f"(sensor {entity_id!r} not currently registered)")
+        if not click.confirm(
+            f"Update sensor {entity_id!r} in Alarmo — "
+            f"fields: {', '.join(sorted(fields))}?",
+            default=False,
+        ):
+            raise click.ClickException("aborted")
+
+    emit(ctx, alarmo_core.sensor_update(
+        make_client(ctx), entity_id, **fields))
+
+
+@alarmo.command("users")
+@click.pass_context
+def alarmo_users(ctx):
+    """List all Alarmo users."""
+    emit(ctx, alarmo_core.list_users(make_client(ctx)))
+
+
+@alarmo.command("automations")
+@click.pass_context
+def alarmo_automations(ctx):
+    """List Alarmo's internal automations (alarm-event notifications, NOT HA automations)."""
+    emit(ctx, alarmo_core.list_automations(make_client(ctx)))
+
+
+@alarmo.command("sensor-groups")
+@click.pass_context
+def alarmo_sensor_groups(ctx):
+    """List Alarmo sensor groups."""
+    emit(ctx, alarmo_core.list_sensor_groups(make_client(ctx)))
+
+
+@alarmo.command("entities")
+@click.pass_context
+def alarmo_entities(ctx):
+    """List all alarm_control_panel entities managed by Alarmo."""
+    emit(ctx, alarmo_core.list_entities(make_client(ctx)))
 
 
 # ──────────────────────────────────────────────────────── search
