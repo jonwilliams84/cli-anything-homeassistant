@@ -4,6 +4,16 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.46.1] — 2026-07-04
+
+### Fixed
+- `render_template` (frontend-prefs / template-preview path) posted to
+  `api/template`, which the backend's `_url()` double-prefixed to
+  `/api/api/template` — the render request never hit HA's real
+  `/api/template` endpoint. Corrected to `client.post("template", …)`,
+  matching `core/template.py`. Tests updated (they had asserted the
+  double-prefixed path, so the bug stayed green).
+
 ## [1.46.0] — 2026-07-04
 
 New **`alarmo`** group: full CLI coverage for the [Alarmo](https://github.com/nielsfaber/alarmo)

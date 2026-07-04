@@ -9,7 +9,7 @@ WS message types covered:
   template/start_preview  — start_template_preview
 
 REST endpoint covered:
-  POST api/template       — render_template
+  POST template       — render_template
 """
 
 from __future__ import annotations
@@ -92,17 +92,17 @@ class TestFrontendPrefs:
     # ────────────────────────────── render_template ──────────────────────────
 
     def test_render_template_happy_path_payload(self, fake_client):
-        """render_template POSTs to ``api/template`` with the template string."""
-        fake_client.set("POST", "api/template", "on")
+        """render_template POSTs to ``template`` with the template string."""
+        fake_client.set("POST", "template", "on")
         frontend_prefs.render_template(fake_client, template="{{ states('light.bed') }}")
         call = fake_client.calls[-1]
         assert call["verb"] == "POST"
-        assert call["path"] == "api/template"
+        assert call["path"] == "template"
         assert call["payload"]["template"] == "{{ states('light.bed') }}"
 
     def test_render_template_with_variables_payload(self, fake_client):
         """render_template includes variables in the POST body when supplied."""
-        fake_client.set("POST", "api/template", "Hello world")
+        fake_client.set("POST", "template", "Hello world")
         frontend_prefs.render_template(
             fake_client,
             template="{{ greeting }} world",
@@ -113,7 +113,7 @@ class TestFrontendPrefs:
 
     def test_render_template_with_timeout_payload(self, fake_client):
         """render_template includes timeout in the POST body when supplied."""
-        fake_client.set("POST", "api/template", "5")
+        fake_client.set("POST", "template", "5")
         frontend_prefs.render_template(
             fake_client, template="{{ 2 + 3 }}", timeout=5.0
         )
@@ -122,14 +122,14 @@ class TestFrontendPrefs:
 
     def test_render_template_no_variables_in_payload(self, fake_client):
         """render_template omits variables from POST body when not supplied."""
-        fake_client.set("POST", "api/template", "result")
+        fake_client.set("POST", "template", "result")
         frontend_prefs.render_template(fake_client, template="{{ 1 + 1 }}")
         call = fake_client.calls[-1]
         assert "variables" not in call["payload"]
 
     def test_render_template_returns_string(self, fake_client):
         """render_template returns the rendered string from the response."""
-        fake_client.set("POST", "api/template", "unavailable")
+        fake_client.set("POST", "template", "unavailable")
         result = frontend_prefs.render_template(
             fake_client, template="{{ states('sensor.temp') }}"
         )
