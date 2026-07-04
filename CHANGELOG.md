@@ -4,6 +4,14 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.46.2] — 2026-07-04
+
+### Documentation
+- Document the `alarmo` command group in the packaged `SKILL.md` — the
+  command-group index row and a pitfall note on the destructive sensor/area/
+  config writes (weaken a home alarm; `--dry-run`/`--yes`; ghost-sensor
+  removal). The 1.46.0 group shipped without its skill-doc entry.
+
 ## [1.46.1] — 2026-07-04
 
 ### Fixed

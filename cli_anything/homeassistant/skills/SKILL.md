@@ -118,6 +118,7 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `shopping-list`    | Default HA shopping list — list/add/update/remove/clear/reorder.                               |
 | `todo`             | `todo.*` integrations — list/add/update/complete/remove/move/clear.                            |
 | `lock`/`alarm`     | Shortcut groups: lock/unlock/open; arm-away/arm-home/arm-night/arm-vacation/disarm.            |
+| `alarmo`           | [Alarmo](https://github.com/nielsfaber/alarmo) HACS alarm integration: `arm`/`disarm` (services, `--mode`/`--code`/`--skip-delay`/`--force`), `enable-user`/`disable-user`, `config`/`config-set`, `areas`/`area-create`/`area-delete`, `sensors`/`sensor-show`/`sensor-remove`/`sensor-update`, `users`/`automations`/`sensor-groups`/`entities`. Sensor/config/area writes hit `/api/alarmo/*`; reads over WS. Destructive verbs (`sensor-remove`, `sensor-update`, `area-delete`, `config-set`) carry `--dry-run`/`--yes`. |
 | `updates`          | `update.*` entities: list, install, install-all, skip, clear-skipped.                          |
 | `zone`             | Zone registry (storage zones via `config/zone/*` WS): list/state-list/find/create/update/delete; `entities` lists person/device_tracker entities currently inside. |
 | `webhook`          | Webhook discovery + triggering: `list` (registered + automations + mobile_app), `trigger` (POST/PUT/GET/HEAD with guard), `generate-id`, `cloudhooks`, `cloudhook-create`/`-delete`. |
@@ -413,8 +414,17 @@ These are paid in lost time. Read them before mutating anything.
 - **Destructive verbs require `--yes` when scripted.** Affects (v1.39+):
   `automation save`, `script save`, `lovelace config save`, `shopping-list
   remove`/`clear-completed`, `todo remove`/`clear-completed`, `system
-  reload-core-config`/`reload-all`, `state delete`, `tag delete`. Without
+  reload-core-config`/`reload-all`, `state delete`, `tag delete`,
+  `alarmo sensor-remove`/`sensor-update`/`area-delete`/`config-set`. Without
   `--yes` and without a TTY, the command aborts rather than blocking.
+- **`alarmo` mutates a home alarm — treat with care.** `sensor-remove` and
+  `sensor-update --no-trigger-unavailable` *weaken* the alarm (the sensor no
+  longer triggers or blocks arming). Both support `--dry-run` (prints the exact
+  REST body, sends nothing) and print the sensor's current config before a TTY
+  confirm, so the change is diffable/reversible. REST writes go to
+  `/api/alarmo/*`; a common failure is arming being blocked by a stale/ghost
+  sensor left `unavailable` — remove it with `alarmo sensor-remove` rather than
+  force-bypassing blindly.
 - **Lovelace dashboards** — prefer `lovelace view get` / `view set` /
   `section ...` over re-pushing the full config. The full-config write is
   destructive and easy to corrupt. **Card writes auto-validate**
