@@ -815,7 +815,7 @@ def service_call(ctx, domain_arg, service_arg, data, target, return_response, dr
         make_client(ctx), domain_arg, service_arg,
         service_data=sd, target=tgt, return_response=return_response,
     )
-    emit(ctx, result if result is not None else {"called": f"{domain_arg}.{service_arg}"})
+    emit(ctx, result if result else {"called": f"{domain_arg}.{service_arg}"})
 
 
 # ──────────────────────────────────────────────────────────────────────── event

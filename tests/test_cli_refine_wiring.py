@@ -93,6 +93,42 @@ class TestSceneCli:
         assert fake_client.calls[-1]["path"] == "services/scene/reload"
 
 
+# ──────────────────────────────────────────────────────────────────── service call
+
+class TestServiceCallCli:
+    """`service call` result handling — particularly the empty-result
+    fallback. HA's REST response for many stateless service calls (e.g.
+    rest_command/shell_command — anything that changes no entity state) is
+    literally `[]`. Plain mode must not silently print nothing on success,
+    since that's indistinguishable from a hang or a swallowed error.
+    """
+
+    def test_empty_list_result_prints_fallback_in_plain_mode(self, runner, fake_client):
+        fake_client.set_service("rest_command", "foo", [])
+        r = _invoke(runner, "service", "call", "rest_command", "foo",
+                    json_out=False)
+        assert r.exit_code == 0, r.output
+        assert r.output.strip() != ""
+        assert "rest_command.foo" in r.output
+
+    def test_empty_list_result_prints_fallback_in_json_mode(self, runner, fake_client):
+        fake_client.set_service("rest_command", "foo", [])
+        r = _invoke(runner, "service", "call", "rest_command", "foo",
+                    json_out=True)
+        assert r.exit_code == 0, r.output
+        data = json.loads(r.output)
+        assert data == {"called": "rest_command.foo"}
+
+    def test_meaningful_result_passes_through(self, runner, fake_client):
+        fake_client.set_service("light", "turn_on",
+                                 [{"entity_id": "light.kitchen", "state": "on"}])
+        r = _invoke(runner, "service", "call", "light", "turn_on",
+                    "-T", "entity_id=light.kitchen", json_out=True)
+        assert r.exit_code == 0, r.output
+        data = json.loads(r.output)
+        assert data == [{"entity_id": "light.kitchen", "state": "on"}]
+
+
 # ──────────────────────────────────────────────────────────────────── weather
 
 class TestWeatherCli:

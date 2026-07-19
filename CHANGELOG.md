@@ -4,6 +4,25 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.46.4] — 2026-07-19
+
+### Fixed
+- **`service call`** in plain (non-`--json`) mode printed nothing at all
+  when the service response was an empty list — which is exactly what
+  many stateless service calls return on success (HA's REST response for
+  `rest_command.*`/`shell_command.*`/anything that changes no entity
+  state is literally `[]`, the empty "changed_states" array). That made a
+  successful call visually indistinguishable from a hang or a silently
+  swallowed error. `service_call`'s existing `result if result is not
+  None else {"called": ...}` fallback only caught `None`, not `[]`.
+  Changed to `result if result else {"called": ...}` so any falsy result
+  (`None`, `[]`, `{}`) now falls back to the `{"called": ...}` message,
+  while genuinely populated results (e.g. `--return-response` payloads, or
+  services that do report `changed_states`) still pass through unchanged.
+  Scoped to `service_call` only — `emit()` itself is untouched, since an
+  empty list legitimately means "nothing found" for many other commands
+  (e.g. `entity list`).
+
 ## [1.46.3] — 2026-07-19
 
 ### Added
