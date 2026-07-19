@@ -4623,7 +4623,9 @@ def blueprint_import(ctx, url):
     """Import a blueprint from a URL (GitHub, gist, raw .yaml).
 
     Returns metadata + suggested_filename. Use `blueprint save` next to
-    persist it under `blueprints/<domain>/<path>.yaml`.
+    persist it under `blueprints/<domain>/<path>.yaml`. Rejects URLs
+    pointing at localhost/private/link-local/reserved hosts — HA fetches
+    this URL itself server-side, so an unrestricted URL here is an SSRF.
     """
     emit(ctx, blueprints_core.import_blueprint(make_client(ctx), url=url))
 

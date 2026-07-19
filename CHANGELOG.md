@@ -4,6 +4,23 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.47.0] — 2026-07-19
+
+### Security
+- **`blueprint import`** (`blueprints.import_blueprint`) previously only checked
+  that a supplied URL started with `http://`/`https://` before handing it to
+  HA's `blueprint/import` WebSocket command — which makes HA itself fetch that
+  URL server-side. Nothing stopped it pointing at `http://169.254.169.254/...`
+  (a cloud metadata endpoint), `http://localhost:...`, or any RFC1918 private
+  address — a classic SSRF (Server-Side Request Forgery). Added
+  `_is_internal_host()` (loopback/link-local/private/reserved/unspecified/
+  multicast, IPv6-aware, plus bare `localhost`) and reject any import URL
+  resolving to one before the WS call is made. Genuine public URLs (GitHub,
+  gist, raw file hosts) are unaffected. 9 new tests: 8 parametrized rejection
+  cases (`127.0.0.1`, `169.254.169.254`, `localhost`, `10.x`, `::1`, `::`,
+  `192.168.x`, `172.16.x`) + 1 confirming a real public URL still passes
+  through unchanged.
+
 ## [1.46.4] — 2026-07-19
 
 ### Fixed

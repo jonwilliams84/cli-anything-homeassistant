@@ -269,3 +269,31 @@ class TestBlueprints:
                 fake_client, domain="automation",
                 path="my_bp.yaml", inputs=["not", "a", "dict"]
             )
+
+    # ──────────────────────────────────────── SSRF regression tests ─────────
+
+    @pytest.mark.parametrize(
+        "bad_url",
+        [
+            "http://127.0.0.1",
+            "http://169.254.169.254",
+            "http://localhost",
+            "http://10.0.0.5",
+            "http://[::1]",
+            "http://[::]",
+            "http://192.168.1.1",
+            "http://172.16.0.1",
+        ],
+    )
+    def test_import_blueprint_rejects_internal_hosts(self, fake_client, bad_url):
+        """import_blueprint must reject loopback, link-local, and private hosts."""
+        with pytest.raises(ValueError, match="non-public host"):
+            blueprints.import_blueprint(fake_client, url=bad_url)
+
+    def test_import_blueprint_accepts_public_url(self, fake_client):
+        """import_blueprint still accepts normal public https URLs unchanged."""
+        url = "https://raw.githubusercontent.com/example/blueprint.yaml"
+        fake_client.set_ws("blueprint/import", {"ok": True})
+        result = blueprints.import_blueprint(fake_client, url=url)
+        assert fake_client.ws_calls[-1]["payload"] == {"url": url}
+        assert result == {"ok": True}

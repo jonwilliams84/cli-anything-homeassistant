@@ -15,9 +15,34 @@ Domain values: ``'automation'``, ``'script'``, ``'template'``.
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
+from urllib.parse import urlparse
 
 VALID_DOMAINS = ("automation", "script", "template")
+
+
+def _is_internal_host(host: str) -> bool:
+    """Return True if *host* is localhost or a non-public IP address."""
+    if not host:
+        return True
+    if host.lower() == "localhost":
+        return True
+    # Strip IPv6 zone IDs before parsing.
+    ip_str = host.split("%", 1)[0]
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        # Not an IP literal; assume public hostname.
+        return False
+    return (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_private
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+    )
 
 
 def _check_domain(domain: str) -> None:
@@ -66,6 +91,12 @@ def import_blueprint(client, *, url: str) -> dict:
     if not (url.startswith("http://") or url.startswith("https://")):
         raise ValueError(
             "url must start with http:// or https://"
+        )
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if _is_internal_host(host):
+        raise ValueError(
+            f"url points to a non-public host and is not allowed: {host!r}"
         )
     return client.ws_call("blueprint/import", {"url": url}) or {}
 
