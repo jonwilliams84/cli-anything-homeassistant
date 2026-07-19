@@ -2981,6 +2981,16 @@ def automation_save(ctx, entity_id, config_file, dry_run, yes):
     emit(ctx, {"saved": entity_id, "result": automation_core.save_config(make_client(ctx), entity_id, cfg)})
 
 
+@automation.command("delete")
+@click.argument("entity_id")
+@click.confirmation_option(prompt="Delete this automation?")
+@click.pass_context
+def automation_delete(ctx, entity_id):
+    """Delete a UI-managed automation."""
+    result = automation_core.delete_config(make_client(ctx), entity_id)
+    emit(ctx, {"deleted": entity_id, "result": result})
+
+
 @script.command("get")
 @click.argument("entity_id")
 @click.option("--out", "-o", default=None, type=click.Path(),
@@ -3029,6 +3039,16 @@ def script_save(ctx, entity_id, config_file, dry_run, yes):
     ):
         raise click.ClickException("aborted")
     emit(ctx, {"saved": entity_id, "result": script_core.save_config(make_client(ctx), entity_id, cfg)})
+
+
+@script.command("delete")
+@click.argument("entity_id")
+@click.confirmation_option(prompt="Delete this script?")
+@click.pass_context
+def script_delete(ctx, entity_id):
+    """Delete a UI-managed script."""
+    result = script_core.delete_config(make_client(ctx), entity_id)
+    emit(ctx, {"deleted": entity_id, "result": result})
 
 
 # ──────────────────────────────────────────────────────────────────────── mqtt subscribe / publish

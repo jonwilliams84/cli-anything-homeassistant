@@ -48,6 +48,17 @@ def save_config(client, entity_id: str, config: dict) -> dict:
     return client.post(f"config/script/config/{object_id}", config)
 
 
+def delete_config(client, entity_id: str):
+    """Delete a UI-managed script.
+
+    Uses the same REST endpoint as `save_config` (DELETE instead of POST).
+    """
+    if not entity_id.startswith("script."):
+        raise ValueError(f"Expected a script entity_id, got: {entity_id}")
+    object_id = entity_id.split(".", 1)[1]
+    return client.delete(f"config/script/config/{object_id}")
+
+
 def _script_item_id(client, entity_id: str) -> str:
     """The trace API addresses scripts by their `object_id` (the part after the dot).
 

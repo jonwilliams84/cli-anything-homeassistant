@@ -4,6 +4,20 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.46.3] — 2026-07-19
+
+### Added
+- **`automation delete <entity_id>`** / **`script delete <entity_id>`** —
+  proper delete for UI-managed automations/scripts, hitting HA's real
+  `DELETE config/automation/config/{id}` / `DELETE config/script/config/
+  {object_id}` REST endpoints (the same URL shape `get`/`save` already use,
+  just DELETE instead of POST/GET). Previously the only way to remove one
+  was the generic `entity remove` (WS `config/entity_registry/remove`),
+  which only tears out the registry entry, not the underlying automation/
+  script config, and isn't documented as the delete path for these.
+  Confirmation-gated like the other destructive verbs (`--yes` to skip the
+  prompt when scripted).
+
 ## [1.46.2] — 2026-07-04
 
 ### Documentation

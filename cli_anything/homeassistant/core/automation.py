@@ -119,4 +119,17 @@ def save_config(client, entity_id: str, config: dict) -> dict:
     return client.post(f"config/automation/config/{auto_id}", config)
 
 
+def delete_config(client, entity_id: str):
+    """Delete a UI-managed automation.
+
+    Uses the same REST endpoint as `save_config` (DELETE instead of POST).
+    Resolves the numeric `id` via `_automation_item_id` (same lookup the
+    trace API uses).
+    """
+    if not entity_id.startswith("automation."):
+        raise ValueError(f"Expected an automation entity_id, got: {entity_id}")
+    item_id = _automation_item_id(client, entity_id)
+    return client.delete(f"config/automation/config/{item_id}")
+
+
 automation_reload = reload

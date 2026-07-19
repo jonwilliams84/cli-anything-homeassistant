@@ -2858,6 +2858,27 @@ class TestAutomationScriptConfig:
         with pytest.raises(ValueError):
             script_core.save_config(fake_client, "automation.x", {"alias": "X"})
 
+    def test_automation_delete_config(self, fake_client):
+        fake_client.set_ws("automation/config", {"config": {"id": "42", "alias": "x"}})
+        automation_core.delete_config(fake_client, "automation.x")
+        last = fake_client.calls[-1]
+        assert last["verb"] == "DELETE"
+        assert last["path"] == "config/automation/config/42"
+
+    def test_automation_delete_validates_id(self, fake_client):
+        with pytest.raises(ValueError):
+            automation_core.delete_config(fake_client, "switch.x")
+
+    def test_script_delete_config(self, fake_client):
+        script_core.delete_config(fake_client, "script.bedtime")
+        last = fake_client.calls[-1]
+        assert last["verb"] == "DELETE"
+        assert last["path"] == "config/script/config/bedtime"
+
+    def test_script_delete_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            script_core.delete_config(fake_client, "automation.x")
+
 
 # ────────────────────────────────────────────────────────── lovelace_cards (editor)
 

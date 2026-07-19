@@ -81,8 +81,8 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `entity-references`| Find every automation/script/scene/dashboard that names a given entity.                        |
 | `helpers`          | input_select / input_boolean / input_button / input_number / input_text / input_datetime / counter / timer / schedule. |
 | `template-helper`  | Create/update template-derived sensors/binary_sensors/etc.                                     |
-| `automation`       | `list`, `trigger`, `toggle`, `turn-on`/`turn-off`, `reload`, traces (`traces`; `trace <entity> [run_id] [--vars]` — run_id positional or `--run-id`; `--vars` flattens to per-step changed vars + service calls). |
-| `script`           | `list`, `run`, `reload`, `traces`, `trace <entity> [run_id] [--vars]`.                          |
+| `automation`       | `list`, `trigger`, `toggle`, `turn-on`/`turn-off`, `reload`, `get`/`save`/`delete` (UI-managed config), traces (`traces`; `trace <entity> [run_id] [--vars]` — run_id positional or `--run-id`; `--vars` flattens to per-step changed vars + service calls). |
+| `script`           | `list`, `run`, `reload`, `get`/`save`/`delete` (UI-managed config), `traces`, `trace <entity> [run_id] [--vars]`. |
 | `scene`            | `list`, `activate`, `apply` (ad-hoc), `create` (snapshot), `reload`.                            |
 | `blueprint`        | `list`, `import`, `save`, `delete`, `substitute` (dry-run render).                              |
 | `config-entry`     | List/get/reload/delete/update + options flows (`options-init`/`options-configure`/`options-set`). |
@@ -417,6 +417,13 @@ These are paid in lost time. Read them before mutating anything.
   reload-core-config`/`reload-all`, `state delete`, `tag delete`,
   `alarmo sensor-remove`/`sensor-update`/`area-delete`/`config-set`. Without
   `--yes` and without a TTY, the command aborts rather than blocking.
+- **`automation delete <entity_id>` / `script delete <entity_id>`** (v1.46.3+)
+  hit HA's UI-managed-config DELETE endpoints directly (`DELETE
+  config/automation/config/{id}` / `DELETE config/script/config/{object_id}`)
+  — the correct way to remove an automation/script, as opposed to the
+  generic `entity remove` (which only tears the registry entry out, not the
+  underlying automation/script config). Both are confirmation-gated like the
+  other destructive verbs above; pass `--yes` when scripted.
 - **`alarmo` mutates a home alarm — treat with care.** `sensor-remove` and
   `sensor-update --no-trigger-unavailable` *weaken* the alarm (the sensor no
   longer triggers or blocks arming). Both support `--dry-run` (prints the exact
