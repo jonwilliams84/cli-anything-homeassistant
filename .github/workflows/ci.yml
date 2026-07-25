@@ -1,0 +1,99 @@
+name: CI
+
+# Blocking gate. Unlike the advisory security scan, every step here is allowed
+# to fail the build - that is the point.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests + Coverage
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+          pip install pytest pytest-cov
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests \
+            --cov=cli_anything --cov-report=term-missing \
+            --cov-report=xml --cov-fail-under=69 \
+            -q --durations=10
+      - name: Upload coverage
+        if: always() && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  lint:
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install ruff
+        run: pip install ruff
+      - name: Lint (blocking rules)
+        run: ruff check cli_anything/ --output-format=github
+      - name: Format check
+        run: ruff format --check --diff cli_anything/
+
+  bandit:
+    name: Bandit (blocking, medium+)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install bandit
+        run: pip install bandit
+      - name: Scan production code
+        run: |
+          bandit -r cli_anything/ -ll \
+            -x '*/tests/*,*/test_*.py,*/conftest.py'
+
+  ci-ok:
+    name: CI OK
+    runs-on: ubuntu-latest
+    needs: [test, lint, bandit]
+    if: always()
+    steps:
+      - name: Verify all gates passed
+        run: |
+          echo "test=${{ needs.test.result }}"
+          echo "lint=${{ needs.lint.result }}"
+          echo "bandit=${{ needs.bandit.result }}"
+          if [ "${{ needs.test.result }}" != "success" ] \
+            || [ "${{ needs.lint.result }}" != "success" ] \
+            || [ "${{ needs.bandit.result }}" != "success" ]; then
+            echo "::error::One or more CI gates failed"
+            exit 1
+          fi
+          echo "All gates green"
