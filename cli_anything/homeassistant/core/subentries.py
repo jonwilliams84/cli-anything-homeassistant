@@ -34,8 +34,7 @@ def list_subentries(client, entry_id: str) -> list[dict]:
     """
     if not entry_id:
         raise ValueError("entry_id is required")
-    data = client.ws_call("config_entries/subentries/list",
-                            {"entry_id": entry_id})
+    data = client.ws_call("config_entries/subentries/list", {"entry_id": entry_id})
     return list(data) if isinstance(data, list) else []
 
 
@@ -53,10 +52,13 @@ def find_subentry(client, entry_id: str, ident: str) -> Optional[dict]:
     return None
 
 
-def list_all(client, *,
-              subentry_type: Optional[str] = None,
-              title_pattern: Optional[str] = None,
-              domain: Optional[str] = None) -> list[dict]:
+def list_all(
+    client,
+    *,
+    subentry_type: Optional[str] = None,
+    title_pattern: Optional[str] = None,
+    domain: Optional[str] = None,
+) -> list[dict]:
     """List subentries across EVERY config entry.
 
     Useful when you don't know which integration owns a subentry. Each row is
@@ -81,8 +83,7 @@ def list_all(client, *,
         if not eid:
             continue
         try:
-            subs = client.ws_call("config_entries/subentries/list",
-                                    {"entry_id": eid}) or []
+            subs = client.ws_call("config_entries/subentries/list", {"entry_id": eid}) or []
         except Exception:
             continue
         for s in subs:
@@ -90,17 +91,18 @@ def list_all(client, *,
                 continue
             if p and p not in (s.get("title") or "").lower():
                 continue
-            out.append({
-                **s,
-                "entry_id": eid,
-                "entry_title": e.get("title"),
-                "entry_domain": e.get("domain"),
-            })
+            out.append(
+                {
+                    **s,
+                    "entry_id": eid,
+                    "entry_title": e.get("title"),
+                    "entry_domain": e.get("domain"),
+                }
+            )
     return out
 
 
-def _init_reconfigure(client, *, entry_id: str, subentry_id: str,
-                        subentry_type: str) -> dict:
+def _init_reconfigure(client, *, entry_id: str, subentry_id: str, subentry_type: str) -> dict:
     """Open a reconfigure flow and return its first-step descriptor."""
     return client.post(
         "config/config_entries/subentries/flow",
@@ -163,9 +165,9 @@ def read_subentry(client, entry_id: str, ident: str) -> dict:
     }
 
 
-def reconfigure(client, entry_id: str, ident: str,
-                 overrides: dict, *,
-                 dry_run: bool = False) -> dict:
+def reconfigure(
+    client, entry_id: str, ident: str, overrides: dict, *, dry_run: bool = False
+) -> dict:
     """Reconfigure a subentry by merging `overrides` into the current options.
 
     Fields not in `overrides` are preserved at their current value. The merge

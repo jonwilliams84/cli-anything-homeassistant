@@ -26,21 +26,27 @@ def list_engines(client) -> list[dict]:
         if not eid.startswith("tts."):
             continue
         attrs = s.get("attributes", {}) or {}
-        rows.append({
-            "entity_id": eid,
-            "friendly_name": attrs.get("friendly_name"),
-            "default_language": attrs.get("default_language"),
-            "supported_languages": attrs.get("supported_languages"),
-        })
+        rows.append(
+            {
+                "entity_id": eid,
+                "friendly_name": attrs.get("friendly_name"),
+                "default_language": attrs.get("default_language"),
+                "supported_languages": attrs.get("supported_languages"),
+            }
+        )
     return rows
 
 
-def speak(client, *, tts_entity: str,
-          media_player_entity: str,
-          message: str,
-          language: Optional[str] = None,
-          options: Optional[dict] = None,
-          cache: bool = True) -> Any:
+def speak(
+    client,
+    *,
+    tts_entity: str,
+    media_player_entity: str,
+    message: str,
+    language: Optional[str] = None,
+    options: Optional[dict] = None,
+    cache: bool = True,
+) -> Any:
     """Have a TTS engine speak `message` through a media_player entity.
 
     `tts_entity` is the speech-synth engine; `media_player_entity` is where
@@ -49,9 +55,7 @@ def speak(client, *, tts_entity: str,
     if not tts_entity.startswith("tts."):
         raise ValueError(f"expected tts.* entity_id, got {tts_entity!r}")
     if not media_player_entity.startswith("media_player."):
-        raise ValueError(
-            f"expected media_player.* entity_id, got {media_player_entity!r}"
-        )
+        raise ValueError(f"expected media_player.* entity_id, got {media_player_entity!r}")
     if not message:
         raise ValueError("message is required")
     data: dict[str, Any] = {
@@ -59,10 +63,14 @@ def speak(client, *, tts_entity: str,
         "message": message,
         "cache": bool(cache),
     }
-    if language: data["language"] = language
-    if options:  data["options"] = options
+    if language:
+        data["language"] = language
+    if options:
+        data["options"] = options
     return services_core.call_service(
-        client, "tts", "speak",
+        client,
+        "tts",
+        "speak",
         service_data=data,
         target={"entity_id": tts_entity},
     )
@@ -76,5 +84,4 @@ def clear_cache(client, tts_entity: Optional[str] = None) -> Any:
         target = {"entity_id": tts_entity}
     else:
         target = None
-    return services_core.call_service(client, "tts", "clear_cache",
-                                       target=target)
+    return services_core.call_service(client, "tts", "clear_cache", target=target)

@@ -28,36 +28,50 @@ def find_label(client, ident: str) -> Optional[dict]:
     return None
 
 
-def create(client, *, name: str,
-            color: Optional[str] = None,
-            icon: Optional[str] = None,
-            description: Optional[str] = None) -> dict:
+def create(
+    client,
+    *,
+    name: str,
+    color: Optional[str] = None,
+    icon: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
     if not name:
         raise ValueError("name is required")
     payload: dict[str, Any] = {"name": name}
-    if color:        payload["color"] = color
-    if icon:         payload["icon"] = icon
-    if description:  payload["description"] = description
+    if color:
+        payload["color"] = color
+    if icon:
+        payload["icon"] = icon
+    if description:
+        payload["description"] = description
     return client.ws_call("config/label_registry/create", payload) or {}
 
 
-def update(client, label_id: str, *,
-            name: Optional[str] = None,
-            color: Optional[str] = None,
-            icon: Optional[str] = None,
-            description: Optional[str] = None) -> dict:
+def update(
+    client,
+    label_id: str,
+    *,
+    name: Optional[str] = None,
+    color: Optional[str] = None,
+    icon: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
     if not label_id:
         raise ValueError("label_id is required")
     payload: dict[str, Any] = {"label_id": label_id}
-    if name is not None:        payload["name"] = name
-    if color is not None:       payload["color"] = color
-    if icon is not None:        payload["icon"] = icon
-    if description is not None: payload["description"] = description
+    if name is not None:
+        payload["name"] = name
+    if color is not None:
+        payload["color"] = color
+    if icon is not None:
+        payload["icon"] = icon
+    if description is not None:
+        payload["description"] = description
     return client.ws_call("config/label_registry/update", payload) or {}
 
 
 def delete(client, label_id: str) -> Any:
     if not label_id:
         raise ValueError("label_id is required")
-    return client.ws_call("config/label_registry/delete",
-                            {"label_id": label_id})
+    return client.ws_call("config/label_registry/delete", {"label_id": label_id})

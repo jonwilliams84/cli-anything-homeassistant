@@ -14,7 +14,9 @@ def run(client, entity_id: str, variables: dict | None = None) -> dict:
     if not entity_id.startswith("script."):
         raise ValueError(f"Expected a script entity_id, got: {entity_id}")
     return services_core.call_service(
-        client, "script", "turn_on",
+        client,
+        "script",
+        "turn_on",
         service_data={"variables": variables} if variables else None,
         target={"entity_id": entity_id},
     )
@@ -75,8 +77,7 @@ def list_traces(client, entity_id: str) -> list[dict]:
     HA keeps a small ring buffer (default 5) per script.
     """
     item_id = _script_item_id(client, entity_id)
-    result = client.ws_call("trace/list", {"domain": "script",
-                                              "item_id": item_id})
+    result = client.ws_call("trace/list", {"domain": "script", "item_id": item_id})
     return result if isinstance(result, list) else []
 
 
@@ -87,16 +88,16 @@ def get_trace(client, entity_id: str, run_id: str | None = None) -> dict:
     """
     item_id = _script_item_id(client, entity_id)
     if run_id is None:
-        traces = client.ws_call("trace/list", {"domain": "script",
-                                                  "item_id": item_id}) or []
+        traces = client.ws_call("trace/list", {"domain": "script", "item_id": item_id}) or []
         if not traces:
             return {}
         run_id = traces[-1].get("run_id")
         if not run_id:
             return {}
-    return client.ws_call("trace/get", {"domain": "script",
-                                            "item_id": item_id,
-                                            "run_id": run_id}) or {}
+    return (
+        client.ws_call("trace/get", {"domain": "script", "item_id": item_id, "run_id": run_id})
+        or {}
+    )
 
 
 script_reload = reload

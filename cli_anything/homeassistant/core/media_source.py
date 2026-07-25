@@ -18,6 +18,7 @@ from __future__ import annotations
 # browse_media — WS media_source/browse_media
 # ════════════════════════════════════════════════════════════════════════
 
+
 def browse_media(client, *, media_content_id: str | None = None) -> dict:
     """Browse available media by media content ID.
 
@@ -37,6 +38,7 @@ def browse_media(client, *, media_content_id: str | None = None) -> dict:
 # resolve_media — WS media_source/resolve_media
 # ════════════════════════════════════════════════════════════════════════
 
+
 def resolve_media(client, *, media_content_id: str) -> dict:
     """Resolve media to a playable URL.
 
@@ -54,6 +56,7 @@ def resolve_media(client, *, media_content_id: str) -> dict:
 # ════════════════════════════════════════════════════════════════════════
 # local_source_remove — WS media_source/local_source/remove
 # ════════════════════════════════════════════════════════════════════════
+
 
 def local_source_remove(client, *, media_content_id: str) -> dict:
     """Remove a local media file.

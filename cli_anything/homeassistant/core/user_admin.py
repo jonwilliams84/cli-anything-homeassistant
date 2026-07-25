@@ -15,8 +15,9 @@ Wraps the HA WebSocket API surface exposed by:
 from __future__ import annotations
 
 
-def create_user(client, *, name: str, group_ids: list[str] | None = None,
-                local_only: bool | None = None) -> dict:
+def create_user(
+    client, *, name: str, group_ids: list[str] | None = None, local_only: bool | None = None
+) -> dict:
     """Create a new user in Home Assistant.
 
     Sends ``config/auth/create`` via WebSocket.
@@ -37,10 +38,15 @@ def create_user(client, *, name: str, group_ids: list[str] | None = None,
     return client.ws_call("config/auth/create", payload)
 
 
-def update_user(client, *, user_id: str, name: str | None = None,
-                group_ids: list[str] | None = None,
-                local_only: bool | None = None,
-                is_active: bool | None = None) -> dict:
+def update_user(
+    client,
+    *,
+    user_id: str,
+    name: str | None = None,
+    group_ids: list[str] | None = None,
+    local_only: bool | None = None,
+    is_active: bool | None = None,
+) -> dict:
     """Update an existing user.
 
     Sends ``config/auth/update`` via WebSocket.
@@ -58,8 +64,7 @@ def update_user(client, *, user_id: str, name: str | None = None,
     """
     if not user_id:
         raise ValueError("user_id must be a non-empty string")
-    if name is None and group_ids is None and local_only is None \
-            and is_active is None:
+    if name is None and group_ids is None and local_only is None and is_active is None:
         raise ValueError("pass at least one of name/group_ids/local_only/is_active")
     payload: dict = {"user_id": user_id}
     if name is not None:
@@ -73,8 +78,7 @@ def update_user(client, *, user_id: str, name: str | None = None,
     return client.ws_call("config/auth/update", payload)
 
 
-def create_credential(client, *, user_id: str, username: str,
-                      password: str) -> dict:
+def create_credential(client, *, user_id: str, username: str, password: str) -> dict:
     """Create homeassistant-provider credentials for a user.
 
     Sends ``config/auth_provider/homeassistant/create`` via WebSocket.
@@ -114,8 +118,7 @@ def delete_credential(client, *, username: str) -> dict:
     return client.ws_call("config/auth_provider/homeassistant/delete", payload)
 
 
-def change_password(client, *, current_password: str,
-                    new_password: str) -> dict:
+def change_password(client, *, current_password: str, new_password: str) -> dict:
     """Change the current user's password via the homeassistant provider.
 
     Sends ``config/auth_provider/homeassistant/change_password`` via WebSocket.
@@ -135,5 +138,4 @@ def change_password(client, *, current_password: str,
         "current_password": current_password,
         "new_password": new_password,
     }
-    return client.ws_call("config/auth_provider/homeassistant/change_password",
-                          payload)
+    return client.ws_call("config/auth_provider/homeassistant/change_password", payload)

@@ -28,12 +28,12 @@ def list_scenes(client) -> list[dict]:
     states = client.get("states")
     if not isinstance(states, list):
         return []
-    return [s for s in states if isinstance(s, dict)
-            and (s.get("entity_id") or "").startswith("scene.")]
+    return [
+        s for s in states if isinstance(s, dict) and (s.get("entity_id") or "").startswith("scene.")
+    ]
 
 
-def activate(client, entity_id: str, *,
-             transition: float | None = None) -> dict:
+def activate(client, entity_id: str, *, transition: float | None = None) -> dict:
     """Activate a stored scene — POST services/scene/turn_on.
 
     ``transition`` — optional fade time in seconds (lights/covers respect it).
@@ -50,8 +50,7 @@ def activate(client, entity_id: str, *,
     return client.post("services/scene/turn_on", payload)
 
 
-def apply(client, *, entities: dict[str, Any],
-          transition: float | None = None) -> dict:
+def apply(client, *, entities: dict[str, Any], transition: float | None = None) -> dict:
     """Apply an ad-hoc set of entity states without persisting a scene.
 
     ``entities`` — mapping of entity_id → state or {state, attributes...}.
@@ -73,9 +72,13 @@ def apply(client, *, entities: dict[str, Any],
     return client.post("services/scene/apply", payload)
 
 
-def create(client, *, scene_id: str,
-           entities: dict[str, Any] | None = None,
-           snapshot_entities: list[str] | None = None) -> dict:
+def create(
+    client,
+    *,
+    scene_id: str,
+    entities: dict[str, Any] | None = None,
+    snapshot_entities: list[str] | None = None,
+) -> dict:
     """Persist a new scene — POST services/scene/create.
 
     ``scene_id`` — the suffix (no ``scene.`` prefix) e.g. ``my_movie_night``.
@@ -88,14 +91,9 @@ def create(client, *, scene_id: str,
     if not scene_id:
         raise ValueError("scene_id is required and must be non-empty")
     if scene_id.startswith("scene."):
-        raise ValueError(
-            "scene_id is the suffix only (no 'scene.' prefix); "
-            f"got {scene_id!r}"
-        )
+        raise ValueError(f"scene_id is the suffix only (no 'scene.' prefix); got {scene_id!r}")
     if not entities and not snapshot_entities:
-        raise ValueError(
-            "provide entities=… or snapshot_entities=… (or both)"
-        )
+        raise ValueError("provide entities=… or snapshot_entities=… (or both)")
 
     payload: dict[str, Any] = {"scene_id": scene_id}
     if entities:

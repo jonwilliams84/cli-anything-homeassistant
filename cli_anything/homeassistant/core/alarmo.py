@@ -44,8 +44,11 @@ SENSOR_TYPES = ("door", "window", "motion", "tamper", "environmental", "other")
 # Mode identifiers for the `modes` field on sensor updates — these are
 # Alarmo's internal armed-state names, not the service-level arm modes.
 SENSOR_ARM_MODES = (
-    "armed_away", "armed_home", "armed_night",
-    "armed_vacation", "armed_custom_bypass",
+    "armed_away",
+    "armed_home",
+    "armed_night",
+    "armed_vacation",
+    "armed_custom_bypass",
 )
 
 # The entity domains Alarmo accepts as sensors.
@@ -57,15 +60,21 @@ def _validate_sensor_entity_id(entity_id: str) -> None:
     if not entity_id:
         raise ValueError("entity_id is required")
     if not entity_id.startswith(_SENSOR_DOMAINS):
-        raise ValueError(
-            f"expected binary_sensor.* or sensor.* entity_id, got {entity_id!r}")
+        raise ValueError(f"expected binary_sensor.* or sensor.* entity_id, got {entity_id!r}")
 
 
 # ── services ────────────────────────────────────────────────────────────────
 
-def arm(client, entity_id: str, *, code: Optional[str] = None,
-        mode: Optional[str] = None, skip_delay: bool = False,
-        force: bool = False) -> dict:
+
+def arm(
+    client,
+    entity_id: str,
+    *,
+    code: Optional[str] = None,
+    mode: Optional[str] = None,
+    skip_delay: bool = False,
+    force: bool = False,
+) -> dict:
     """Arm an Alarmo alarm panel.
 
     Calls the ``alarmo/arm`` service. ``mode`` is one of away/night/home/
@@ -74,11 +83,9 @@ def arm(client, entity_id: str, *, code: Optional[str] = None,
     is open (bypassing the safety check).
     """
     if not entity_id.startswith("alarm_control_panel."):
-        raise ValueError(
-            f"expected alarm_control_panel.* entity_id, got {entity_id!r}")
+        raise ValueError(f"expected alarm_control_panel.* entity_id, got {entity_id!r}")
     if mode is not None and mode not in ARM_MODES:
-        raise ValueError(
-            f"mode must be one of {', '.join(ARM_MODES)}, got {mode!r}")
+        raise ValueError(f"mode must be one of {', '.join(ARM_MODES)}, got {mode!r}")
 
     payload: dict[str, Any] = {"entity_id": entity_id}
     if code is not None:
@@ -92,16 +99,14 @@ def arm(client, entity_id: str, *, code: Optional[str] = None,
     return client.post("services/alarmo/arm", payload)
 
 
-def disarm(client, entity_id: str, *, code: Optional[str] = None,
-           skip_delay: bool = False) -> dict:
+def disarm(client, entity_id: str, *, code: Optional[str] = None, skip_delay: bool = False) -> dict:
     """Disarm an Alarmo alarm panel.
 
     Calls the ``alarmo/disarm`` service. ``skip_delay`` is supported per
     Alarmo's services.yaml (skip the entry delay countdown).
     """
     if not entity_id.startswith("alarm_control_panel."):
-        raise ValueError(
-            f"expected alarm_control_panel.* entity_id, got {entity_id!r}")
+        raise ValueError(f"expected alarm_control_panel.* entity_id, got {entity_id!r}")
 
     payload: dict[str, Any] = {"entity_id": entity_id}
     if code is not None:
@@ -135,6 +140,7 @@ def disable_user(client, *, name: str) -> dict:
 
 # ── config (WS read + REST write) ───────────────────────────────────────────
 
+
 def get_config(client) -> dict:
     """Return Alarmo's global config (code requirements, MQTT, master, ...).
 
@@ -159,6 +165,7 @@ def update_config(client, config: dict) -> dict:
 
 # ── areas ───────────────────────────────────────────────────────────────────
 
+
 def list_areas(client) -> list[dict]:
     """Return all Alarmo areas (each with mode-specific timing config).
 
@@ -168,8 +175,9 @@ def list_areas(client) -> list[dict]:
     return list(data) if isinstance(data, list) else []
 
 
-def create_area(client, *, name: str, area_id: Optional[str] = None,
-                modes: Optional[dict] = None) -> dict:
+def create_area(
+    client, *, name: str, area_id: Optional[str] = None, modes: Optional[dict] = None
+) -> dict:
     """Create or rename an Alarmo area.
 
     ``name`` is the display name. ``area_id`` is omitted when creating a
@@ -191,11 +199,11 @@ def delete_area(client, area_id: str) -> dict:
     """Delete an Alarmo area by id."""
     if not area_id:
         raise ValueError("area_id is required")
-    return client.post("alarmo/area",
-                        {"area_id": area_id, "remove": True})
+    return client.post("alarmo/area", {"area_id": area_id, "remove": True})
 
 
 # ── sensors / users / automations / sensor_groups / entities ────────────────
+
 
 def list_sensors(client) -> list[dict]:
     """Return all sensors registered with Alarmo.
@@ -229,8 +237,7 @@ def sensor_remove(client, entity_id: str) -> dict:
     security system.
     """
     _validate_sensor_entity_id(entity_id)
-    return client.post("alarmo/sensors",
-                        {"entity_id": entity_id, "remove": True})
+    return client.post("alarmo/sensors", {"entity_id": entity_id, "remove": True})
 
 
 def sensor_update(client, entity_id: str, **fields: Any) -> dict:
@@ -262,8 +269,8 @@ def sensor_update(client, entity_id: str, **fields: Any) -> dict:
     if "type" in fields and fields["type"] is not None:
         if fields["type"] not in SENSOR_TYPES:
             raise ValueError(
-                f"type must be one of {', '.join(SENSOR_TYPES)}, "
-                f"got {fields['type']!r}")
+                f"type must be one of {', '.join(SENSOR_TYPES)}, got {fields['type']!r}"
+            )
     if "modes" in fields and fields["modes"] is not None:
         modes = fields["modes"]
         if not isinstance(modes, (list, tuple)):
@@ -271,8 +278,8 @@ def sensor_update(client, entity_id: str, **fields: Any) -> dict:
         for m in modes:
             if m not in SENSOR_ARM_MODES:
                 raise ValueError(
-                    f"modes entries must be one of "
-                    f"{', '.join(SENSOR_ARM_MODES)}, got {m!r}")
+                    f"modes entries must be one of {', '.join(SENSOR_ARM_MODES)}, got {m!r}"
+                )
     payload: dict[str, Any] = {"entity_id": entity_id, **fields}
     return client.post("alarmo/sensors", payload)
 

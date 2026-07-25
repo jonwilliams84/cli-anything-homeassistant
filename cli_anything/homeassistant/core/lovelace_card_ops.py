@@ -15,8 +15,10 @@ from cli_anything.homeassistant.core import lovelace_cards as cards_core
 
 # ─────────────────────────────────────────────────────────────── move
 
-def move_card(cfg: dict, src_pointer: str, dest_parent_pointer: str,
-                *, index: int | None = None) -> dict:
+
+def move_card(
+    cfg: dict, src_pointer: str, dest_parent_pointer: str, *, index: int | None = None
+) -> dict:
     """Move a card from one pointer to another parent's `cards[]` list.
 
     `dest_parent_pointer` addresses a container (view, section, or any
@@ -27,8 +29,7 @@ def move_card(cfg: dict, src_pointer: str, dest_parent_pointer: str,
     src_card = copy.deepcopy(cards_core.get_card(cfg, src_pointer))
     # Resolve destination parent — it must have a `cards` list
     dest_parts = cards_core.parse_pointer(dest_parent_pointer)
-    dest_node, _, _ = cards_core._resolve(cfg, dest_parts) if dest_parts \
-        else (cfg, None, -1)
+    dest_node, _, _ = cards_core._resolve(cfg, dest_parts) if dest_parts else (cfg, None, -1)
     if not isinstance(dest_node, dict):
         raise ValueError(f"destination {dest_parent_pointer!r} is not a container")
     if "cards" not in dest_node or not isinstance(dest_node["cards"], list):
@@ -46,6 +47,7 @@ def move_card(cfg: dict, src_pointer: str, dest_parent_pointer: str,
 
 # ─────────────────────────────────────────────────────────────── reorder
 
+
 def reorder_card(cfg: dict, pointer: str, new_index: int) -> dict:
     """Move a card to a new index within its current parent list."""
     parts = cards_core.parse_pointer(pointer)
@@ -53,9 +55,7 @@ def reorder_card(cfg: dict, pointer: str, new_index: int) -> dict:
         raise ValueError("pointer must have at least one segment")
     _, parent, current_index = cards_core._resolve(cfg, parts)
     if new_index < 0 or new_index >= len(parent):
-        raise IndexError(
-            f"new_index {new_index} out of range (parent has {len(parent)} items)"
-        )
+        raise IndexError(f"new_index {new_index} out of range (parent has {len(parent)} items)")
     card = parent.pop(current_index)
     parent.insert(new_index, card)
     return cfg
@@ -63,10 +63,15 @@ def reorder_card(cfg: dict, pointer: str, new_index: int) -> dict:
 
 # ─────────────────────────────────────────────────────────────── wrap
 
-def wrap_in_stack(cfg: dict, pointers: list[str], *,
-                    stack_type: str = "vertical-stack",
-                    columns: int | None = None,
-                    title: str | None = None) -> str:
+
+def wrap_in_stack(
+    cfg: dict,
+    pointers: list[str],
+    *,
+    stack_type: str = "vertical-stack",
+    columns: int | None = None,
+    title: str | None = None,
+) -> str:
     """Wrap one or more pointed-at cards into a single stack card.
 
     `stack_type` is one of: vertical-stack, horizontal-stack, grid.
@@ -76,8 +81,9 @@ def wrap_in_stack(cfg: dict, pointers: list[str], *,
     to the new stack card.
     """
     if stack_type not in ("vertical-stack", "horizontal-stack", "grid"):
-        raise ValueError(f"stack_type must be one of vertical-stack/"
-                          f"horizontal-stack/grid, got {stack_type!r}")
+        raise ValueError(
+            f"stack_type must be one of vertical-stack/horizontal-stack/grid, got {stack_type!r}"
+        )
     if not pointers:
         raise ValueError("at least one pointer is required")
 
@@ -89,8 +95,7 @@ def wrap_in_stack(cfg: dict, pointers: list[str], *,
         resolutions.append((parent, idx))
     first_parent = resolutions[0][0]
     if not all(parent is first_parent for parent, _ in resolutions):
-        raise ValueError("all pointers must share the same parent list "
-                          "(same view/section/stack)")
+        raise ValueError("all pointers must share the same parent list (same view/section/stack)")
 
     # Collect cards in order, smallest index first; remove from parent
     sorted_indices = sorted(set(idx for _, idx in resolutions))
@@ -111,8 +116,7 @@ def wrap_in_stack(cfg: dict, pointers: list[str], *,
     # Compute pointer to the new stack: take the prefix of the first
     # pointer and replace its final cards[idx] with cards[insert_at]
     first_pointer = pointers[0]
-    head = first_pointer.rsplit("/", 1)[0] if "/" in first_pointer \
-        else first_pointer
+    head = first_pointer.rsplit("/", 1)[0] if "/" in first_pointer else first_pointer
     if "/" in first_pointer:
         return f"{head}/cards[{insert_at}]"
     # single-segment pointer like views[0] — destination is the same
@@ -140,9 +144,10 @@ def wrap_in_conditional(cfg: dict, pointer: str, conditions: list[dict]) -> dict
 
 # ─────────────────────────────────────────────────────────────── duplicate
 
-def duplicate_card(cfg: dict, pointer: str,
-                     *, substitutions: dict[str, str] | None = None,
-                     index_offset: int = 1) -> str:
+
+def duplicate_card(
+    cfg: dict, pointer: str, *, substitutions: dict[str, str] | None = None, index_offset: int = 1
+) -> str:
     """Duplicate the card at `pointer` and insert near it in the same parent.
 
     `substitutions` is an old→new map applied as regex substitutions over
@@ -153,6 +158,7 @@ def duplicate_card(cfg: dict, pointer: str,
     Returns the pointer to the new card.
     """
     import json
+
     parts = cards_core.parse_pointer(pointer)
     src, parent, idx = cards_core._resolve(cfg, parts)
     blob = json.dumps(src)
@@ -172,8 +178,8 @@ def duplicate_card(cfg: dict, pointer: str,
 
 # ─────────────────────────────────────────────────────────────── style
 
-def inject_card_mod(cfg: dict, pointer: str, css: str, *,
-                      target: str = "root") -> dict:
+
+def inject_card_mod(cfg: dict, pointer: str, css: str, *, target: str = "root") -> dict:
     """Inject a `card_mod` style block on the card at `pointer`.
 
     `target` is the style selector in card-mod terms — typically "root",

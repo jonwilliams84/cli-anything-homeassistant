@@ -21,9 +21,11 @@ VALID_PERIODS = ("5minute", "hour", "day", "week", "month")
 VALID_TYPES = ("change", "last_reset", "max", "mean", "min", "state", "sum")
 
 
-def list_statistic_ids(client, *,
-                        statistic_type: Optional[str] = None,
-                        ) -> list[dict]:
+def list_statistic_ids(
+    client,
+    *,
+    statistic_type: Optional[str] = None,
+) -> list[dict]:
     """List every statistic the recorder has metadata for.
 
     Each row carries `statistic_id`, `source`, `unit_of_measurement`,
@@ -50,13 +52,14 @@ def get_metadata(client, statistic_ids: Optional[list[str]] = None) -> list[dict
 
 
 def statistics_during_period(
-        client, *,
-        statistic_ids: list[str],
-        start_time: Optional[str] = None,
-        end_time: Optional[str] = None,
-        period: str = "hour",
-        types: Optional[Iterable[str]] = None,
-        units: Optional[dict[str, str]] = None,
+    client,
+    *,
+    statistic_ids: list[str],
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    period: str = "hour",
+    types: Optional[Iterable[str]] = None,
+    units: Optional[dict[str, str]] = None,
 ) -> dict:
     """Fetch chart data for one or more statistic ids.
 
@@ -76,14 +79,16 @@ def statistics_during_period(
         "start_time": start_time,
         "period": period,
     }
-    if end_time:        payload["end_time"] = end_time
-    if types:           payload["types"] = list(types)
-    if units:           payload["units"] = units
+    if end_time:
+        payload["end_time"] = end_time
+    if types:
+        payload["types"] = list(types)
+    if units:
+        payload["units"] = units
     return client.ws_call("recorder/statistics_during_period", payload) or {}
 
 
-def update_metadata(client, *, statistic_id: str,
-                     unit_of_measurement: Optional[str] = None) -> Any:
+def update_metadata(client, *, statistic_id: str, unit_of_measurement: Optional[str] = None) -> Any:
     """Mutate recorder metadata after a sensor's unit changes upstream.
 
     HA blocks new statistic rows when the incoming unit doesn't match the
@@ -102,8 +107,7 @@ def clear(client, statistic_ids: list[str]) -> Any:
     """Clear statistics for the listed ids (destructive)."""
     if not statistic_ids:
         raise ValueError("statistic_ids must not be empty")
-    return client.ws_call("recorder/clear_statistics",
-                            {"statistic_ids": list(statistic_ids)})
+    return client.ws_call("recorder/clear_statistics", {"statistic_ids": list(statistic_ids)})
 
 
 def info(client) -> dict:

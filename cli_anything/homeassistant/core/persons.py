@@ -54,31 +54,46 @@ def find_person(client, ident: str) -> Optional[dict]:
     return None
 
 
-def create(client, *, name: str,
-            user_id: Optional[str] = None,
-            device_trackers: Optional[list[str]] = None,
-            picture: Optional[str] = None) -> dict:
+def create(
+    client,
+    *,
+    name: str,
+    user_id: Optional[str] = None,
+    device_trackers: Optional[list[str]] = None,
+    picture: Optional[str] = None,
+) -> dict:
     if not name:
         raise ValueError("name is required")
     payload: dict[str, Any] = {"name": name}
-    if user_id:               payload["user_id"] = user_id
-    if device_trackers is not None: payload["device_trackers"] = device_trackers
-    if picture:               payload["picture"] = picture
+    if user_id:
+        payload["user_id"] = user_id
+    if device_trackers is not None:
+        payload["device_trackers"] = device_trackers
+    if picture:
+        payload["picture"] = picture
     return client.ws_call("person/create", payload) or {}
 
 
-def update(client, person_id: str, *,
-            name: Optional[str] = None,
-            user_id: Optional[str] = None,
-            device_trackers: Optional[list[str]] = None,
-            picture: Optional[str] = None) -> dict:
+def update(
+    client,
+    person_id: str,
+    *,
+    name: Optional[str] = None,
+    user_id: Optional[str] = None,
+    device_trackers: Optional[list[str]] = None,
+    picture: Optional[str] = None,
+) -> dict:
     if not person_id:
         raise ValueError("person_id is required")
     payload: dict[str, Any] = {"person_id": person_id}
-    if name is not None:               payload["name"] = name
-    if user_id is not None:            payload["user_id"] = user_id
-    if device_trackers is not None:    payload["device_trackers"] = device_trackers
-    if picture is not None:            payload["picture"] = picture
+    if name is not None:
+        payload["name"] = name
+    if user_id is not None:
+        payload["user_id"] = user_id
+    if device_trackers is not None:
+        payload["device_trackers"] = device_trackers
+    if picture is not None:
+        payload["picture"] = picture
     return client.ws_call("person/update", payload) or {}
 
 

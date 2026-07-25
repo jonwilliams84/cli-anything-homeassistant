@@ -19,12 +19,11 @@ Path conventions
 
 from __future__ import annotations
 
-import json
-from copy import deepcopy
-from typing import Any, Iterable
+from typing import Any
 
 
 # ---------------------------------------------------------------- view helpers
+
 
 def _views(config: dict) -> list[dict]:
     views = config.get("views")
@@ -40,7 +39,7 @@ def _find_view_idx(config: dict, view_path: str) -> int:
         i = int(view_path)
         views = _views(config)
         if i < 0 or i >= len(views):
-            raise IndexError(f"view index {i} out of range (0..{len(views)-1})")
+            raise IndexError(f"view index {i} out of range (0..{len(views) - 1})")
         return i
     for i, v in enumerate(_views(config)):
         if v.get("path") == view_path:
@@ -83,6 +82,7 @@ def delete_view(config: dict, view_path: str) -> dict:
 
 
 # ---------------------------------------------------------------- section + card
+
 
 def _resolve_dotpath(config: dict, dot_path: str) -> tuple[Any, list]:
     """Return (target, walked_path_list) for a dot-path.
@@ -145,8 +145,9 @@ def get_card(config: dict, dot_path: str) -> Any:
     return target
 
 
-def patch_card(config: dict, dot_path: str, fields: dict[str, Any], *,
-                strict: bool = False) -> dict:
+def patch_card(
+    config: dict, dot_path: str, fields: dict[str, Any], *, strict: bool = False
+) -> dict:
     """Patch individual fields on the card at `dot_path` without replacing it.
 
     `fields` is a shallow {key: value} dict. Nested dicts are merged one level
@@ -163,17 +164,13 @@ def patch_card(config: dict, dot_path: str, fields: dict[str, Any], *,
         raise ValueError("fields must not be empty")
     target, _ = _resolve_dotpath(config, dot_path)
     if not isinstance(target, dict):
-        raise ValueError(
-            f"target at {dot_path!r} is a {type(target).__name__}, not a card dict"
-        )
+        raise ValueError(f"target at {dot_path!r} is a {type(target).__name__}, not a card dict")
     if strict:
         unknown = [k for k in fields if k not in target]
         if unknown:
-            raise KeyError(
-                f"unknown fields on card: {unknown}; existing keys: {list(target)}"
-            )
+            raise KeyError(f"unknown fields on card: {unknown}; existing keys: {list(target)}")
     for k, v in fields.items():
-        if (isinstance(v, dict) and isinstance(target.get(k), dict)):
+        if isinstance(v, dict) and isinstance(target.get(k), dict):
             target[k] = {**target[k], **v}  # shallow merge nested dict
         else:
             target[k] = v
@@ -187,8 +184,11 @@ def set_card(config: dict, dot_path: str, new_value: Any) -> dict:
         raise ValueError("dot_path must address a non-root location")
     *parent_parts, last = dot_path.split(".")
     parent_dotpath = ".".join(parent_parts)
-    parent_target, _ = _resolve_dotpath(config, parent_dotpath) if "." in parent_dotpath else \
-        (get_view(config, parent_dotpath), None)
+    parent_target, _ = (
+        _resolve_dotpath(config, parent_dotpath)
+        if "." in parent_dotpath
+        else (get_view(config, parent_dotpath), None)
+    )
     # If `last` is digit, parent_target should be a list-like (cards or sections)
     if last.isdigit():
         idx = int(last)
@@ -226,15 +226,17 @@ def set_section(config: dict, view_path: str, section_idx: int, new_section: dic
     if not isinstance(sections, list):
         raise ValueError("view has no `sections` list (maybe it's a masonry view?)")
     if section_idx < 0 or section_idx >= len(sections):
-        raise IndexError(f"section index out of range")
+        raise IndexError("section index out of range")
     sections[section_idx] = new_section
     return config
 
 
 # ---------------------------------------------------------------- search
 
-def search(config: dict, query: str, *, case_sensitive: bool = False,
-            limit: int = 50) -> list[dict]:
+
+def search(
+    config: dict, query: str, *, case_sensitive: bool = False, limit: int = 50
+) -> list[dict]:
     """Search a dashboard config for any field whose value matches `query`.
 
     Returns up to `limit` rows: {path, type, title, match_field, match_snippet}.
@@ -267,13 +269,15 @@ def search(config: dict, query: str, *, case_sensitive: bool = False,
                     snippet = v if isinstance(v, str) else str(v)
                     if len(snippet) > 80:
                         snippet = snippet[:77] + "..."
-                    results.append({
-                        "path": path,
-                        "type": obj.get("type"),
-                        "title": title_of(obj),
-                        "match_field": k,
-                        "match_snippet": snippet,
-                    })
+                    results.append(
+                        {
+                            "path": path,
+                            "type": obj.get("type"),
+                            "title": title_of(obj),
+                            "match_field": k,
+                            "match_snippet": snippet,
+                        }
+                    )
                     if len(results) >= limit:
                         return
                     break  # only one match per node
@@ -288,8 +292,7 @@ def search(config: dict, query: str, *, case_sensitive: bool = False,
     return results
 
 
-def list_paths(config: dict, *, max_depth: int = 4,
-                with_titles: bool = True) -> list[dict]:
+def list_paths(config: dict, *, max_depth: int = 4, with_titles: bool = True) -> list[dict]:
     """Enumerate every view/section/card path with its type and title.
 
     Useful for `lovelace dump-paths <dash>` — the cheapest way to learn the
@@ -305,40 +308,48 @@ def list_paths(config: dict, *, max_depth: int = 4,
         return None
 
     for vi, view in enumerate(_views(config)):
-        rows.append({
-            "path": f"views[{vi}]",
-            "kind": "view",
-            "view_path": view.get("path"),
-            "type": view.get("type"),
-            "title": view.get("title"),
-        })
+        rows.append(
+            {
+                "path": f"views[{vi}]",
+                "kind": "view",
+                "view_path": view.get("path"),
+                "type": view.get("type"),
+                "title": view.get("title"),
+            }
+        )
         if "sections" in view and isinstance(view["sections"], list):
             for si, section in enumerate(view["sections"]):
-                rows.append({
-                    "path": f"views[{vi}].sections[{si}]",
-                    "kind": "section",
-                    "view_path": view.get("path"),
-                    "type": section.get("type"),
-                    "title": title_of(section) if with_titles else None,
-                })
+                rows.append(
+                    {
+                        "path": f"views[{vi}].sections[{si}]",
+                        "kind": "section",
+                        "view_path": view.get("path"),
+                        "type": section.get("type"),
+                        "title": title_of(section) if with_titles else None,
+                    }
+                )
                 if max_depth >= 4:
                     for ci, card in enumerate(section.get("cards", [])):
                         if isinstance(card, dict):
-                            rows.append({
-                                "path": f"views[{vi}].sections[{si}].cards[{ci}]",
-                                "kind": "card",
-                                "view_path": view.get("path"),
-                                "type": card.get("type"),
-                                "title": title_of(card) if with_titles else None,
-                            })
+                            rows.append(
+                                {
+                                    "path": f"views[{vi}].sections[{si}].cards[{ci}]",
+                                    "kind": "card",
+                                    "view_path": view.get("path"),
+                                    "type": card.get("type"),
+                                    "title": title_of(card) if with_titles else None,
+                                }
+                            )
         elif "cards" in view and isinstance(view["cards"], list):
             for ci, card in enumerate(view["cards"]):
                 if isinstance(card, dict):
-                    rows.append({
-                        "path": f"views[{vi}].cards[{ci}]",
-                        "kind": "card",
-                        "view_path": view.get("path"),
-                        "type": card.get("type"),
-                        "title": title_of(card) if with_titles else None,
-                    })
+                    rows.append(
+                        {
+                            "path": f"views[{vi}].cards[{ci}]",
+                            "kind": "card",
+                            "view_path": view.get("path"),
+                            "type": card.get("type"),
+                            "title": title_of(card) if with_titles else None,
+                        }
+                    )
     return rows

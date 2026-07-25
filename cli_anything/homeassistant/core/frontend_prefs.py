@@ -38,6 +38,7 @@ import json
 # Frontend user-data — persistent per-user key/value store
 # ════════════════════════════════════════════════════════════════════════
 
+
 def get_user_data(client, *, key: str | None = None) -> dict:
     """Fetch frontend user-data via WS ``frontend/get_user_data``.
 
@@ -79,6 +80,7 @@ def set_user_data(client, *, key: str, value) -> dict:
 # ════════════════════════════════════════════════════════════════════════
 # Template rendering
 # ════════════════════════════════════════════════════════════════════════
+
 
 def render_template(
     client,

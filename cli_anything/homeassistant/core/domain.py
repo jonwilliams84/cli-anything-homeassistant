@@ -56,8 +56,7 @@ def _service_call(
 def turn_on(client, domain: str, entity_id: str | None = None, extra: dict | None = None) -> Any:
     if domain not in _TOGGLABLE_DOMAINS:
         raise ValueError(
-            f"Domain '{domain}' is not a known controllable domain. "
-            f"Use `service call` directly."
+            f"Domain '{domain}' is not a known controllable domain. Use `service call` directly."
         )
     return _service_call(client, domain, "turn_on", entity_id, extra)
 
@@ -65,8 +64,7 @@ def turn_on(client, domain: str, entity_id: str | None = None, extra: dict | Non
 def turn_off(client, domain: str, entity_id: str | None = None, extra: dict | None = None) -> Any:
     if domain not in _TOGGLABLE_DOMAINS:
         raise ValueError(
-            f"Domain '{domain}' is not a known controllable domain. "
-            f"Use `service call` directly."
+            f"Domain '{domain}' is not a known controllable domain. Use `service call` directly."
         )
     return _service_call(client, domain, "turn_off", entity_id, extra)
 
@@ -74,7 +72,6 @@ def turn_off(client, domain: str, entity_id: str | None = None, extra: dict | No
 def toggle(client, domain: str, entity_id: str | None = None, extra: dict | None = None) -> Any:
     if domain not in _TOGGLABLE_DOMAINS:
         raise ValueError(
-            f"Domain '{domain}' is not a known controllable domain. "
-            f"Use `service call` directly."
+            f"Domain '{domain}' is not a known controllable domain. Use `service call` directly."
         )
     return _service_call(client, domain, "toggle", entity_id, extra)

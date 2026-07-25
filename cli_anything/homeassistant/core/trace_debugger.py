@@ -42,11 +42,10 @@ _VALID_DOMAINS = frozenset({"automation", "script"})
 # Internal helpers
 # ────────────────────────────────────────────────────────────────────────────
 
+
 def _validate_domain(domain: str) -> None:
     if domain not in _VALID_DOMAINS:
-        raise ValueError(
-            f"domain must be one of {sorted(_VALID_DOMAINS)}, got {domain!r}"
-        )
+        raise ValueError(f"domain must be one of {sorted(_VALID_DOMAINS)}, got {domain!r}")
 
 
 def _validate_nonempty(value: str, name: str) -> None:
@@ -57,6 +56,7 @@ def _validate_nonempty(value: str, name: str) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 # Public API
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def list_breakpoints(client) -> list[dict]:
     """Return all currently registered breakpoints via ``trace/debug/breakpoint/list``.

@@ -17,6 +17,7 @@ from typing import Any, Optional
 # Internal helper
 # ────────────────────────────────────────────────────────────────────────────
 
+
 def _require_non_empty(value: str, name: str) -> None:
     """Raise ValueError if *value* is falsy (empty string, None, etc.)."""
     if not value:
@@ -26,6 +27,7 @@ def _require_non_empty(value: str, name: str) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 # Public API
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def list_categories(client, *, scope: str) -> list[dict]:
     """Return all category records for *scope*.
@@ -41,8 +43,7 @@ def list_categories(client, *, scope: str) -> list[dict]:
     return list(data) if isinstance(data, list) else []
 
 
-def create_category(client, *, scope: str, name: str,
-                    icon: Optional[str] = None) -> dict[str, Any]:
+def create_category(client, *, scope: str, name: str, icon: Optional[str] = None) -> dict[str, Any]:
     """Create a new category in *scope*.
 
     ``scope`` and ``name`` are both required non-empty strings.
@@ -58,9 +59,9 @@ def create_category(client, *, scope: str, name: str,
     return client.ws_call("config/category_registry/create", payload) or {}
 
 
-def update_category(client, *, scope: str, category_id: str,
-                    name: Optional[str] = None,
-                    icon: Optional[str] = None) -> dict[str, Any]:
+def update_category(
+    client, *, scope: str, category_id: str, name: Optional[str] = None, icon: Optional[str] = None
+) -> dict[str, Any]:
     """Update an existing category identified by *scope* + *category_id*.
 
     At least one of ``name`` or ``icon`` must be provided.
@@ -70,9 +71,7 @@ def update_category(client, *, scope: str, category_id: str,
     _require_non_empty(scope, "scope")
     _require_non_empty(category_id, "category_id")
     if name is None and icon is None:
-        raise ValueError(
-            "at least one of name or icon must be supplied to update_category"
-        )
+        raise ValueError("at least one of name or icon must be supplied to update_category")
     payload: dict[str, Any] = {"scope": scope, "category_id": category_id}
     if name is not None:
         payload["name"] = name
@@ -97,6 +96,7 @@ def delete_category(client, *, scope: str, category_id: str) -> Any:
 # ────────────────────────────────────────────────────────────────────────────
 # Convenience
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def categories_by_name(client, *, scope: str) -> dict[str, dict]:
     """Return a ``{name: full_record}`` mapping for all categories in *scope*.

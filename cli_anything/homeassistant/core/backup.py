@@ -82,29 +82,38 @@ def details(client, backup_id: str) -> dict:
     return _enrich(d)
 
 
-def generate(client, *, name: Optional[str] = None,
-              password: Optional[str] = None,
-              addons_included: Optional[list[str]] = None,
-              folders_included: Optional[list[str]] = None,
-              database_included: bool = True,
-              agent_ids: Optional[list[str]] = None) -> dict:
+def generate(
+    client,
+    *,
+    name: Optional[str] = None,
+    password: Optional[str] = None,
+    addons_included: Optional[list[str]] = None,
+    folders_included: Optional[list[str]] = None,
+    database_included: bool = True,
+    agent_ids: Optional[list[str]] = None,
+) -> dict:
     """Trigger a backup. Returns the job descriptor.
 
     `agent_ids` is for HA 2024.7+'s multi-agent backups (local, network, etc.).
     Older HA installs can leave it unset.
     """
     payload: dict[str, Any] = {}
-    if name:                payload["name"] = name
-    if password:            payload["password"] = password
-    if addons_included is not None:   payload["addons_included"] = addons_included
-    if folders_included is not None:  payload["folders_included"] = folders_included
-    if not database_included:         payload["database_included"] = False
-    if agent_ids:           payload["agent_ids"] = agent_ids
+    if name:
+        payload["name"] = name
+    if password:
+        payload["password"] = password
+    if addons_included is not None:
+        payload["addons_included"] = addons_included
+    if folders_included is not None:
+        payload["folders_included"] = folders_included
+    if not database_included:
+        payload["database_included"] = False
+    if agent_ids:
+        payload["agent_ids"] = agent_ids
     return client.ws_call("backup/generate", payload) or {}
 
 
-def remove(client, backup_id: str, *,
-            agent_ids: Optional[list[str]] = None) -> dict:
+def remove(client, backup_id: str, *, agent_ids: Optional[list[str]] = None) -> dict:
     """Delete a backup. With `agent_ids` deletes only those agent copies."""
     if not backup_id:
         raise ValueError("backup_id is required")
@@ -120,21 +129,30 @@ def remove(client, backup_id: str, *,
     raise RuntimeError("backup delete is not supported by this HA version")
 
 
-def restore(client, backup_id: str, *,
-             password: Optional[str] = None,
-             restore_database: bool = True,
-             restore_folders: Optional[list[str]] = None,
-             restore_addons: Optional[list[str]] = None,
-             agent_id: Optional[str] = None) -> dict:
+def restore(
+    client,
+    backup_id: str,
+    *,
+    password: Optional[str] = None,
+    restore_database: bool = True,
+    restore_folders: Optional[list[str]] = None,
+    restore_addons: Optional[list[str]] = None,
+    agent_id: Optional[str] = None,
+) -> dict:
     """Restore from a backup. HA will restart afterwards. **Destructive.**"""
     if not backup_id:
         raise ValueError("backup_id is required")
     payload: dict[str, Any] = {"backup_id": backup_id}
-    if password:                payload["password"] = password
-    if not restore_database:    payload["restore_database"] = False
-    if restore_folders is not None: payload["restore_folders"] = restore_folders
-    if restore_addons is not None:  payload["restore_addons"] = restore_addons
-    if agent_id:                payload["agent_id"] = agent_id
+    if password:
+        payload["password"] = password
+    if not restore_database:
+        payload["restore_database"] = False
+    if restore_folders is not None:
+        payload["restore_folders"] = restore_folders
+    if restore_addons is not None:
+        payload["restore_addons"] = restore_addons
+    if agent_id:
+        payload["agent_id"] = agent_id
     return client.ws_call("backup/restore", payload) or {}
 
 

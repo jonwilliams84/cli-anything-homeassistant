@@ -24,14 +24,13 @@ _VALID_STATUSES = {"needs_action", "completed"}
 def _check_entity_id(entity_id: str) -> None:
     """Validate that entity_id belongs to the todo domain."""
     if not entity_id.startswith("todo."):
-        raise ValueError(
-            f"expected todo.* entity_id, got {entity_id!r}"
-        )
+        raise ValueError(f"expected todo.* entity_id, got {entity_id!r}")
 
 
 # ════════════════════════════════════════════════════════════════════════
 # list_items — WS todo/item/list
 # ════════════════════════════════════════════════════════════════════════
+
 
 def list_items(client, entity_id: str) -> list[dict]:
     """Return the list of items in a todo list entity.
@@ -53,10 +52,10 @@ def list_items(client, entity_id: str) -> list[dict]:
 # add_item — service todo/add_item
 # ════════════════════════════════════════════════════════════════════════
 
-def add_item(client, entity_id: str, *,
-             summary: str,
-             due: str | None = None,
-             description: str | None = None) -> dict:
+
+def add_item(
+    client, entity_id: str, *, summary: str, due: str | None = None, description: str | None = None
+) -> dict:
     """Add a new item to a todo list.
 
     ``summary`` — the item's display text (required, non-empty).
@@ -80,12 +79,17 @@ def add_item(client, entity_id: str, *,
 # update_item — service todo/update_item
 # ════════════════════════════════════════════════════════════════════════
 
-def update_item(client, entity_id: str, *,
-                item: str,
-                rename: str | None = None,
-                status: str | None = None,
-                due: str | None = None,
-                description: str | None = None) -> dict:
+
+def update_item(
+    client,
+    entity_id: str,
+    *,
+    item: str,
+    rename: str | None = None,
+    status: str | None = None,
+    due: str | None = None,
+    description: str | None = None,
+) -> dict:
     """Update an existing todo item.
 
     ``item``   — current summary text OR uid that identifies the item.
@@ -101,13 +105,9 @@ def update_item(client, entity_id: str, *,
     if not item:
         raise ValueError("item (current summary or uid) must be non-empty")
     if status is not None and status not in _VALID_STATUSES:
-        raise ValueError(
-            f"status must be one of {sorted(_VALID_STATUSES)}, got {status!r}"
-        )
+        raise ValueError(f"status must be one of {sorted(_VALID_STATUSES)}, got {status!r}")
     if rename is None and status is None and due is None and description is None:
-        raise ValueError(
-            "at least one of rename/status/due/description must be supplied"
-        )
+        raise ValueError("at least one of rename/status/due/description must be supplied")
     payload: dict = {"entity_id": entity_id, "item": item}
     if rename is not None:
         payload["rename"] = rename
@@ -124,8 +124,8 @@ def update_item(client, entity_id: str, *,
 # remove_item — service todo/remove_item
 # ════════════════════════════════════════════════════════════════════════
 
-def remove_item(client, entity_id: str, *,
-                item: str | list[str]) -> dict:
+
+def remove_item(client, entity_id: str, *, item: str | list[str]) -> dict:
     """Remove one or more items from a todo list.
 
     ``item`` — a single uid/summary string, or a list of such strings.
@@ -136,17 +136,15 @@ def remove_item(client, entity_id: str, *,
         raise ValueError("item must be a non-empty string or list")
     if isinstance(item, list) and not all(isinstance(i, str) and i for i in item):
         raise ValueError("item list must contain non-empty strings")
-    return client.post("services/todo/remove_item",
-                       {"entity_id": entity_id, "item": item})
+    return client.post("services/todo/remove_item", {"entity_id": entity_id, "item": item})
 
 
 # ════════════════════════════════════════════════════════════════════════
 # move_item — WS todo/item/move
 # ════════════════════════════════════════════════════════════════════════
 
-def move_item(client, entity_id: str, *,
-              uid: str,
-              previous_uid: str | None = None) -> dict:
+
+def move_item(client, entity_id: str, *, uid: str, previous_uid: str | None = None) -> dict:
     """Move a todo item to a new position in the list.
 
     ``uid``          — the uid of the item to move (required).
@@ -168,11 +166,11 @@ def move_item(client, entity_id: str, *,
 # remove_completed_items — service todo/remove_completed_items
 # ════════════════════════════════════════════════════════════════════════
 
+
 def remove_completed_items(client, entity_id: str) -> dict:
     """Remove all completed items from a todo list.
 
     Uses service call POST services/todo/remove_completed_items.
     """
     _check_entity_id(entity_id)
-    return client.post("services/todo/remove_completed_items",
-                       {"entity_id": entity_id})
+    return client.post("services/todo/remove_completed_items", {"entity_id": entity_id})

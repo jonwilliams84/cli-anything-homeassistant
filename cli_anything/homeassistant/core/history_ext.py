@@ -27,7 +27,7 @@ provides:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from . import history as _history
 from . import statistics as _statistics
@@ -167,7 +167,10 @@ def history_with_stats_fallback(
 
     # 1. Try recorder first — it gives the precise values
     states_resp = _history.history(
-        client, entity_ids=[entity_id], start=start, end=end,
+        client,
+        entity_ids=[entity_id],
+        start=start,
+        end=end,
     )
     recorder_samples = _states_to_samples(states_resp, entity_id=entity_id)
 
@@ -192,7 +195,9 @@ def history_with_stats_fallback(
             types=[value_field],
         )
         stats_samples = statistics_to_samples(
-            stats_resp, statistic_id=entity_id, value_field=value_field,
+            stats_resp,
+            statistic_id=entity_id,
+            value_field=value_field,
         )
 
     merged = stats_samples + recorder_samples
@@ -220,8 +225,12 @@ def recorder_retention_estimate(
     states_resp = _history.history(client, entity_ids=[entity_id], start=start, end=end)
     samples = _states_to_samples(states_resp, entity_id=entity_id)
     if not samples:
-        return {"first_sample": None, "sample_count": 0,
-                "retention_days": 0.0, "probe_days": probe_days}
+        return {
+            "first_sample": None,
+            "sample_count": 0,
+            "retention_days": 0.0,
+            "probe_days": probe_days,
+        }
     first = min(s["when"] for s in samples)
     age_days = (end - first).total_seconds() / 86400
     return {

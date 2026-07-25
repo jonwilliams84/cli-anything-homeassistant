@@ -94,8 +94,7 @@ def delete_all_refresh_tokens(
     """
     if token_type is not None and token_type not in _VALID_TOKEN_TYPES:
         raise ValueError(
-            f"token_type must be one of {sorted(_VALID_TOKEN_TYPES)}, "
-            f"got {token_type!r}"
+            f"token_type must be one of {sorted(_VALID_TOKEN_TYPES)}, got {token_type!r}"
         )
     payload: dict = {"delete_current_token": delete_current_token}
     if token_type is not None:

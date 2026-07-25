@@ -10,7 +10,6 @@ Aggregates from:
 
 from __future__ import annotations
 
-import time
 from typing import Any, Optional
 
 from cli_anything.homeassistant.core import (
@@ -21,11 +20,15 @@ from cli_anything.homeassistant.core import (
 )
 
 
-def inspect_entity(client, entity_id: str, *,
-                    include_history: bool = False,
-                    history_hours: int = 24,
-                    include_references: bool = True,
-                    reference_kinds: Optional[list[str]] = None) -> dict:
+def inspect_entity(
+    client,
+    entity_id: str,
+    *,
+    include_history: bool = False,
+    history_hours: int = 24,
+    include_references: bool = True,
+    reference_kinds: Optional[list[str]] = None,
+) -> dict:
     """Return a unified record for an entity.
 
     Always returned:
@@ -97,7 +100,9 @@ def inspect_entity(client, entity_id: str, *,
     if include_history:
         try:
             out["history"] = history_core.history(
-                client, entity_id=entity_id, hours=history_hours,
+                client,
+                entity_id=entity_id,
+                hours=history_hours,
             )
         except Exception as exc:
             out["history"] = {"error": str(exc)}
@@ -106,7 +111,8 @@ def inspect_entity(client, entity_id: str, *,
     if include_references:
         try:
             out["references"] = references_core.find_references(
-                client, entity_id,
+                client,
+                entity_id,
                 include_kinds=set(reference_kinds) if reference_kinds else None,
             )
         except Exception as exc:

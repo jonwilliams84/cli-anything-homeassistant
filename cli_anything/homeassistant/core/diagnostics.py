@@ -9,7 +9,7 @@ Two flavours:
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 
 def list_handlers(client) -> list[dict]:
@@ -36,9 +36,7 @@ def get_device(client, entry_id: str, device_id: str) -> Any:
         raise ValueError("entry_id is required")
     if not device_id:
         raise ValueError("device_id is required")
-    return client.get(
-        f"diagnostics/config_entry/{entry_id}/device/{device_id}"
-    )
+    return client.get(f"diagnostics/config_entry/{entry_id}/device/{device_id}")
 
 
 def save_to_file(data: Any, path: str) -> int:

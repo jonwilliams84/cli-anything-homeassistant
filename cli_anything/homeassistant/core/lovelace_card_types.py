@@ -27,6 +27,7 @@ def card_types_in_use(config: dict) -> dict[str, int]:
 def types_across_dashboards(client) -> dict[str, dict[str, int]]:
     """Walk every dashboard and report `{dashboard_url: {type: count}}`."""
     from cli_anything.homeassistant.core import lovelace as lovelace_core
+
     dashboards = lovelace_core.list_dashboards(client)
     out: dict[str, dict[str, int]] = {}
     # Storage-mode dashboards have url_path; YAML-mode ones aren't accessible
@@ -67,10 +68,12 @@ def cross_reference_hacs(client, custom_types: Iterable[str]) -> dict:
     Returns {type: {plugin: <hacs repo info>|None, installed: bool}}.
     """
     from cli_anything.homeassistant.core import hacs as hacs_core
+
     try:
         plugins = hacs_core.list_repos(client, category="plugin")
     except Exception as exc:
         return {"_error": str(exc)}
+
     # Index HACS plugins by lowercase token sets
     def tokens(s: str) -> set[str]:
         return set(s.lower().replace("-", " ").replace("_", " ").split())
@@ -80,32 +83,39 @@ def cross_reference_hacs(client, custom_types: Iterable[str]) -> dict:
         full = p.get("full_name", "") or ""
         name = p.get("name", "") or ""
         short = full.split("/")[-1].lower() if "/" in full else full.lower()
-        indexed.append({
-            "id": p.get("id"),
-            "full_name": full,
-            "name": name,
-            "short": short,
-            "installed": bool(p.get("installed")),
-            "tokens": tokens(full) | tokens(name) | tokens(short),
-        })
+        indexed.append(
+            {
+                "id": p.get("id"),
+                "full_name": full,
+                "name": name,
+                "short": short,
+                "installed": bool(p.get("installed")),
+                "tokens": tokens(full) | tokens(name) | tokens(short),
+            }
+        )
 
     out: dict = {}
     for ct in custom_types:
         if not ct.startswith("custom:"):
             continue
-        bare = ct[len("custom:"):]
+        bare = ct[len("custom:") :]
         bare_tokens = tokens(bare)
         # Score by token overlap, then exact-substring boost
-        best = None; best_score = 0
+        best = None
+        best_score = 0
         for p in indexed:
             score = len(bare_tokens & p["tokens"])
             if bare in p["short"] or p["short"] in bare:
                 score += 2
             if score > best_score:
-                best_score = score; best = p
+                best_score = score
+                best = p
         out[ct] = {
-            "plugin": ({"id": best["id"], "full_name": best["full_name"],
-                        "name": best["name"]} if best and best_score >= 1 else None),
+            "plugin": (
+                {"id": best["id"], "full_name": best["full_name"], "name": best["name"]}
+                if best and best_score >= 1
+                else None
+            ),
             "installed": bool(best and best["installed"] and best_score >= 1),
             "score": best_score,
         }

@@ -32,31 +32,35 @@ def list_updates(client, *, available_only: bool = True) -> list[dict]:
         if available_only and state != "on":
             continue
         attrs = s.get("attributes", {}) or {}
-        rows.append({
-            "entity_id": eid,
-            "state": state,
-            "title": attrs.get("title"),
-            "installed_version": attrs.get("installed_version"),
-            "latest_version": attrs.get("latest_version"),
-            "in_progress": attrs.get("in_progress"),
-            "skipped_version": attrs.get("skipped_version"),
-            "release_summary": attrs.get("release_summary"),
-            "release_url": attrs.get("release_url"),
-        })
+        rows.append(
+            {
+                "entity_id": eid,
+                "state": state,
+                "title": attrs.get("title"),
+                "installed_version": attrs.get("installed_version"),
+                "latest_version": attrs.get("latest_version"),
+                "in_progress": attrs.get("in_progress"),
+                "skipped_version": attrs.get("skipped_version"),
+                "release_summary": attrs.get("release_summary"),
+                "release_url": attrs.get("release_url"),
+            }
+        )
     return rows
 
 
-def install(client, entity_id: str, *,
-            version: Optional[str] = None,
-            backup: bool = False) -> Any:
+def install(client, entity_id: str, *, version: Optional[str] = None, backup: bool = False) -> Any:
     """Install an update on one update.* entity. `version=None` installs latest."""
     if not entity_id.startswith("update."):
         raise ValueError(f"expected update.* entity_id, got {entity_id!r}")
     data: dict[str, Any] = {}
-    if version: data["version"] = version
-    if backup:  data["backup"] = True
+    if version:
+        data["version"] = version
+    if backup:
+        data["backup"] = True
     return services_core.call_service(
-        client, "update", "install",
+        client,
+        "update",
+        "install",
         service_data=data or None,
         target={"entity_id": entity_id},
     )
@@ -67,7 +71,9 @@ def skip(client, entity_id: str) -> Any:
     if not entity_id.startswith("update."):
         raise ValueError(f"expected update.* entity_id, got {entity_id!r}")
     return services_core.call_service(
-        client, "update", "skip",
+        client,
+        "update",
+        "skip",
         target={"entity_id": entity_id},
     )
 
@@ -77,13 +83,16 @@ def clear_skipped(client, entity_id: str) -> Any:
     if not entity_id.startswith("update."):
         raise ValueError(f"expected update.* entity_id, got {entity_id!r}")
     return services_core.call_service(
-        client, "update", "clear_skipped",
+        client,
+        "update",
+        "clear_skipped",
         target={"entity_id": entity_id},
     )
 
 
-def install_all(client, *, exclude: Optional[list[str]] = None,
-                 backup: bool = False, dry_run: bool = False) -> dict:
+def install_all(
+    client, *, exclude: Optional[list[str]] = None, backup: bool = False, dry_run: bool = False
+) -> dict:
     """Install every available update in one call.
 
     `exclude` is a list of substring patterns matched against entity_id.
@@ -104,11 +113,9 @@ def install_all(client, *, exclude: Optional[list[str]] = None,
         for r in selected:
             try:
                 res = install(client, r["entity_id"], backup=backup)
-                results.append({"entity_id": r["entity_id"], "ok": True,
-                                 "result": res})
+                results.append({"entity_id": r["entity_id"], "ok": True, "result": res})
             except Exception as exc:
-                results.append({"entity_id": r["entity_id"], "ok": False,
-                                 "error": str(exc)})
+                results.append({"entity_id": r["entity_id"], "ok": False, "error": str(exc)})
     return {
         "selected": [r["entity_id"] for r in selected],
         "excluded": [r["entity_id"] for r in skipped],

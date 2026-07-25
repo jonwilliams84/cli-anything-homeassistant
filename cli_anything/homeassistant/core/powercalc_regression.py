@@ -21,7 +21,6 @@ Uses numpy only (lstsq). No scipy / sklearn dependency.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from cli_anything.homeassistant.core import powercalc as _pc
 
@@ -30,6 +29,7 @@ DEFAULT_SMART_METER = "sensor.smart_meter_electricity_power"
 
 
 # ── history collection ─────────────────────────────────────────────────────
+
 
 def _history(client, entity_id: str, *, hours: float) -> list[dict]:
     end = datetime.now(tz=timezone.utc)
@@ -52,9 +52,7 @@ def _parse_points(points: list[dict]) -> list[tuple[float, str]]:
     out: list[tuple[float, str]] = []
     for p in points:
         try:
-            ts = datetime.fromisoformat(
-                p["last_changed"].replace("Z", "+00:00")
-            ).timestamp()
+            ts = datetime.fromisoformat(p["last_changed"].replace("Z", "+00:00")).timestamp()
             out.append((ts, str(p.get("state", ""))))
         except (KeyError, ValueError, TypeError):
             continue
@@ -133,6 +131,7 @@ def _resample_numeric(
 
 # ── linear regression (numpy-only OLS) ─────────────────────────────────────
 
+
 def _fit_ols(X, y):
     """Ordinary-least-squares fit.
 
@@ -143,6 +142,7 @@ def _fit_ols(X, y):
     intercept column; we add it. y is a 1D vector of length n_samples.
     """
     import numpy as np  # local import keeps top-level import lean
+
     X = np.asarray(X, dtype=float)
     y = np.asarray(y, dtype=float)
     n, p = X.shape
@@ -176,6 +176,7 @@ def _fit_ols(X, y):
 
 
 # ── top-level orchestration ────────────────────────────────────────────────
+
 
 def regress(
     client,
@@ -211,14 +212,22 @@ def regress(
     from cli_anything.homeassistant.core.powercalc_calibration import (
         virtual_power_entries,
     )
+
     raw_candidates = virtual_power_entries(
-        client, title_contains=title_contains,
+        client,
+        title_contains=title_contains,
     )
 
     if not raw_candidates:
-        return {"n_samples": 0, "n_features": 0, "r_squared": None,
-                "intercept": None, "candidates": [], "applied": 0,
-                "dropped": []}
+        return {
+            "n_samples": 0,
+            "n_features": 0,
+            "r_squared": None,
+            "intercept": None,
+            "candidates": [],
+            "applied": 0,
+            "dropped": [],
+        }
 
     # Time bounds for the grid
     end = datetime.now(tz=timezone.utc).timestamp()
@@ -227,16 +236,32 @@ def regress(
     # Smart meter (target)
     sm_series = _parse_points(_history(client, smart_meter, hours=hours))
     if not sm_series:
-        return {"n_samples": 0, "n_features": 0, "r_squared": None,
-                "intercept": None, "candidates": [], "applied": 0,
-                "dropped": [], "warning": f"no history for {smart_meter}"}
+        return {
+            "n_samples": 0,
+            "n_features": 0,
+            "r_squared": None,
+            "intercept": None,
+            "candidates": [],
+            "applied": 0,
+            "dropped": [],
+            "warning": f"no history for {smart_meter}",
+        }
     sm_grid = _resample_numeric(
-        sm_series, start=start, end=end, interval=interval_seconds,
+        sm_series,
+        start=start,
+        end=end,
+        interval=interval_seconds,
     )
     if not sm_grid:
-        return {"n_samples": 0, "n_features": 0, "r_squared": None,
-                "intercept": None, "candidates": [], "applied": 0,
-                "dropped": []}
+        return {
+            "n_samples": 0,
+            "n_features": 0,
+            "r_squared": None,
+            "intercept": None,
+            "candidates": [],
+            "applied": 0,
+            "dropped": [],
+        }
 
     sm_ts = [t for t, _ in sm_grid]
     y = [v for _, v in sm_grid]
@@ -247,29 +272,34 @@ def regress(
     keep: list[dict] = []
     columns: list[list[float]] = []
     for c in raw_candidates:
-        series = _parse_points(_history(client, c["source_entity"],
-                                          hours=hours))
-        grid = _resample(series, start=sm_ts[0], end=sm_ts[-1],
-                          interval=interval_seconds)
-        col = [v for _, v in grid][: n]
+        series = _parse_points(_history(client, c["source_entity"], hours=hours))
+        grid = _resample(series, start=sm_ts[0], end=sm_ts[-1], interval=interval_seconds)
+        col = [v for _, v in grid][:n]
         if len(col) < n:
             col = col + [0.0] * (n - len(col))
         on_frac = sum(col) / n if n else 0
         if on_frac < min_on_fraction:
-            dropped.append({**c, "drop_reason": f"on for {on_frac:.2%} of samples "
-                                                  f"(< {min_on_fraction:.2%})"})
+            dropped.append(
+                {**c, "drop_reason": f"on for {on_frac:.2%} of samples (< {min_on_fraction:.2%})"}
+            )
             continue
         if on_frac > 1 - min_off_fraction:
-            dropped.append({**c, "drop_reason": f"on for {on_frac:.2%} of samples "
-                                                  f"(no variance)"})
+            dropped.append({**c, "drop_reason": f"on for {on_frac:.2%} of samples (no variance)"})
             continue
         keep.append({**c, "on_fraction": round(on_frac, 4)})
         columns.append(col)
 
     if not keep:
-        return {"n_samples": n, "n_features": 0, "r_squared": None,
-                "intercept": None, "candidates": [], "applied": 0,
-                "dropped": dropped, "warning": "every candidate dropped"}
+        return {
+            "n_samples": n,
+            "n_features": 0,
+            "r_squared": None,
+            "intercept": None,
+            "candidates": [],
+            "applied": 0,
+            "dropped": dropped,
+            "warning": "every candidate dropped",
+        }
 
     # Transpose columns into (n, p) matrix
     X = [[columns[j][i] for j in range(len(columns))] for i in range(n)]
@@ -290,8 +320,7 @@ def regress(
         }
         if apply_ and coef > 0:
             try:
-                _pc.set_fixed_power(client, c["entry_id"],
-                                    power=round(coef, 1))
+                _pc.set_fixed_power(client, c["entry_id"], power=round(coef, 1))
                 row["applied"] = True
                 applied_count += 1
             except Exception as exc:

@@ -6,8 +6,6 @@ Service: `POST services/weather/get_forecasts`.
 
 from __future__ import annotations
 
-from typing import Any, Optional
-
 
 def convertible_units(client) -> dict[str, list[str]]:
     """Retrieve supported units for weather measurement types.
@@ -46,9 +44,7 @@ def subscribe_forecast(client, *, entity_id: str, forecast_type: str) -> dict:
         raise ValueError("forecast_type is required")
     valid_types = {"daily", "hourly", "twice_daily"}
     if forecast_type not in valid_types:
-        raise ValueError(
-            f"forecast_type must be one of {valid_types}, got: {forecast_type}"
-        )
+        raise ValueError(f"forecast_type must be one of {valid_types}, got: {forecast_type}")
 
     payload = {
         "entity_id": entity_id,

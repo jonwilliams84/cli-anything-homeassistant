@@ -34,12 +34,15 @@ def info(client) -> dict:
     return client.ws_call("energy/info") or {}
 
 
-def fossil_energy_consumption(client, *,
-                                energy_statistic_ids: list[str],
-                                co2_signal_entity: str,
-                                start_time: str,
-                                end_time: Optional[str] = None,
-                                period: str = "hour") -> dict:
+def fossil_energy_consumption(
+    client,
+    *,
+    energy_statistic_ids: list[str],
+    co2_signal_entity: str,
+    start_time: str,
+    end_time: Optional[str] = None,
+    period: str = "hour",
+) -> dict:
     """Derive fossil-fuel kWh-equivalent for a stat over a period.
 
     Used by the energy dashboard to compute the "% renewable" gauge.

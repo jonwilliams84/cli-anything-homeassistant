@@ -30,8 +30,9 @@ def list_exposed(client, *, assistant: str | None = None) -> dict:
     return filtered
 
 
-def expose_entity(client, *, assistants: list[str], entity_ids: list[str],
-                  should_expose: bool) -> dict:
+def expose_entity(
+    client, *, assistants: list[str], entity_ids: list[str], should_expose: bool
+) -> dict:
     """Expose or hide entities from assistants.
 
     WS: ``homeassistant/expose_entity``
@@ -48,11 +49,14 @@ def expose_entity(client, *, assistants: list[str], entity_ids: list[str],
     if not isinstance(entity_ids, list):
         raise ValueError("entity_ids must be a list")
 
-    return client.ws_call("homeassistant/expose_entity", {
-        "assistants": assistants,
-        "entity_ids": entity_ids,
-        "should_expose": should_expose,
-    })
+    return client.ws_call(
+        "homeassistant/expose_entity",
+        {
+            "assistants": assistants,
+            "entity_ids": entity_ids,
+            "should_expose": should_expose,
+        },
+    )
 
 
 def get_expose_new_entities(client, *, assistant: str) -> bool:
@@ -67,14 +71,16 @@ def get_expose_new_entities(client, *, assistant: str) -> bool:
     if not isinstance(assistant, str):
         raise ValueError("assistant must be a string")
 
-    result = client.ws_call("homeassistant/expose_new_entities/get", {
-        "assistant": assistant,
-    })
+    result = client.ws_call(
+        "homeassistant/expose_new_entities/get",
+        {
+            "assistant": assistant,
+        },
+    )
     return result.get("expose_new", False)
 
 
-def set_expose_new_entities(client, *, assistant: str,
-                             expose_new: bool) -> dict:
+def set_expose_new_entities(client, *, assistant: str, expose_new: bool) -> dict:
     """Set auto-expose for new entities to an assistant.
 
     WS: ``homeassistant/expose_new_entities/set``
@@ -86,7 +92,10 @@ def set_expose_new_entities(client, *, assistant: str,
     if not isinstance(assistant, str):
         raise ValueError("assistant must be a string")
 
-    return client.ws_call("homeassistant/expose_new_entities/set", {
-        "assistant": assistant,
-        "expose_new": expose_new,
-    })
+    return client.ws_call(
+        "homeassistant/expose_new_entities/set",
+        {
+            "assistant": assistant,
+            "expose_new": expose_new,
+        },
+    )

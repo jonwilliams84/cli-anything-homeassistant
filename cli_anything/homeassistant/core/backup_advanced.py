@@ -26,6 +26,7 @@ from typing import Any
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _require_nonempty(value: str, name: str) -> None:
     """Raise ValueError when *value* is falsy (None or empty string)."""
     if not value:
@@ -35,6 +36,7 @@ def _require_nonempty(value: str, name: str) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def details(client, *, backup_id: str) -> dict:
     """Return full metadata for one backup including per-agent availability.
@@ -215,9 +217,7 @@ def update_config(
         payload["automatic_backups_configured"] = automatic_backups_configured
 
     if not payload:
-        raise ValueError(
-            "update_config requires at least one field to update"
-        )
+        raise ValueError("update_config requires at least one field to update")
 
     result = client.ws_call("backup/config/update", payload)
     return result if isinstance(result, dict) else {}

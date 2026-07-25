@@ -32,15 +32,17 @@ from cli_anything.homeassistant.core._ws_subscribe_utils import (
 _VALID_FLOW_TYPES = frozenset({"config_flow", "options_flow"})
 
 # Domains supported by start_helper_preview (the generic dispatcher).
-_PREVIEW_DOMAINS = frozenset({
-    "group",
-    "generic_camera",
-    "mold_indicator",
-    "statistics",
-    "threshold",
-    "time_date",
-    "switch_as_x",
-})
+_PREVIEW_DOMAINS = frozenset(
+    {
+        "group",
+        "generic_camera",
+        "mold_indicator",
+        "statistics",
+        "threshold",
+        "time_date",
+        "switch_as_x",
+    }
+)
 
 
 def _validate_preview_args(flow_id: str, flow_type: str, user_input: dict) -> None:
@@ -52,9 +54,7 @@ def _validate_preview_args(flow_id: str, flow_type: str, user_input: dict) -> No
       - *user_input* is not a non-empty dict
     """
     if flow_type not in _VALID_FLOW_TYPES:
-        raise ValueError(
-            f"flow_type must be 'config_flow' or 'options_flow', got {flow_type!r}"
-        )
+        raise ValueError(f"flow_type must be 'config_flow' or 'options_flow', got {flow_type!r}")
     if not flow_id:
         raise ValueError("flow_id must be a non-empty string")
     if not isinstance(user_input, dict) or not user_input:
@@ -89,6 +89,7 @@ def _subscribe_preview(
 # Per-domain preview wrappers
 # ════════════════════════════════════════════════════════════════════════
 
+
 def start_group_preview(
     client,
     *,
@@ -113,9 +114,16 @@ def start_group_preview(
         For invalid ``flow_type``, empty ``flow_id``, non-dict ``user_input``,
         non-callable ``on_event``, or missing ``stop_event`` / ``max_events``.
     """
-    _subscribe_preview(client, "group/start_preview",
-                       flow_id, flow_type, user_input,
-                       on_event, stop_event, max_events)
+    _subscribe_preview(
+        client,
+        "group/start_preview",
+        flow_id,
+        flow_type,
+        user_input,
+        on_event,
+        stop_event,
+        max_events,
+    )
 
 
 def start_generic_camera_preview(
@@ -141,9 +149,16 @@ def start_generic_camera_preview(
     ValueError
         For invalid args or missing stop/max.
     """
-    _subscribe_preview(client, "generic_camera/start_preview",
-                       flow_id, flow_type, user_input,
-                       on_event, stop_event, max_events)
+    _subscribe_preview(
+        client,
+        "generic_camera/start_preview",
+        flow_id,
+        flow_type,
+        user_input,
+        on_event,
+        stop_event,
+        max_events,
+    )
 
 
 def start_mold_indicator_preview(
@@ -166,9 +181,16 @@ def start_mold_indicator_preview(
     ValueError
         For invalid args or missing stop/max.
     """
-    _subscribe_preview(client, "mold_indicator/start_preview",
-                       flow_id, flow_type, user_input,
-                       on_event, stop_event, max_events)
+    _subscribe_preview(
+        client,
+        "mold_indicator/start_preview",
+        flow_id,
+        flow_type,
+        user_input,
+        on_event,
+        stop_event,
+        max_events,
+    )
 
 
 def start_statistics_preview(
@@ -191,9 +213,16 @@ def start_statistics_preview(
     ValueError
         For invalid args or missing stop/max.
     """
-    _subscribe_preview(client, "statistics/start_preview",
-                       flow_id, flow_type, user_input,
-                       on_event, stop_event, max_events)
+    _subscribe_preview(
+        client,
+        "statistics/start_preview",
+        flow_id,
+        flow_type,
+        user_input,
+        on_event,
+        stop_event,
+        max_events,
+    )
 
 
 def start_threshold_preview(
@@ -216,9 +245,16 @@ def start_threshold_preview(
     ValueError
         For invalid args or missing stop/max.
     """
-    _subscribe_preview(client, "threshold/start_preview",
-                       flow_id, flow_type, user_input,
-                       on_event, stop_event, max_events)
+    _subscribe_preview(
+        client,
+        "threshold/start_preview",
+        flow_id,
+        flow_type,
+        user_input,
+        on_event,
+        stop_event,
+        max_events,
+    )
 
 
 def start_time_date_preview(
@@ -247,9 +283,16 @@ def start_time_date_preview(
     ValueError
         For invalid args or missing stop/max.
     """
-    _subscribe_preview(client, "time_date/start_preview",
-                       flow_id, flow_type, user_input,
-                       on_event, stop_event, max_events)
+    _subscribe_preview(
+        client,
+        "time_date/start_preview",
+        flow_id,
+        flow_type,
+        user_input,
+        on_event,
+        stop_event,
+        max_events,
+    )
 
 
 def start_switch_as_x_preview(
@@ -272,14 +315,22 @@ def start_switch_as_x_preview(
     ValueError
         For invalid args or missing stop/max.
     """
-    _subscribe_preview(client, "switch_as_x/start_preview",
-                       flow_id, flow_type, user_input,
-                       on_event, stop_event, max_events)
+    _subscribe_preview(
+        client,
+        "switch_as_x/start_preview",
+        flow_id,
+        flow_type,
+        user_input,
+        on_event,
+        stop_event,
+        max_events,
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════
 # Generic dispatcher
 # ════════════════════════════════════════════════════════════════════════
+
 
 def start_helper_preview(
     client,
@@ -309,6 +360,13 @@ def start_helper_preview(
             f"domain {domain!r} is not a supported preview domain; "
             f"must be one of {sorted(_PREVIEW_DOMAINS)}"
         )
-    _subscribe_preview(client, f"{domain}/start_preview",
-                       flow_id, flow_type, user_input,
-                       on_event, stop_event, max_events)
+    _subscribe_preview(
+        client,
+        f"{domain}/start_preview",
+        flow_id,
+        flow_type,
+        user_input,
+        on_event,
+        stop_event,
+        max_events,
+    )

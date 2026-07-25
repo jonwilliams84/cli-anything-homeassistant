@@ -30,9 +30,9 @@ def find_tag(client, ident: str) -> Optional[dict]:
     return None
 
 
-def create(client, tag_id: str, *,
-            name: Optional[str] = None,
-            description: Optional[str] = None) -> dict:
+def create(
+    client, tag_id: str, *, name: Optional[str] = None, description: Optional[str] = None
+) -> dict:
     """Create a new tag via ``tag/create``.
 
     ``tag_id`` is the value scanned (typically the NFC tag UID); HA stores
@@ -43,19 +43,23 @@ def create(client, tag_id: str, *,
     if not tag_id:
         raise ValueError("tag_id is required")
     payload: dict[str, Any] = {"tag_id": tag_id}
-    if name is not None:        payload["name"] = name
-    if description is not None: payload["description"] = description
+    if name is not None:
+        payload["name"] = name
+    if description is not None:
+        payload["description"] = description
     return client.ws_call("tag/create", payload) or {}
 
 
-def update(client, tag_id: str, *,
-            name: Optional[str] = None,
-            description: Optional[str] = None) -> dict:
+def update(
+    client, tag_id: str, *, name: Optional[str] = None, description: Optional[str] = None
+) -> dict:
     if not tag_id:
         raise ValueError("tag_id is required")
     payload: dict[str, Any] = {"tag_id": tag_id}
-    if name is not None:        payload["name"] = name
-    if description is not None: payload["description"] = description
+    if name is not None:
+        payload["name"] = name
+    if description is not None:
+        payload["description"] = description
     return client.ws_call("tag/update", payload) or {}
 
 

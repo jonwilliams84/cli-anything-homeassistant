@@ -71,10 +71,10 @@ _BAD_FIXED_DOMAINS = frozenset({"binary_sensor"})
 # The membership list fields on the powercalc `group_custom` options form, and
 # the kwarg each maps to in this module's writers.
 _GROUP_LIST_FIELDS = (
-    "group_member_sensors",   # member powercalc config-entry IDs → power+energy
-    "group_power_entities",   # external power sensor entity IDs   → power rollup
+    "group_member_sensors",  # member powercalc config-entry IDs → power+energy
+    "group_power_entities",  # external power sensor entity IDs   → power rollup
     "group_energy_entities",  # external energy sensor entity IDs  → energy rollup
-    "sub_groups",             # child powercalc group config-entry IDs
+    "sub_groups",  # child powercalc group config-entry IDs
 )
 # Scalar fields we resend verbatim so a list edit doesn't blank them.
 _GROUP_SCALAR_FIELDS = ("area", "floor")
@@ -114,7 +114,8 @@ def _open_group_custom(client, entry_id: str) -> dict:
     current field values). Raises if the entry exposes no `group_custom` step.
     """
     init = client.post(
-        "config/config_entries/options/flow", {"handler": entry_id},
+        "config/config_entries/options/flow",
+        {"handler": entry_id},
     )
     flow_id = init.get("flow_id")
     if not flow_id:
@@ -135,8 +136,7 @@ def _open_group_custom(client, entry_id: str) -> dict:
         )
         if resp.get("type") != "form":
             raise RuntimeError(
-                f"Expected `form` after selecting group_custom, got "
-                f"{resp.get('type')!r}: {resp!r}",
+                f"Expected `form` after selecting group_custom, got {resp.get('type')!r}: {resp!r}",
             )
         return resp
     return init
@@ -182,13 +182,17 @@ def _diff_lists(a: list, b: list) -> bool:
     return set(a or []) != set(b or [])
 
 
-def set_group_members(client, entry_id: str, *,
-                       member_sensors: list[str] | None = None,
-                       power_entities: list[str] | None = None,
-                       energy_entities: list[str] | None = None,
-                       sub_groups: list[str] | None = None,
-                       reload: bool = True,
-                       verify: bool = True) -> dict:
+def set_group_members(
+    client,
+    entry_id: str,
+    *,
+    member_sensors: list[str] | None = None,
+    power_entities: list[str] | None = None,
+    energy_entities: list[str] | None = None,
+    sub_groups: list[str] | None = None,
+    reload: bool = True,
+    verify: bool = True,
+) -> dict:
     """REPLACE a group's membership, preserving every field you don't touch.
 
     Reads the current config first and resends *all* membership fields, so
@@ -207,8 +211,7 @@ def set_group_members(client, entry_id: str, *,
     """
     if not entry_id:
         raise ValueError("entry_id is required")
-    if all(v is None for v in
-           (member_sensors, power_entities, energy_entities, sub_groups)):
+    if all(v is None for v in (member_sensors, power_entities, energy_entities, sub_groups)):
         raise ValueError(
             "Provide at least one of member_sensors / power_entities / "
             "energy_entities / sub_groups",
@@ -217,8 +220,10 @@ def set_group_members(client, entry_id: str, *,
     form = _open_group_custom(client, entry_id)
     flow_id = form["flow_id"]
     fields = _form_field_map(form)
-    current = {n: (_form_current_value(fields[n]) if n in fields else None)
-               for n in (*_GROUP_LIST_FIELDS, *_GROUP_SCALAR_FIELDS)}
+    current = {
+        n: (_form_current_value(fields[n]) if n in fields else None)
+        for n in (*_GROUP_LIST_FIELDS, *_GROUP_SCALAR_FIELDS)
+    }
 
     desired = {
         "group_member_sensors": member_sensors,
@@ -231,15 +236,19 @@ def set_group_members(client, entry_id: str, *,
         if name not in fields:
             continue
         val = desired[name]
-        payload[name] = list(val) if val is not None else \
-            (list(current[name]) if isinstance(current[name], list) else [])
+        payload[name] = (
+            list(val)
+            if val is not None
+            else (list(current[name]) if isinstance(current[name], list) else [])
+        )
     # Resend scalar fields verbatim so they aren't cleared.
     for name in _GROUP_SCALAR_FIELDS:
         if name in fields and current[name] not in (None, ""):
             payload[name] = current[name]
 
     resp = client.post(
-        f"config/config_entries/options/flow/{flow_id}", payload,
+        f"config/config_entries/options/flow/{flow_id}",
+        payload,
     )
     # Walk any trailing confirm steps. Bounded so a flow that keeps returning a
     # form (or a fake that always does) can't spin forever.
@@ -247,7 +256,8 @@ def set_group_members(client, entry_id: str, *,
         if resp.get("type") != "form":
             break
         resp = client.post(
-            f"config/config_entries/options/flow/{flow_id}", {},
+            f"config/config_entries/options/flow/{flow_id}",
+            {},
         )
 
     if reload:
@@ -269,18 +279,22 @@ def set_group_members(client, entry_id: str, *,
                 }
         if mismatches:
             raise RuntimeError(
-                f"Group {entry_id}: write did not persist for "
-                f"{list(mismatches)} — {mismatches}",
+                f"Group {entry_id}: write did not persist for {list(mismatches)} — {mismatches}",
             )
         resp = {**resp, "_verified": {"stored": stored}}
     return resp
 
 
-def add_group_members(client, entry_id: str, *,
-                       member_sensors: Iterable[str] | None = None,
-                       power_entities: Iterable[str] | None = None,
-                       energy_entities: Iterable[str] | None = None,
-                       reload: bool = True, verify: bool = True) -> dict:
+def add_group_members(
+    client,
+    entry_id: str,
+    *,
+    member_sensors: Iterable[str] | None = None,
+    power_entities: Iterable[str] | None = None,
+    energy_entities: Iterable[str] | None = None,
+    reload: bool = True,
+    verify: bool = True,
+) -> dict:
     """SAFELY add members to a group (read current config → merge → write).
 
     Reads the *configured* lists via :func:`get_group_config` (not the resolved
@@ -302,35 +316,41 @@ def add_group_members(client, entry_id: str, *,
     }
     if not any(adds.values()):
         raise ValueError(
-            "Provide at least one of member_sensors / power_entities / "
-            "energy_entities to add",
+            "Provide at least one of member_sensors / power_entities / energy_entities to add",
         )
     cfg = get_group_config(client, entry_id)
     merged = {
-        "member_sensors": list(dict.fromkeys(
-            (cfg["group_member_sensors"] or []) + adds["member_sensors"])),
-        "power_entities": list(dict.fromkeys(
-            (cfg["group_power_entities"] or []) + adds["power_entities"])),
-        "energy_entities": list(dict.fromkeys(
-            (cfg["group_energy_entities"] or []) + adds["energy_entities"])),
+        "member_sensors": list(
+            dict.fromkeys((cfg["group_member_sensors"] or []) + adds["member_sensors"])
+        ),
+        "power_entities": list(
+            dict.fromkeys((cfg["group_power_entities"] or []) + adds["power_entities"])
+        ),
+        "energy_entities": list(
+            dict.fromkeys((cfg["group_energy_entities"] or []) + adds["energy_entities"])
+        ),
     }
     return set_group_members(
-        client, entry_id,
-        member_sensors=merged["member_sensors"] if adds["member_sensors"]
-        else None,
-        power_entities=merged["power_entities"] if adds["power_entities"]
-        else None,
-        energy_entities=merged["energy_entities"] if adds["energy_entities"]
-        else None,
-        reload=reload, verify=verify,
+        client,
+        entry_id,
+        member_sensors=merged["member_sensors"] if adds["member_sensors"] else None,
+        power_entities=merged["power_entities"] if adds["power_entities"] else None,
+        energy_entities=merged["energy_entities"] if adds["energy_entities"] else None,
+        reload=reload,
+        verify=verify,
     )
 
 
-def remove_group_members(client, entry_id: str, *,
-                          member_sensors: Iterable[str] | None = None,
-                          power_entities: Iterable[str] | None = None,
-                          energy_entities: Iterable[str] | None = None,
-                          reload: bool = True, verify: bool = True) -> dict:
+def remove_group_members(
+    client,
+    entry_id: str,
+    *,
+    member_sensors: Iterable[str] | None = None,
+    power_entities: Iterable[str] | None = None,
+    energy_entities: Iterable[str] | None = None,
+    reload: bool = True,
+    verify: bool = True,
+) -> dict:
     """SAFELY remove members from a group (read current config → filter → write).
 
     Reads the configured lists, drops the supplied members per field, and writes
@@ -346,29 +366,38 @@ def remove_group_members(client, entry_id: str, *,
     }
     if not any(drops.values()):
         raise ValueError(
-            "Provide at least one of member_sensors / power_entities / "
-            "energy_entities to remove",
+            "Provide at least one of member_sensors / power_entities / energy_entities to remove",
         )
     cfg = get_group_config(client, entry_id)
     return set_group_members(
-        client, entry_id,
-        member_sensors=([e for e in (cfg["group_member_sensors"] or [])
-                         if e not in drops["member_sensors"]]
-                        if drops["member_sensors"] else None),
-        power_entities=([e for e in (cfg["group_power_entities"] or [])
-                         if e not in drops["power_entities"]]
-                        if drops["power_entities"] else None),
-        energy_entities=([e for e in (cfg["group_energy_entities"] or [])
-                          if e not in drops["energy_entities"]]
-                         if drops["energy_entities"] else None),
-        reload=reload, verify=verify,
+        client,
+        entry_id,
+        member_sensors=(
+            [e for e in (cfg["group_member_sensors"] or []) if e not in drops["member_sensors"]]
+            if drops["member_sensors"]
+            else None
+        ),
+        power_entities=(
+            [e for e in (cfg["group_power_entities"] or []) if e not in drops["power_entities"]]
+            if drops["power_entities"]
+            else None
+        ),
+        energy_entities=(
+            [e for e in (cfg["group_energy_entities"] or []) if e not in drops["energy_entities"]]
+            if drops["energy_entities"]
+            else None
+        ),
+        reload=reload,
+        verify=verify,
     )
 
 
 # ── power↔energy sibling derivation + group discovery ──────────────────────
 
-def energy_siblings_for(client, power_entities: Iterable[str], *,
-                        states: list[dict] | None = None) -> dict:
+
+def energy_siblings_for(
+    client, power_entities: Iterable[str], *, states: list[dict] | None = None
+) -> dict:
     """Map each ``*_power`` sensor to its matching powercalc ``*_energy`` sensor.
 
     Powercalc names an entry's energy sensor by swapping the ``_power`` suffix
@@ -385,13 +414,12 @@ def energy_siblings_for(client, power_entities: Iterable[str], *,
 
     def is_energy(eid: str) -> bool:
         s = by_id.get(eid)
-        return bool(s) and (s.get("attributes") or {}).get(
-            "device_class") == "energy"
+        return bool(s) and (s.get("attributes") or {}).get("device_class") == "energy"
 
     siblings: dict[str, str] = {}
     no_sibling: list[str] = []
     for pe in power_entities:
-        cand = pe[:-len("_power")] + "_energy" if pe.endswith("_power") else None
+        cand = pe[: -len("_power")] + "_energy" if pe.endswith("_power") else None
         if cand and is_energy(cand):
             siblings[pe] = cand
         else:
@@ -399,10 +427,13 @@ def energy_siblings_for(client, power_entities: Iterable[str], *,
     return {"siblings": siblings, "no_sibling": no_sibling}
 
 
-def find_groups_containing(client, *, entry_ids: Iterable[str] | None = None,
-                            power_entities: Iterable[str] | None = None,
-                            energy_entities: Iterable[str] | None = None,
-                            ) -> list[dict]:
+def find_groups_containing(
+    client,
+    *,
+    entry_ids: Iterable[str] | None = None,
+    power_entities: Iterable[str] | None = None,
+    energy_entities: Iterable[str] | None = None,
+) -> list[dict]:
     """Find every powercalc group whose config references the given members.
 
     Scans all powercalc group entries' configured lists (via
@@ -434,13 +465,11 @@ def find_groups_containing(client, *, entry_ids: Iterable[str] | None = None,
             if hit:
                 matched[field] = hit
         if matched:
-            out.append({"entry_id": eid, "title": e.get("title"),
-                        "matched": matched})
+            out.append({"entry_id": eid, "title": e.get("title"), "matched": matched})
     return out
 
 
-def recreate_preserving_groups(client, *, entry_id: str, recreate,
-                                verify: bool = True) -> dict:
+def recreate_preserving_groups(client, *, entry_id: str, recreate, verify: bool = True) -> dict:
     """Delete a virtual_power entry and recreate it WITHOUT losing its rollups.
 
     Powercalc cannot change an entry's calculation mode in place, so a
@@ -477,7 +506,7 @@ def recreate_preserving_groups(client, *, entry_id: str, recreate,
         base = fn
         for suf in (" Power", " power", " Energy", " energy"):
             if base.endswith(suf):
-                base = base[:-len(suf)]
+                base = base[: -len(suf)]
         if base.strip() == (info.get("title") or "").strip():
             dc = a.get("device_class")
             if dc == "power":
@@ -486,21 +515,22 @@ def recreate_preserving_groups(client, *, entry_id: str, recreate,
                 esensor = s["entity_id"]
 
     snapshot = find_groups_containing(
-        client, entry_ids=[entry_id],
+        client,
+        entry_ids=[entry_id],
         power_entities=[psensor] if psensor else None,
         energy_entities=[esensor] if esensor else None,
     )
     _ce.delete_entry(client, entry_id)
     created = recreate()
-    new_entry_id = (created.get("result", {}) or {}).get("entry_id") \
-        if isinstance(created, dict) else None
+    new_entry_id = (
+        (created.get("result", {}) or {}).get("entry_id") if isinstance(created, dict) else None
+    )
 
     restored = []
     for g in snapshot:
         m = g["matched"]
         kwargs: dict[str, Any] = {}
-        if new_entry_id and (m.get("group_member_sensors")
-                             or m.get("sub_groups")):
+        if new_entry_id and (m.get("group_member_sensors") or m.get("sub_groups")):
             kwargs["member_sensors"] = [new_entry_id]
         # entity-id memberships survive recreate (same sensor ids) but re-add
         # defensively in case the cascade touched them.
@@ -510,16 +540,20 @@ def recreate_preserving_groups(client, *, entry_id: str, recreate,
             kwargs["energy_entities"] = [esensor]
         if kwargs:
             try:
-                add_group_members(client, g["entry_id"], verify=verify,
-                                  **kwargs)
+                add_group_members(client, g["entry_id"], verify=verify, **kwargs)
                 restored.append({"group": g["entry_id"], "added": kwargs})
             except Exception as exc:  # noqa: BLE001 — report, don't abort
                 restored.append({"group": g["entry_id"], "error": str(exc)})
-    return {"created": created, "new_entry_id": new_entry_id,
-            "snapshot": snapshot, "restored": restored}
+    return {
+        "created": created,
+        "new_entry_id": new_entry_id,
+        "snapshot": snapshot,
+        "restored": restored,
+    }
 
 
 # ── virtual_power creation ────────────────────────────────────────────────
+
 
 def create_virtual_power(
     client,
@@ -559,9 +593,7 @@ def create_virtual_power(
 
     domain = source_entity.split(".", 1)[0]
     if domain in _BAD_FIXED_DOMAINS and power is not None:
-        suggested = (
-            f"\"{{{{ {power} if is_state('{source_entity}', 'on') else 0 }}}}\""
-        )
+        suggested = f"\"{{{{ {power} if is_state('{source_entity}', 'on') else 0 }}}}\""
         raise ValueError(
             f"Source `{source_entity}` is a {domain!r} — powercalc's "
             f"fixed-mode `power: <number>` form does not gate on {domain} "
@@ -571,28 +603,32 @@ def create_virtual_power(
         )
 
     init = client.post(
-        "config/config_entries/flow", {"handler": POWERCALC_DOMAIN},
+        "config/config_entries/flow",
+        {"handler": POWERCALC_DOMAIN},
     )
     flow_id = init["flow_id"]
     client.post(
         f"config/config_entries/flow/{flow_id}",
         {"next_step_id": "virtual_power"},
     )
-    client.post(f"config/config_entries/flow/{flow_id}", {
-        "entity_id": source_entity,
-        "name": name,
-        "mode": "fixed",
-        "create_energy_sensor": create_energy_sensor,
-        "create_utility_meters": create_utility_meters,
-        "standby_power": standby_power,
-    })
+    client.post(
+        f"config/config_entries/flow/{flow_id}",
+        {
+            "entity_id": source_entity,
+            "name": name,
+            "mode": "fixed",
+            "create_energy_sensor": create_energy_sensor,
+            "create_utility_meters": create_utility_meters,
+            "standby_power": standby_power,
+        },
+    )
 
     fixed_payload: dict[str, Any] = (
-        {"power_template": power_template}
-        if power_template is not None else {"power": power}
+        {"power_template": power_template} if power_template is not None else {"power": power}
     )
     resp = client.post(
-        f"config/config_entries/flow/{flow_id}", fixed_payload,
+        f"config/config_entries/flow/{flow_id}",
+        fixed_payload,
     )
 
     if resp.get("step_id") == "assign_groups":
@@ -609,8 +645,10 @@ def create_virtual_power(
 
 # ── list / reload / set-power-template ─────────────────────────────────────
 
-def list_entries(client, *, title_contains: str | None = None,
-                 state: str | None = None) -> list[dict]:
+
+def list_entries(
+    client, *, title_contains: str | None = None, state: str | None = None
+) -> list[dict]:
     """Return all powercalc config entries.
 
     Optional filters:
@@ -621,8 +659,7 @@ def list_entries(client, *, title_contains: str | None = None,
     entries = _ce.list_entries(client, domain=POWERCALC_DOMAIN)
     if title_contains is not None:
         needle = title_contains.lower()
-        entries = [e for e in entries
-                   if needle in (e.get("title") or "").lower()]
+        entries = [e for e in entries if needle in (e.get("title") or "").lower()]
     if state is not None:
         entries = [e for e in entries if e.get("state") == state]
     return entries
@@ -677,18 +714,18 @@ def _open_fixed_step(client, entry_id: str) -> str:
                 f"Not a fixed-mode virtual_power entry?",
             )
         resp = _ce.options_flow_configure(
-            client, flow_id, {"next_step_id": "fixed"},
+            client,
+            flow_id,
+            {"next_step_id": "fixed"},
         )
         if resp.get("type") != "form":
             raise RuntimeError(
-                f"Expected form after selecting `fixed`, got "
-                f"{resp.get('type')!r}: {resp!r}",
+                f"Expected form after selecting `fixed`, got {resp.get('type')!r}: {resp!r}",
             )
     return flow_id
 
 
-def set_power_template(client, entry_id: str, *,
-                        power_template: str, reload: bool = True) -> dict:
+def set_power_template(client, entry_id: str, *, power_template: str, reload: bool = True) -> dict:
     """Replace the ``power_template`` on a fixed-mode virtual_power entry.
 
     The 6-line manual flow (options-init → options-configure
@@ -710,7 +747,9 @@ def set_power_template(client, entry_id: str, *,
         raise ValueError("power_template is required and must be non-empty")
     flow_id = _open_fixed_step(client, entry_id)
     resp = _ce.options_flow_configure(
-        client, flow_id, {"power_template": power_template},
+        client,
+        flow_id,
+        {"power_template": power_template},
     )
     if reload:
         try:
@@ -720,8 +759,7 @@ def set_power_template(client, entry_id: str, *,
     return resp
 
 
-def set_fixed_power(client, entry_id: str, *, power: float,
-                    reload: bool = True) -> dict:
+def set_fixed_power(client, entry_id: str, *, power: float, reload: bool = True) -> dict:
     """Replace the fixed ``power`` (constant W) on a fixed-mode entry.
 
     Submits ``power`` **and clears any existing** ``power_template`` — powercalc
@@ -738,7 +776,9 @@ def set_fixed_power(client, entry_id: str, *, power: float,
         raise ValueError("power is required")
     flow_id = _open_fixed_step(client, entry_id)
     resp = _ce.options_flow_configure(
-        client, flow_id, {"power": power, "power_template": ""},
+        client,
+        flow_id,
+        {"power": power, "power_template": ""},
     )
     if reload:
         try:
@@ -749,6 +789,7 @@ def set_fixed_power(client, entry_id: str, *, power: float,
 
 
 # ── basic_options step: standby_power + source ─────────────────────────────
+
 
 def _open_basic_step(client, entry_id: str) -> str:
     """Open a virtual_power entry's options flow and advance to the
@@ -769,7 +810,9 @@ def _open_basic_step(client, entry_id: str) -> str:
                 f"(menu options: {init.get('menu_options')!r}).",
             )
         resp = _ce.options_flow_configure(
-            client, flow_id, {"next_step_id": "basic_options"},
+            client,
+            flow_id,
+            {"next_step_id": "basic_options"},
         )
         if resp.get("type") != "form":
             raise RuntimeError(
@@ -785,8 +828,9 @@ def _source_entity_for(client, entry_id: str) -> str | None:
     " Power" suffix → ``source_entity``). Used so :func:`set_standby` can
     re-send ``entity_id`` and never blank the source.
     """
-    title = next((e.get("title") for e in list_entries(client)
-                  if e.get("entry_id") == entry_id), None)
+    title = next(
+        (e.get("title") for e in list_entries(client) if e.get("entry_id") == entry_id), None
+    )
     if not title:
         return None
     target = title.strip()
@@ -800,17 +844,22 @@ def _source_entity_for(client, entry_id: str) -> str | None:
         fn = a.get("friendly_name") or ""
         for suffix in (" Power", " power"):
             if fn.endswith(suffix):
-                fn = fn[:-len(suffix)]
+                fn = fn[: -len(suffix)]
         if fn.strip() == target and a.get("source_entity"):
             return a["source_entity"]
     return None
 
 
-def set_standby(client, entry_id: str, *, standby_power: float,
-                source_entity: str | None = None,
-                create_energy_sensor: bool = True,
-                create_utility_meters: bool = False,
-                reload: bool = True) -> dict:
+def set_standby(
+    client,
+    entry_id: str,
+    *,
+    standby_power: float,
+    source_entity: str | None = None,
+    create_energy_sensor: bool = True,
+    create_utility_meters: bool = False,
+    reload: bool = True,
+) -> dict:
     """Set the **off-state** ``standby_power`` (W) on a virtual_power entry.
 
     standby_power lives on the ``basic_options`` step, not ``fixed`` — so
@@ -834,12 +883,16 @@ def set_standby(client, entry_id: str, *, standby_power: float,
             f"blank the source.",
         )
     flow_id = _open_basic_step(client, entry_id)
-    resp = _ce.options_flow_configure(client, flow_id, {
-        "entity_id": src,
-        "standby_power": standby_power,
-        "create_energy_sensor": create_energy_sensor,
-        "create_utility_meters": create_utility_meters,
-    })
+    resp = _ce.options_flow_configure(
+        client,
+        flow_id,
+        {
+            "entity_id": src,
+            "standby_power": standby_power,
+            "create_energy_sensor": create_energy_sensor,
+            "create_utility_meters": create_utility_meters,
+        },
+    )
     if reload:
         try:
             reload_entry(client, entry_id)
@@ -881,7 +934,7 @@ def read_entry(client, entry_id: str) -> dict:
                 fn = a.get("friendly_name") or ""
                 for suffix in (" Power", " power"):
                     if fn.endswith(suffix):
-                        fn = fn[:-len(suffix)]
+                        fn = fn[: -len(suffix)]
                 if fn.strip() == target:
                     out["calculation_mode"] = a.get("calculation_mode")
                     out["source_entity"] = a.get("source_entity")
@@ -893,16 +946,20 @@ def read_entry(client, entry_id: str) -> dict:
     # Best-effort configured values from the options-flow forms.
     try:
         configured: dict[str, Any] = {}
-        for step, names in (("basic_options", ("standby_power",)),
-                            ("fixed", ("power", "power_template"))):
+        for step, names in (
+            ("basic_options", ("standby_power",)),
+            ("fixed", ("power", "power_template")),
+        ):
             init = _ce.options_flow_init(client, entry_id)
             fid = init.get("flow_id")
             if not fid:
                 continue
-            form = (_ce.options_flow_configure(client, fid,
-                                               {"next_step_id": step})
-                    if init.get("type") == "menu" else init)
-            for f in (form.get("data_schema") or []):
+            form = (
+                _ce.options_flow_configure(client, fid, {"next_step_id": step})
+                if init.get("type") == "menu"
+                else init
+            )
+            for f in form.get("data_schema") or []:
                 n = f.get("name")
                 if n in names:
                     val = _form_current_value(f)

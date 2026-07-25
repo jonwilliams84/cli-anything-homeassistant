@@ -16,7 +16,6 @@ For recurring events, recurrence_range ∈ {"", "THISANDFUTURE"} controls scope.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
 from typing import Any
 
 
@@ -60,9 +59,14 @@ def create_event(client, *, entity_id: str, event: dict) -> dict:
     return client.ws_call("calendar/event/create", payload)
 
 
-def update_event(client, *, entity_id: str, event: dict,
-                 recurrence_id: str | None = None,
-                 recurrence_range: str | None = None) -> dict:
+def update_event(
+    client,
+    *,
+    entity_id: str,
+    event: dict,
+    recurrence_id: str | None = None,
+    recurrence_range: str | None = None,
+) -> dict:
     """Update an existing calendar event via WS.
 
     Args:
@@ -105,9 +109,14 @@ def update_event(client, *, entity_id: str, event: dict,
     return client.ws_call("calendar/event/update", payload)
 
 
-def delete_event(client, *, entity_id: str, uid: str,
-                 recurrence_id: str | None = None,
-                 recurrence_range: str | None = None) -> dict:
+def delete_event(
+    client,
+    *,
+    entity_id: str,
+    uid: str,
+    recurrence_id: str | None = None,
+    recurrence_range: str | None = None,
+) -> dict:
     """Delete a calendar event via WS.
 
     Args:

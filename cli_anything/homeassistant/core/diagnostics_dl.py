@@ -21,7 +21,10 @@ from typing import Any
 
 
 def download_config_entry_diagnostics(
-    client, *, entry_id: str, domain: str | None = None,
+    client,
+    *,
+    entry_id: str,
+    domain: str | None = None,
 ) -> Any:
     """Download diagnostics bundle for a config entry.
 
@@ -41,13 +44,18 @@ def download_config_entry_diagnostics(
             "in URL construction (HA's route is "
             "/api/diagnostics/config_entry/{entry_id} with no domain "
             "segment). Drop the kwarg.",
-            DeprecationWarning, stacklevel=2,
+            DeprecationWarning,
+            stacklevel=2,
         )
     return client.get(f"diagnostics/config_entry/{entry_id}")
 
 
 def download_device_diagnostics(
-    client, *, entry_id: str, device_id: str, domain: str | None = None,
+    client,
+    *,
+    entry_id: str,
+    device_id: str,
+    domain: str | None = None,
 ) -> Any:
     """Download diagnostics bundle for a specific device within a config entry.
 
@@ -64,7 +72,8 @@ def download_device_diagnostics(
         warnings.warn(
             "download_device_diagnostics: `domain` is no longer used in URL "
             "construction. Drop the kwarg.",
-            DeprecationWarning, stacklevel=2,
+            DeprecationWarning,
+            stacklevel=2,
         )
     return client.get(f"diagnostics/config_entry/{entry_id}/device/{device_id}")
 

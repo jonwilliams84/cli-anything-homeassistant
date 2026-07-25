@@ -104,9 +104,7 @@ def fossil_energy_consumption(
     if not co2_statistic_id:
         raise ValueError("co2_statistic_id must not be empty")
     if period not in _VALID_PERIODS:
-        raise ValueError(
-            f"period must be one of {sorted(_VALID_PERIODS)!r}, got {period!r}"
-        )
+        raise ValueError(f"period must be one of {sorted(_VALID_PERIODS)!r}, got {period!r}")
 
     payload: dict[str, Any] = {
         "start_time": start_time,

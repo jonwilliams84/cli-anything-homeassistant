@@ -21,6 +21,7 @@ from cli_anything.homeassistant.core._ws_subscribe_utils import (
 # Backup hooks — lifecycle markers
 # ════════════════════════════════════════════════════════════════════════
 
+
 def backup_start(client) -> dict:
     """Mark backup as in-progress. WS ``backup/start``."""
     return client.ws_call("backup/start", {})
@@ -72,6 +73,7 @@ def backup_subscribe_events(
 # Repairs — issue management
 # ════════════════════════════════════════════════════════════════════════
 
+
 def get_issue_data(client, *, domain: str, issue_id: str) -> dict:
     """Fetch issue data (problem details) for a domain/issue_id pair.
 
@@ -81,8 +83,7 @@ def get_issue_data(client, *, domain: str, issue_id: str) -> dict:
         raise ValueError("domain required")
     if not issue_id:
         raise ValueError("issue_id required")
-    return client.ws_call("repairs/get_issue_data",
-                          {"domain": domain, "issue_id": issue_id})
+    return client.ws_call("repairs/get_issue_data", {"domain": domain, "issue_id": issue_id})
 
 
 def ignore_issue(client, *, domain: str, issue_id: str, ignore: bool = True) -> dict:
@@ -94,14 +95,15 @@ def ignore_issue(client, *, domain: str, issue_id: str, ignore: bool = True) -> 
         raise ValueError("domain required")
     if not issue_id:
         raise ValueError("issue_id required")
-    return client.ws_call("repairs/ignore_issue",
-                          {"domain": domain, "issue_id": issue_id,
-                           "ignore": ignore})
+    return client.ws_call(
+        "repairs/ignore_issue", {"domain": domain, "issue_id": issue_id, "ignore": ignore}
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════
 # Manifest — integration metadata
 # ════════════════════════════════════════════════════════════════════════
+
 
 def get_manifest(client, *, integration: str) -> dict:
     """Fetch manifest (integration metadata) for a given integration domain.
@@ -124,6 +126,7 @@ def list_manifests(client) -> dict:
 # ════════════════════════════════════════════════════════════════════════
 # Analytics — user analytics preferences
 # ════════════════════════════════════════════════════════════════════════
+
 
 def get_analytics(client) -> dict:
     """Fetch analytics preferences and onboarded status. WS ``analytics``.
@@ -150,6 +153,7 @@ def set_analytics_preferences(client, *, preferences: dict) -> dict:
 # Application credentials — OAuth integrations
 # ════════════════════════════════════════════════════════════════════════
 
+
 def application_credentials_config(client) -> dict:
     """Fetch supported OAuth integrations. WS ``application_credentials/config``.
 
@@ -165,13 +169,15 @@ def application_credentials_config_entry(client, *, config_entry_id: str) -> dic
     """
     if not config_entry_id:
         raise ValueError("config_entry_id required")
-    return client.ws_call("application_credentials/config_entry",
-                          {"config_entry_id": config_entry_id})
+    return client.ws_call(
+        "application_credentials/config_entry", {"config_entry_id": config_entry_id}
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════
 # MQTT debug — topic subscription and device debug info
 # ════════════════════════════════════════════════════════════════════════
+
 
 def mqtt_subscribe(
     client,

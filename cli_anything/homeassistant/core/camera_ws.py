@@ -44,9 +44,9 @@ def get_prefs(client, *, entity_id: str) -> dict:
     return client.ws_call("camera/get_prefs", {"entity_id": entity_id})
 
 
-def update_prefs(client, *, entity_id: str,
-                 preload_stream: bool | None = None,
-                 orientation: int | None = None) -> dict:
+def update_prefs(
+    client, *, entity_id: str, preload_stream: bool | None = None, orientation: int | None = None
+) -> dict:
     """Update camera stream preferences via WS `camera/update_prefs`.
 
     Args:
@@ -65,9 +65,7 @@ def update_prefs(client, *, entity_id: str,
         raise ValueError("at least one of preload_stream/orientation must be set")
     if orientation is not None:
         if not isinstance(orientation, int) or orientation < 1 or orientation > 8:
-            raise ValueError(
-                f"orientation must be an integer in range 1..8, got {orientation!r}"
-            )
+            raise ValueError(f"orientation must be an integer in range 1..8, got {orientation!r}")
     payload = {"entity_id": entity_id}
     if preload_stream is not None:
         payload["preload_stream"] = preload_stream
@@ -115,5 +113,6 @@ def webrtc_candidate(client, *, session_id: str, candidate: dict) -> dict:
         raise ValueError(f"session_id must be a non-empty string, got {session_id!r}")
     if not isinstance(candidate, dict) or not candidate:
         raise ValueError(f"candidate must be a non-empty dict, got {candidate!r}")
-    return client.ws_call("camera/webrtc/candidate",
-                           {"session_id": session_id, "candidate": candidate})
+    return client.ws_call(
+        "camera/webrtc/candidate", {"session_id": session_id, "candidate": candidate}
+    )

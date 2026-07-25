@@ -1,0 +1,122 @@
+# Tool configuration for cli-anything-homeassistant.
+#
+# This repo had no CI, no linter config and no scanning at all before this file
+# existed, despite being the largest of the cli-anything family and the one
+# driving live Home Assistant control.
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+# Correctness and security only. Opinionated style rules (UP045 union rewrites,
+# I001 import sorting, SIM/BLE001) are reported by the advisory security-scan
+# workflow rather than blocking a merge - keeping them out of the gate is what
+# stops a `security-findings` issue filling up with import-order nits.
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes - undefined names, unused imports
+    "S",      # flake8-bandit - security
+    "B",      # flake8-bugbear - likely bugs
+    "DTZ",    # naive datetime use
+    "ASYNC",  # async antipatterns
+    "RUF",    # ruff-specific correctness
+]
+ignore = [
+    "E501",    # line length - the formatter owns this
+    "E701",    # multiple statements on one line - formatting
+    "E702",
+    "B008",    # function call in argument default - required by click
+    "RUF012",  # mutable class attrs needing ClassVar
+    "RUF001",  # ambiguous unicode - deliberate box-drawing in the REPL skin
+    "RUF002",
+    "RUF003",
+    # --- deferred to the advisory lane, NOT waived ---
+    "B904",    # raise ... from err - bulk mechanical, message already preserved
+    "E402",    # deliberate lazy imports in CLI paths
+    "E741",
+    "RUF043",
+    "B017",
+    "RUF059",
+    "B007",
+    "RUF034",
+    "B018",
+    "S105",
+    "RUF100",  # see external= below
+    # S110/S112 (try/except/pass, try/except/continue): 30 sites in production
+    # code. Reading them, the dominant pattern is a deliberate capability probe -
+    # "GET this config endpoint, skip the entity if Home Assistant does not
+    # manage it via the UI" - which is correct behaviour against an API where
+    # absence is signalled by an error. 7 already carry that reasoning inline.
+    #
+    # They are NOT waived: the 23 without a written justification are tracked in
+    # the code-quality issue so each can be judged on its own merits (log it,
+    # narrow the exception, or document why silence is right). Blocking the gate
+    # on all 30 today would only invite a blanket ignore, which is worse.
+    #
+    # The two genuinely wrong ones - user callbacks in core/watch.py silently
+    # discarding exceptions, so a broken callback produced a short watch with no
+    # diagnostic - are fixed in this same change rather than deferred.
+    "S110",
+    "S112",
+]
+
+# Codes handled by the advisory scan rather than this blocking one. Declaring
+# them external stops RUF100 deleting their `# noqa` and with it the written
+# justification for every intentional broad except.
+external = ["BLE001", "FLY002", "FURB188", "TRY004", "SIM115", "UP", "I001", "SIM", "C4", "PTH", "RET", "ARG"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately do things that are findings in production code.
+"tests/**" = [
+    "S101",   # assert - that is what a test is
+    "S603", "S607",  # subprocess - tests round-trip the real CLI
+    "S314", "S320",  # XML parsing of fixture data
+    "S105", "S106", "S108",  # dummy tokens / tmp paths
+    "B011",   # assert False
+    "E741",   # one-letter loop vars in test scaffolding
+    "S110",   # tests deliberately swallow teardown errors
+    "B017",   # assertRaises(Exception) in negative-path tests
+    "F841",   # unused local in arrange/act/assert scaffolding
+]
+
+# --- individually justified file carve-outs ---
+# Filename timestamp for a local snapshot file - the user reads these in their
+# own timezone, so a UTC value would label the file with the wrong time.
+"cli_anything/homeassistant/core/lovelace.py" = ["DTZ005"]
+# `--since 14:30` / `--since 2026-07-25` is user input in LOCAL wall-clock time;
+# parsing it as UTC would silently shift every query by the UTC offset.
+"cli_anything/homeassistant/core/system.py" = ["DTZ005", "DTZ007"]
+# bandit/ruff both pattern-match the words "delete from" in an error message.
+# There is no database in this module - it edits Lovelace YAML.
+"cli_anything/homeassistant/core/lovelace_cards.py" = ["S608"]
+# prompt_toolkit imported inside try/except ImportError as an availability probe:
+# the import IS the test, so "unused" is the intended state.
+"cli_anything/homeassistant/utils/repl_skin.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "integration: needs a live Home Assistant (skipped unless available)",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["cli_anything"]
+branch = true
+omit = [
+    "tests/**",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+]

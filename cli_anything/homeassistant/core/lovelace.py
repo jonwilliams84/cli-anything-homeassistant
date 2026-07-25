@@ -10,6 +10,7 @@ from typing import Any
 
 # ---------------------------------------------------------------- dashboards
 
+
 def list_dashboards(client) -> list[dict]:
     """Return all Lovelace dashboards (the storage-mode + YAML-mode ones)."""
     data = client.ws_call("lovelace/dashboards/list")
@@ -89,9 +90,9 @@ def get_dashboard_config(client, url_path: str | None = None) -> dict:
     return client.ws_call("lovelace/config", payload)
 
 
-def save_dashboard_config(client, url_path: str, config: dict, *,
-                            snapshot: bool = False,
-                            snapshot_dir: str | None = None) -> Any:
+def save_dashboard_config(
+    client, url_path: str, config: dict, *, snapshot: bool = False, snapshot_dir: str | None = None
+) -> Any:
     """Replace a dashboard's config. The frontend will refresh open clients.
 
     Pass `snapshot=True` to write a JSON snapshot of the CURRENT dashboard
@@ -124,30 +125,29 @@ def save_dashboard_config(client, url_path: str, config: dict, *,
 
 # ---------------------------------------------------------------- snapshots
 
+
 def _snapshot_dir(snapshot_dir: str | None) -> str:
     import os
-    return snapshot_dir or os.path.expanduser(
-        "~/.cli-anything-homeassistant/snapshots")
+
+    return snapshot_dir or os.path.expanduser("~/.cli-anything-homeassistant/snapshots")
 
 
-def _write_snapshot(url_path: str, config: dict,
-                      snapshot_dir: str | None = None) -> str:
+def _write_snapshot(url_path: str, config: dict, snapshot_dir: str | None = None) -> str:
     import datetime as _dt
     import json
     import os
+
     target = _snapshot_dir(snapshot_dir)
     os.makedirs(target, exist_ok=True)
     ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     fname = f"{url_path}-{ts}.json"
     path = os.path.join(target, fname)
     with open(path, "w") as f:
-        json.dump({"url_path": url_path, "timestamp": ts,
-                    "config": config}, f, indent=2)
+        json.dump({"url_path": url_path, "timestamp": ts, "config": config}, f, indent=2)
     return path
 
 
-def snapshot_dashboard(client, url_path: str | None = None,
-                        snapshot_dir: str | None = None) -> str:
+def snapshot_dashboard(client, url_path: str | None = None, snapshot_dir: str | None = None) -> str:
     """Write the current state of a dashboard to a JSON snapshot file.
 
     Returns the absolute path of the written file. Call this BEFORE any
@@ -160,13 +160,13 @@ def snapshot_dashboard(client, url_path: str | None = None,
     return _write_snapshot(key, cfg, snapshot_dir)
 
 
-def list_snapshots(snapshot_dir: str | None = None,
-                     url_path: str | None = None) -> list[dict]:
+def list_snapshots(snapshot_dir: str | None = None, url_path: str | None = None) -> list[dict]:
     """List snapshot files in `snapshot_dir`. Filter by `url_path` if given.
 
     Each entry: ``{path, url_path, timestamp, bytes}`` — sorted newest first.
     """
     import os
+
     target = _snapshot_dir(snapshot_dir)
     if not os.path.isdir(target):
         return []
@@ -189,13 +189,13 @@ def list_snapshots(snapshot_dir: str | None = None,
             ts = ""
         if url_path is not None and up != url_path:
             continue
-        out.append({"path": path, "url_path": up, "timestamp": ts,
-                      "bytes": os.path.getsize(path)})
+        out.append({"path": path, "url_path": up, "timestamp": ts, "bytes": os.path.getsize(path)})
     return out
 
 
-def restore_dashboard_snapshot(client, snapshot_path: str,
-                                  *, url_path_override: str | None = None) -> Any:
+def restore_dashboard_snapshot(
+    client, snapshot_path: str, *, url_path_override: str | None = None
+) -> Any:
     """Restore a dashboard from a snapshot file written by
     ``snapshot_dashboard``/``save_dashboard_config(snapshot=True)``.
 
@@ -203,6 +203,7 @@ def restore_dashboard_snapshot(client, snapshot_path: str,
     dashboard URL (useful for testing).
     """
     import json
+
     with open(snapshot_path) as f:
         data = json.load(f)
     cfg = data.get("config")
@@ -220,6 +221,7 @@ def restore_dashboard_snapshot(client, snapshot_path: str,
 
 
 # ---------------------------------------------------------------- resources
+
 
 def list_resources(client) -> list[dict]:
     """Return Lovelace resources (registered JS/CSS modules for cards)."""

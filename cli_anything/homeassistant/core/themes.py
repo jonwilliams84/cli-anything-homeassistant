@@ -27,8 +27,7 @@ def names(client) -> list[str]:
     return sorted(themes.keys()) if isinstance(themes, dict) else []
 
 
-def set_theme(client, name: str, *,
-              mode: Optional[str] = None) -> Any:
+def set_theme(client, name: str, *, mode: Optional[str] = None) -> Any:
     """Set the active theme. `mode` can be 'dark' / 'light' / None (default).
 
     With `mode`, HA applies the theme only for that color scheme. To restore
@@ -41,8 +40,7 @@ def set_theme(client, name: str, *,
         if mode not in ("dark", "light"):
             raise ValueError("mode must be 'dark' or 'light'")
         data["mode"] = mode
-    return services_core.call_service(client, "frontend", "set_theme",
-                                       service_data=data)
+    return services_core.call_service(client, "frontend", "set_theme", service_data=data)
 
 
 def reload(client) -> Any:

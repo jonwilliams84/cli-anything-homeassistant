@@ -30,9 +30,7 @@ def get_configuration(client, *, entity_id: str) -> dict:
         ValueError: If entity_id does not start with "assist_satellite.".
     """
     if not entity_id.startswith("assist_satellite."):
-        raise ValueError(
-            f"expected assist_satellite.* entity_id, got {entity_id!r}"
-        )
+        raise ValueError(f"expected assist_satellite.* entity_id, got {entity_id!r}")
     return client.ws_call("assist_satellite/get_configuration", {"entity_id": entity_id})
 
 
@@ -50,9 +48,7 @@ def set_wake_words(client, *, entity_id: str, wake_word_ids: list[str]) -> dict:
             any wake word ID is empty.
     """
     if not entity_id.startswith("assist_satellite."):
-        raise ValueError(
-            f"expected assist_satellite.* entity_id, got {entity_id!r}"
-        )
+        raise ValueError(f"expected assist_satellite.* entity_id, got {entity_id!r}")
     if not isinstance(wake_word_ids, list) or not wake_word_ids:
         raise ValueError("wake_word_ids must be a non-empty list")
     if not all(isinstance(wid, str) and wid for wid in wake_word_ids):
@@ -77,9 +73,7 @@ def test_connection(client, *, entity_id: str) -> dict:
         ValueError: If entity_id does not start with "assist_satellite.".
     """
     if not entity_id.startswith("assist_satellite."):
-        raise ValueError(
-            f"expected assist_satellite.* entity_id, got {entity_id!r}"
-        )
+        raise ValueError(f"expected assist_satellite.* entity_id, got {entity_id!r}")
     return client.ws_call("assist_satellite/test_connection", {"entity_id": entity_id})
 
 
@@ -121,9 +115,7 @@ def intercept_wake_word(
         provided.
     """
     if not entity_id.startswith("assist_satellite."):
-        raise ValueError(
-            f"expected assist_satellite.* entity_id, got {entity_id!r}"
-        )
+        raise ValueError(f"expected assist_satellite.* entity_id, got {entity_id!r}")
     if not callable(on_event):
         raise ValueError("on_event must be callable")
     stop, owns_stop = _resolve_stop_event(stop_event, max_events)

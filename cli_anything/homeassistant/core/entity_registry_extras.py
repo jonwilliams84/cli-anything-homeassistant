@@ -27,8 +27,7 @@ def get_entity_registry_entries(client, *, entity_ids: list[str]) -> list[dict]:
         raise ValueError("entity_ids must be a non-empty list")
     if not all(isinstance(eid, str) and eid for eid in entity_ids):
         raise ValueError("all entity_ids must be non-empty strings")
-    return client.ws_call("config/entity_registry/get_entries",
-                           {"entity_ids": entity_ids}) or []
+    return client.ws_call("config/entity_registry/get_entries", {"entity_ids": entity_ids}) or []
 
 
 def list_entity_registry_for_display(client) -> list[dict]:
@@ -72,12 +71,16 @@ def get_integration_setup_info(client) -> dict:
     return client.ws_call("integration/setup_info") or {}
 
 
-def statistic_during_period(client, *, statistic_id: str,
-                             fixed_period: dict | None = None,
-                             calendar: dict | None = None,
-                             rolling_window: dict | None = None,
-                             types: list[str] | None = None,
-                             units: dict | None = None) -> dict:
+def statistic_during_period(
+    client,
+    *,
+    statistic_id: str,
+    fixed_period: dict | None = None,
+    calendar: dict | None = None,
+    rolling_window: dict | None = None,
+    types: list[str] | None = None,
+    units: dict | None = None,
+) -> dict:
     """Query statistics for a single statistic_id over a time period.
 
     At least one of fixed_period, calendar, or rolling_window must be provided.
@@ -95,9 +98,7 @@ def statistic_during_period(client, *, statistic_id: str,
     if not statistic_id:
         raise ValueError("statistic_id is required")
     if not any(x is not None for x in [fixed_period, calendar, rolling_window]):
-        raise ValueError(
-            "at least one of fixed_period, calendar, or rolling_window is required"
-        )
+        raise ValueError("at least one of fixed_period, calendar, or rolling_window is required")
     payload: dict = {"statistic_id": statistic_id}
     if fixed_period is not None:
         payload["fixed_period"] = fixed_period

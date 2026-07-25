@@ -25,13 +25,13 @@ from typing import Callable
 from cli_anything.homeassistant.core._ws_subscribe_utils import (
     resolve_stop_event as _resolve_stop_event,
     wrap_with_max_events as _wrap_with_max_events,
-    validate_callable as _validate_callable_util,
 )
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def _make_stop_event() -> threading.Event:
     return threading.Event()
@@ -60,6 +60,7 @@ def _validate_timeout(timeout_seconds: float) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 # Public functions
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def subscribe_events(
     client,

@@ -42,8 +42,10 @@ _NATIVE_VIEW_TYPES = {"sections", "masonry", "panel", "sidebar"}
 
 # Valid layout-card view types
 _LAYOUT_CARD_VIEW_TYPES = {
-    "custom:grid-layout", "custom:masonry-layout",
-    "custom:vertical-layout", "custom:horizontal-layout",
+    "custom:grid-layout",
+    "custom:masonry-layout",
+    "custom:vertical-layout",
+    "custom:horizontal-layout",
 }
 
 VALID_VIEW_TYPES = _NATIVE_VIEW_TYPES | _LAYOUT_CARD_VIEW_TYPES
@@ -51,24 +53,33 @@ VALID_VIEW_TYPES = _NATIVE_VIEW_TYPES | _LAYOUT_CARD_VIEW_TYPES
 
 # ────────────────────────────────────────────────────────────── builders
 
-def _common(*, title: str, path: str | None = None,
-              icon: str | None = None,
-              theme: str | None = None,
-              subview: bool = False,
-              back_path: str | None = None,
-              visible: list[dict] | bool | None = None,
-              show_in_sidebar: bool | None = None,
-              badges: list[Any] | None = None) -> dict:
+
+def _common(
+    *,
+    title: str,
+    path: str | None = None,
+    icon: str | None = None,
+    theme: str | None = None,
+    subview: bool = False,
+    back_path: str | None = None,
+    visible: list[dict] | bool | None = None,
+    show_in_sidebar: bool | None = None,
+    badges: list[Any] | None = None,
+) -> dict:
     """Shared base for all view builders."""
     if not title:
         raise ValueError("title is required")
     view: dict[str, Any] = {"title": title}
-    if path is not None: view["path"] = path
-    if icon is not None: view["icon"] = icon
-    if theme is not None: view["theme"] = theme
+    if path is not None:
+        view["path"] = path
+    if icon is not None:
+        view["icon"] = icon
+    if theme is not None:
+        view["theme"] = theme
     if subview:
         view["subview"] = True
-        if back_path is not None: view["back_path"] = back_path
+        if back_path is not None:
+            view["back_path"] = back_path
     elif back_path is not None:
         raise ValueError("back_path only valid on subviews — pass subview=True")
     if visible is not None:
@@ -80,18 +91,22 @@ def _common(*, title: str, path: str | None = None,
     return view
 
 
-def view_sections(*, title: str, path: str | None = None,
-                    sections: list[dict] | None = None,
-                    max_columns: int = 4,
-                    dense_section_placement: bool | None = None,
-                    top_margin: bool | None = None,
-                    icon: str | None = None,
-                    theme: str | None = None,
-                    subview: bool = False,
-                    back_path: str | None = None,
-                    visible: list[dict] | bool | None = None,
-                    show_in_sidebar: bool | None = None,
-                    badges: list[Any] | None = None) -> dict:
+def view_sections(
+    *,
+    title: str,
+    path: str | None = None,
+    sections: list[dict] | None = None,
+    max_columns: int = 4,
+    dense_section_placement: bool | None = None,
+    top_margin: bool | None = None,
+    icon: str | None = None,
+    theme: str | None = None,
+    subview: bool = False,
+    back_path: str | None = None,
+    visible: list[dict] | bool | None = None,
+    show_in_sidebar: bool | None = None,
+    badges: list[Any] | None = None,
+) -> dict:
     """Build a `sections`-type view (the modern HA layout).
 
     `max_columns` — viewport-breakpoint cap (1-4). Mobile always collapses
@@ -102,9 +117,17 @@ def view_sections(*, title: str, path: str | None = None,
     """
     if max_columns not in (1, 2, 3, 4):
         raise ValueError(f"max_columns must be 1-4, got {max_columns}")
-    view = _common(title=title, path=path, icon=icon, theme=theme,
-                     subview=subview, back_path=back_path, visible=visible,
-                     show_in_sidebar=show_in_sidebar, badges=badges)
+    view = _common(
+        title=title,
+        path=path,
+        icon=icon,
+        theme=theme,
+        subview=subview,
+        back_path=back_path,
+        visible=visible,
+        show_in_sidebar=show_in_sidebar,
+        badges=badges,
+    )
     view["type"] = "sections"
     view["max_columns"] = max_columns
     view["sections"] = list(sections or [])
@@ -115,32 +138,48 @@ def view_sections(*, title: str, path: str | None = None,
     return view
 
 
-def view_masonry(*, title: str, path: str | None = None,
-                   cards: list[dict] | None = None,
-                   icon: str | None = None,
-                   theme: str | None = None,
-                   subview: bool = False,
-                   back_path: str | None = None,
-                   visible: list[dict] | bool | None = None,
-                   show_in_sidebar: bool | None = None,
-                   badges: list[Any] | None = None) -> dict:
+def view_masonry(
+    *,
+    title: str,
+    path: str | None = None,
+    cards: list[dict] | None = None,
+    icon: str | None = None,
+    theme: str | None = None,
+    subview: bool = False,
+    back_path: str | None = None,
+    visible: list[dict] | bool | None = None,
+    show_in_sidebar: bool | None = None,
+    badges: list[Any] | None = None,
+) -> dict:
     """Build a `masonry`-type view (legacy default — single column packed)."""
-    view = _common(title=title, path=path, icon=icon, theme=theme,
-                     subview=subview, back_path=back_path, visible=visible,
-                     show_in_sidebar=show_in_sidebar, badges=badges)
+    view = _common(
+        title=title,
+        path=path,
+        icon=icon,
+        theme=theme,
+        subview=subview,
+        back_path=back_path,
+        visible=visible,
+        show_in_sidebar=show_in_sidebar,
+        badges=badges,
+    )
     view["type"] = "masonry"
     view["cards"] = list(cards or [])
     return view
 
 
-def view_panel(*, title: str, card: dict,
-                 path: str | None = None,
-                 icon: str | None = None,
-                 theme: str | None = None,
-                 subview: bool = False,
-                 back_path: str | None = None,
-                 visible: list[dict] | bool | None = None,
-                 show_in_sidebar: bool | None = None) -> dict:
+def view_panel(
+    *,
+    title: str,
+    card: dict,
+    path: str | None = None,
+    icon: str | None = None,
+    theme: str | None = None,
+    subview: bool = False,
+    back_path: str | None = None,
+    visible: list[dict] | bool | None = None,
+    show_in_sidebar: bool | None = None,
+) -> dict:
     """Build a `panel`-type view — one card fills the viewport.
 
     Panel views can hold only ONE card. If you need multiple, wrap them in
@@ -148,60 +187,91 @@ def view_panel(*, title: str, card: dict,
     """
     if not isinstance(card, dict) or "type" not in card:
         raise ValueError("panel view requires a single card dict with `type`")
-    view = _common(title=title, path=path, icon=icon, theme=theme,
-                     subview=subview, back_path=back_path, visible=visible,
-                     show_in_sidebar=show_in_sidebar)
+    view = _common(
+        title=title,
+        path=path,
+        icon=icon,
+        theme=theme,
+        subview=subview,
+        back_path=back_path,
+        visible=visible,
+        show_in_sidebar=show_in_sidebar,
+    )
     view["type"] = "panel"
     view["cards"] = [card]
     return view
 
 
-def view_sidebar(*, title: str, path: str | None = None,
-                   cards: list[dict] | None = None,
-                   icon: str | None = None,
-                   theme: str | None = None,
-                   subview: bool = False,
-                   back_path: str | None = None,
-                   visible: list[dict] | bool | None = None,
-                   show_in_sidebar: bool | None = None,
-                   badges: list[Any] | None = None) -> dict:
+def view_sidebar(
+    *,
+    title: str,
+    path: str | None = None,
+    cards: list[dict] | None = None,
+    icon: str | None = None,
+    theme: str | None = None,
+    subview: bool = False,
+    back_path: str | None = None,
+    visible: list[dict] | bool | None = None,
+    show_in_sidebar: bool | None = None,
+    badges: list[Any] | None = None,
+) -> dict:
     """Build a `sidebar`-type view (deprecated but functional). Two
     columns: main + sidebar. Each card carries a `view_layout: {position}`
     of "main" or "sidebar"."""
-    view = _common(title=title, path=path, icon=icon, theme=theme,
-                     subview=subview, back_path=back_path, visible=visible,
-                     show_in_sidebar=show_in_sidebar, badges=badges)
+    view = _common(
+        title=title,
+        path=path,
+        icon=icon,
+        theme=theme,
+        subview=subview,
+        back_path=back_path,
+        visible=visible,
+        show_in_sidebar=show_in_sidebar,
+        badges=badges,
+    )
     view["type"] = "sidebar"
     view["cards"] = list(cards or [])
     return view
 
 
-def view_grid_layout(*, title: str, path: str | None = None,
-                       cards: list[dict] | None = None,
-                       grid_template_columns: str | None = None,
-                       grid_template_rows: str | None = None,
-                       grid_template_areas: str | None = None,
-                       grid_gap: str | None = None,
-                       max_cols: int | None = None,
-                       max_width: int | None = None,
-                       min_width: int | None = None,
-                       mediaquery: dict | None = None,
-                       icon: str | None = None,
-                       theme: str | None = None,
-                       subview: bool = False,
-                       back_path: str | None = None,
-                       visible: list[dict] | bool | None = None,
-                       show_in_sidebar: bool | None = None,
-                       badges: list[Any] | None = None) -> dict:
+def view_grid_layout(
+    *,
+    title: str,
+    path: str | None = None,
+    cards: list[dict] | None = None,
+    grid_template_columns: str | None = None,
+    grid_template_rows: str | None = None,
+    grid_template_areas: str | None = None,
+    grid_gap: str | None = None,
+    max_cols: int | None = None,
+    max_width: int | None = None,
+    min_width: int | None = None,
+    mediaquery: dict | None = None,
+    icon: str | None = None,
+    theme: str | None = None,
+    subview: bool = False,
+    back_path: str | None = None,
+    visible: list[dict] | bool | None = None,
+    show_in_sidebar: bool | None = None,
+    badges: list[Any] | None = None,
+) -> dict:
     """Build a `custom:grid-layout` view (layout-card plugin).
 
     Use `grid_template_columns` for CSS-grid column sizing (e.g. ``"1fr 2fr"``),
     `grid_template_areas` for named regions, or pass `mediaquery` for
     breakpoint-specific overrides.
     """
-    view = _common(title=title, path=path, icon=icon, theme=theme,
-                     subview=subview, back_path=back_path, visible=visible,
-                     show_in_sidebar=show_in_sidebar, badges=badges)
+    view = _common(
+        title=title,
+        path=path,
+        icon=icon,
+        theme=theme,
+        subview=subview,
+        back_path=back_path,
+        visible=visible,
+        show_in_sidebar=show_in_sidebar,
+        badges=badges,
+    )
     view["type"] = "custom:grid-layout"
     view["cards"] = list(cards or [])
     layout: dict[str, Any] = {}
@@ -213,44 +283,64 @@ def view_grid_layout(*, title: str, path: str | None = None,
         layout["grid-template-areas"] = grid_template_areas
     if grid_gap is not None:
         layout["grid-gap"] = grid_gap
-    if max_cols is not None: layout["max_cols"] = max_cols
-    if max_width is not None: layout["max_width"] = max_width
-    if min_width is not None: layout["min_width"] = min_width
-    if mediaquery is not None: layout["mediaquery"] = mediaquery
+    if max_cols is not None:
+        layout["max_cols"] = max_cols
+    if max_width is not None:
+        layout["max_width"] = max_width
+    if min_width is not None:
+        layout["min_width"] = min_width
+    if mediaquery is not None:
+        layout["mediaquery"] = mediaquery
     if layout:
         view["layout"] = layout
     return view
 
 
-def view_masonry_layout(*, title: str, path: str | None = None,
-                          cards: list[dict] | None = None,
-                          width: int | None = None,
-                          max_cols: int | None = None,
-                          max_width: int | None = None,
-                          mediaquery: dict | None = None,
-                          icon: str | None = None,
-                          theme: str | None = None,
-                          subview: bool = False,
-                          back_path: str | None = None,
-                          visible: list[dict] | bool | None = None,
-                          show_in_sidebar: bool | None = None,
-                          badges: list[Any] | None = None) -> dict:
+def view_masonry_layout(
+    *,
+    title: str,
+    path: str | None = None,
+    cards: list[dict] | None = None,
+    width: int | None = None,
+    max_cols: int | None = None,
+    max_width: int | None = None,
+    mediaquery: dict | None = None,
+    icon: str | None = None,
+    theme: str | None = None,
+    subview: bool = False,
+    back_path: str | None = None,
+    visible: list[dict] | bool | None = None,
+    show_in_sidebar: bool | None = None,
+    badges: list[Any] | None = None,
+) -> dict:
     """Build a `custom:masonry-layout` view (layout-card plugin).
 
     `width` — target card width in px (default 300); columns calculated
     from viewport / width.
     `max_cols` — hard cap on columns.
     """
-    view = _common(title=title, path=path, icon=icon, theme=theme,
-                     subview=subview, back_path=back_path, visible=visible,
-                     show_in_sidebar=show_in_sidebar, badges=badges)
+    view = _common(
+        title=title,
+        path=path,
+        icon=icon,
+        theme=theme,
+        subview=subview,
+        back_path=back_path,
+        visible=visible,
+        show_in_sidebar=show_in_sidebar,
+        badges=badges,
+    )
     view["type"] = "custom:masonry-layout"
     view["cards"] = list(cards or [])
     layout: dict[str, Any] = {}
-    if width is not None: layout["width"] = width
-    if max_cols is not None: layout["max_cols"] = max_cols
-    if max_width is not None: layout["max_width"] = max_width
-    if mediaquery is not None: layout["mediaquery"] = mediaquery
+    if width is not None:
+        layout["width"] = width
+    if max_cols is not None:
+        layout["max_cols"] = max_cols
+    if max_width is not None:
+        layout["max_width"] = max_width
+    if mediaquery is not None:
+        layout["mediaquery"] = mediaquery
     if layout:
         view["layout"] = layout
     return view
@@ -258,13 +348,17 @@ def view_masonry_layout(*, title: str, path: str | None = None,
 
 # ──────────────────────────────────────────────────────── per-card view_layout
 
-def with_view_layout(card: dict, *,
-                       grid_column: str | None = None,
-                       grid_row: str | None = None,
-                       grid_area: str | None = None,
-                       place_self: str | None = None,
-                       column: int | None = None,
-                       show: dict | None = None) -> dict:
+
+def with_view_layout(
+    card: dict,
+    *,
+    grid_column: str | None = None,
+    grid_row: str | None = None,
+    grid_area: str | None = None,
+    place_self: str | None = None,
+    column: int | None = None,
+    show: dict | None = None,
+) -> dict:
     """Return `card` with a `view_layout:` field set (in-place mutation
     AND returned for chaining).
 
@@ -281,31 +375,35 @@ def with_view_layout(card: dict, *,
     vl = card.setdefault("view_layout", {})
     if not isinstance(vl, dict):
         raise ValueError("card.view_layout exists and is not a dict")
-    if grid_column is not None: vl["grid-column"] = grid_column
-    if grid_row is not None:    vl["grid-row"] = grid_row
-    if grid_area is not None:   vl["grid-area"] = grid_area
-    if place_self is not None:  vl["place-self"] = place_self
-    if column is not None:      vl["column"] = column
-    if show is not None:        vl["show"] = show
+    if grid_column is not None:
+        vl["grid-column"] = grid_column
+    if grid_row is not None:
+        vl["grid-row"] = grid_row
+    if grid_area is not None:
+        vl["grid-area"] = grid_area
+    if place_self is not None:
+        vl["place-self"] = place_self
+    if column is not None:
+        vl["column"] = column
+    if show is not None:
+        vl["show"] = show
     return card
 
 
 # ──────────────────────────────────────────────────────── view config mutators
 
+
 def set_max_columns(view: dict, n: int) -> dict:
     """Set max_columns on a sections view. Raises if view isn't sections."""
     if view.get("type") != "sections":
-        raise ValueError(
-            f"max_columns only valid on sections views, got type="
-            f"{view.get('type')!r}")
+        raise ValueError(f"max_columns only valid on sections views, got type={view.get('type')!r}")
     if n not in (1, 2, 3, 4):
         raise ValueError(f"max_columns must be 1-4, got {n}")
     view["max_columns"] = n
     return view
 
 
-def set_subview(view: dict, subview: bool, *,
-                  back_path: str | None = None) -> dict:
+def set_subview(view: dict, subview: bool, *, back_path: str | None = None) -> dict:
     """Mark `view` as a subview (hidden from main tabs, has back button)."""
     if subview:
         view["subview"] = True
@@ -361,13 +459,16 @@ _BADGES_POSITIONS = {"top", "bottom"}
 _BADGES_WRAPS = {"wrap", "scroll"}
 
 
-def section_header(*, card: dict | None = None,
-                     title: str | None = None,
-                     subtitle: str | None = None,
-                     badges: list[dict] | None = None,
-                     layout: str = "responsive",
-                     badges_position: str = "bottom",
-                     badges_wrap: str = "wrap") -> dict:
+def section_header(
+    *,
+    card: dict | None = None,
+    title: str | None = None,
+    subtitle: str | None = None,
+    badges: list[dict] | None = None,
+    layout: str = "responsive",
+    badges_position: str = "bottom",
+    badges_wrap: str = "wrap",
+) -> dict:
     """Build a section header config (the new sections-view feature with
     title + subtitle + badges + layout controls).
 
@@ -399,15 +500,15 @@ def section_header(*, card: dict | None = None,
         "badges_wrap": badges_wrap,
     }
     if card is None:
-        heading_card: dict[str, Any] = {"type": "heading",
-                                           "heading_style": "title"}
-        if title is not None: heading_card["heading"] = title
-        if subtitle is not None: heading_card["badges"] = []  # heading uses badges differently — keep simple
+        heading_card: dict[str, Any] = {"type": "heading", "heading_style": "title"}
+        if title is not None:
+            heading_card["heading"] = title
+        if subtitle is not None:
+            heading_card["badges"] = []  # heading uses badges differently — keep simple
         # Subtitle is best rendered as part of the heading; use a markdown
         # card when a real subtitle is required.
         if subtitle is not None:
-            heading_card = {"type": "markdown",
-                              "content": f"## {title or ''}\n{subtitle}"}
+            heading_card = {"type": "markdown", "content": f"## {title or ''}\n{subtitle}"}
         header["card"] = heading_card
     else:
         if not isinstance(card, dict) or "type" not in card:
@@ -418,11 +519,14 @@ def section_header(*, card: dict | None = None,
     return header
 
 
-def view_section(*, header: dict | None = None,
-                   cards: list[dict] | None = None,
-                   column_span: int | None = None,
-                   row_span: int | None = None,
-                   visibility: list[dict] | None = None) -> dict:
+def view_section(
+    *,
+    header: dict | None = None,
+    cards: list[dict] | None = None,
+    column_span: int | None = None,
+    row_span: int | None = None,
+    visibility: list[dict] | None = None,
+) -> dict:
     """Build a single section for a sections-view.
 
     `header` — pass the result of `section_header(...)`.
@@ -436,47 +540,67 @@ def view_section(*, header: dict | None = None,
         if not isinstance(header, dict):
             raise ValueError("header must be a dict — use section_header()")
         section["header"] = header
-    if column_span is not None: section["column_span"] = column_span
-    if row_span is not None: section["row_span"] = row_span
-    if visibility is not None: section["visibility"] = visibility
+    if column_span is not None:
+        section["column_span"] = column_span
+    if row_span is not None:
+        section["row_span"] = row_span
+    if visibility is not None:
+        section["visibility"] = visibility
     return section
 
 
 # Convenience badge builders — badges in a section header use the same
 # schema as Lovelace badges (slimmer than card chips).
 
-def badge_entity(entity: str, *,
-                   name: str | None = None,
-                   icon: str | None = None,
-                   color: str | None = None,
-                   show_name: bool | None = None,
-                   show_state: bool | None = None,
-                   show_icon: bool | None = None,
-                   tap_action: dict | None = None) -> dict:
+
+def badge_entity(
+    entity: str,
+    *,
+    name: str | None = None,
+    icon: str | None = None,
+    color: str | None = None,
+    show_name: bool | None = None,
+    show_state: bool | None = None,
+    show_icon: bool | None = None,
+    tap_action: dict | None = None,
+) -> dict:
     """Build an `entity` badge (the most common type)."""
     b: dict[str, Any] = {"type": "entity", "entity": entity}
-    if name is not None: b["name"] = name
-    if icon is not None: b["icon"] = icon
-    if color is not None: b["color"] = color
-    if show_name is not None: b["show_name"] = show_name
-    if show_state is not None: b["show_state"] = show_state
-    if show_icon is not None: b["show_icon"] = show_icon
-    if tap_action is not None: b["tap_action"] = tap_action
+    if name is not None:
+        b["name"] = name
+    if icon is not None:
+        b["icon"] = icon
+    if color is not None:
+        b["color"] = color
+    if show_name is not None:
+        b["show_name"] = show_name
+    if show_state is not None:
+        b["show_state"] = show_state
+    if show_icon is not None:
+        b["show_icon"] = show_icon
+    if tap_action is not None:
+        b["tap_action"] = tap_action
     return b
 
 
-def badge_template(*,
-                     content: str,
-                     icon: str | None = None,
-                     color: str | None = None,
-                     entity: str | None = None,
-                     tap_action: dict | None = None) -> dict:
+def badge_template(
+    *,
+    content: str,
+    icon: str | None = None,
+    color: str | None = None,
+    entity: str | None = None,
+    tap_action: dict | None = None,
+) -> dict:
     """Build a `template` (Jinja-driven) badge."""
     b: dict[str, Any] = {"type": "entity", "content": content}
-    if icon is not None: b["icon"] = icon
-    if color is not None: b["color"] = color
-    if entity is not None: b["entity"] = entity
-    if tap_action is not None: b["tap_action"] = tap_action
+    if icon is not None:
+        b["icon"] = icon
+    if color is not None:
+        b["color"] = color
+    if entity is not None:
+        b["entity"] = entity
+    if tap_action is not None:
+        b["tap_action"] = tap_action
     return b
 
 

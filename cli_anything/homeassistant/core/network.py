@@ -34,11 +34,14 @@ def configure(client, *, configured_adapters: list[str]) -> dict:
     if not isinstance(configured_adapters, list):
         raise ValueError("configured_adapters must be a list")
 
-    return client.ws_call("network/configure", {
-        "config": {
-            "configured_adapters": configured_adapters,
-        }
-    })
+    return client.ws_call(
+        "network/configure",
+        {
+            "config": {
+                "configured_adapters": configured_adapters,
+            }
+        },
+    )
 
 
 def url(client) -> dict:

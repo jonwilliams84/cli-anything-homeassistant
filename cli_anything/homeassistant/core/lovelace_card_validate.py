@@ -34,9 +34,9 @@ from . import lovelace_cards as lc
 
 # Build a quick reverse-lookup: card type string → builder name.
 def _card_type_to_builder() -> dict[str, str]:
-    return {meta["card_type"]: name
-            for name, meta in cb.BUILDER_META.items()
-            if meta.get("card_type")}
+    return {
+        meta["card_type"]: name for name, meta in cb.BUILDER_META.items() if meta.get("card_type")
+    }
 
 
 def _required_kwargs(builder_fn) -> set[str]:
@@ -54,34 +54,57 @@ def _required_kwargs(builder_fn) -> set[str]:
 # Known-broken card_mod placements — HA will reject these.
 # (apexcharts series, ApexCharts entities, etc.) These always error.
 _BROKEN_CARD_MOD_PARENTS = {
-    "series",         # apexcharts: series entries reject unknown keys
-    "forecast",       # weather-chart-card forecast block
-    "filter",         # auto-entities filter dict
-    "include",        # auto-entities include patterns
-    "exclude",        # auto-entities exclude patterns
-    "tools",          # swiss-army-knife tools
-    "options",        # template-card / auto-entities sub-options
+    "series",  # apexcharts: series entries reject unknown keys
+    "forecast",  # weather-chart-card forecast block
+    "filter",  # auto-entities filter dict
+    "include",  # auto-entities include patterns
+    "exclude",  # auto-entities exclude patterns
+    "tools",  # swiss-army-knife tools
+    "options",  # template-card / auto-entities sub-options
 }
 
 # Likely-broken-but-context-dependent placements. Warn only.
 _SUSPICIOUS_CARD_MOD_PARENTS = {
-    "chips",          # mushroom chips — card_mod sometimes works
-    "elements",       # picture-elements — card_mod styles inner icon, works
-    "entities",       # entities-card rows — supports card_mod on row entries
+    "chips",  # mushroom chips — card_mod sometimes works
+    "elements",  # picture-elements — card_mod styles inner icon, works
+    "entities",  # entities-card rows — supports card_mod on row entries
 }
 
 
 # Native HA cards not in BUILDERS but recognised by HA. Don't warn on these.
 _KNOWN_NATIVE_TYPES = {
-    "heading", "section", "sections", "panel",
-    "alarm-panel", "area", "calendar", "energy-date-selection",
-    "energy-distribution", "energy-flow", "energy-grid-neutrality-gauge",
-    "energy-solar-graph", "energy-sources-table", "energy-usage-graph",
-    "entity", "energy-carbon-consumed-gauge",
-    "light", "logbook", "map", "media-control", "plant-status",
-    "picture", "picture-entity", "picture-glance", "shopping-list",
-    "sensor", "starting", "thermostat", "todo-list", "tile",
-    "vertical-stack", "horizontal-stack",
+    "heading",
+    "section",
+    "sections",
+    "panel",
+    "alarm-panel",
+    "area",
+    "calendar",
+    "energy-date-selection",
+    "energy-distribution",
+    "energy-flow",
+    "energy-grid-neutrality-gauge",
+    "energy-solar-graph",
+    "energy-sources-table",
+    "energy-usage-graph",
+    "entity",
+    "energy-carbon-consumed-gauge",
+    "light",
+    "logbook",
+    "map",
+    "media-control",
+    "plant-status",
+    "picture",
+    "picture-entity",
+    "picture-glance",
+    "shopping-list",
+    "sensor",
+    "starting",
+    "thermostat",
+    "todo-list",
+    "tile",
+    "vertical-stack",
+    "horizontal-stack",
 }
 
 
@@ -91,14 +114,22 @@ _KNOWN_NATIVE_TYPES = {
 _BUNDLE_CARDS: dict[str, set[str]] = {
     # filename stem (or fragment) → set of card types it ships
     "mushroom": {
-        "custom:mushroom-template-card", "custom:mushroom-light-card",
-        "custom:mushroom-person-card", "custom:mushroom-climate-card",
-        "custom:mushroom-chips-card", "custom:mushroom-title-card",
-        "custom:mushroom-entity-card", "custom:mushroom-cover-card",
-        "custom:mushroom-fan-card", "custom:mushroom-vacuum-card",
-        "custom:mushroom-humidifier-card", "custom:mushroom-lock-card",
-        "custom:mushroom-media-player-card", "custom:mushroom-number-card",
-        "custom:mushroom-select-card", "custom:mushroom-update-card",
+        "custom:mushroom-template-card",
+        "custom:mushroom-light-card",
+        "custom:mushroom-person-card",
+        "custom:mushroom-climate-card",
+        "custom:mushroom-chips-card",
+        "custom:mushroom-title-card",
+        "custom:mushroom-entity-card",
+        "custom:mushroom-cover-card",
+        "custom:mushroom-fan-card",
+        "custom:mushroom-vacuum-card",
+        "custom:mushroom-humidifier-card",
+        "custom:mushroom-lock-card",
+        "custom:mushroom-media-player-card",
+        "custom:mushroom-number-card",
+        "custom:mushroom-select-card",
+        "custom:mushroom-update-card",
         "custom:mushroom-alarm-control-panel-card",
     },
     "bubble-card": {
@@ -116,8 +147,9 @@ _BUNDLE_CARDS: dict[str, set[str]] = {
 }
 
 
-def _check_no_stray_card_mod(node: Any, path: str = "",
-                                parent_key: str | None = None) -> list[dict]:
+def _check_no_stray_card_mod(
+    node: Any, path: str = "", parent_key: str | None = None
+) -> list[dict]:
     """Walk arbitrary tree and flag card_mod on dicts that are NOT card-slot
     members. Errors only on KNOWN-broken placements; warns on suspicious
     placements that may or may not work depending on the parent card."""
@@ -125,25 +157,33 @@ def _check_no_stray_card_mod(node: Any, path: str = "",
     if isinstance(node, dict):
         if "card_mod" in node and parent_key is not None:
             if parent_key in _BROKEN_CARD_MOD_PARENTS:
-                issues.append({
-                    "severity": "error", "path": path,
-                    "message": (f"card_mod inside {parent_key!r} is rejected "
-                                  f"by HA — this card will show "
-                                  f"'Configuration error'"),
-                })
+                issues.append(
+                    {
+                        "severity": "error",
+                        "path": path,
+                        "message": (
+                            f"card_mod inside {parent_key!r} is rejected "
+                            f"by HA — this card will show "
+                            f"'Configuration error'"
+                        ),
+                    }
+                )
             elif parent_key in _SUSPICIOUS_CARD_MOD_PARENTS:
-                issues.append({
-                    "severity": "warning", "path": path,
-                    "message": (f"card_mod inside {parent_key!r} works in some "
-                                  f"contexts and not others — verify visually"),
-                })
+                issues.append(
+                    {
+                        "severity": "warning",
+                        "path": path,
+                        "message": (
+                            f"card_mod inside {parent_key!r} works in some "
+                            f"contexts and not others — verify visually"
+                        ),
+                    }
+                )
         for k, v in node.items():
-            issues.extend(_check_no_stray_card_mod(
-                v, f"{path}.{k}" if path else k, parent_key=k))
+            issues.extend(_check_no_stray_card_mod(v, f"{path}.{k}" if path else k, parent_key=k))
     elif isinstance(node, list):
         for i, child in enumerate(node):
-            issues.extend(_check_no_stray_card_mod(
-                child, f"{path}[{i}]", parent_key=parent_key))
+            issues.extend(_check_no_stray_card_mod(child, f"{path}[{i}]", parent_key=parent_key))
     return issues
 
 
@@ -159,6 +199,7 @@ def installed_card_types(client) -> set[str]:
     against BUILDER_META values.
     """
     from . import lovelace as ll
+
     try:
         resources = ll.list_resources(client) or []
     except Exception:
@@ -168,15 +209,17 @@ def installed_card_types(client) -> set[str]:
         url = r.get("url", "")
         # Trailing `?cache_buster` etc.
         stem = url.rsplit("/", 1)[-1].split("?", 1)[0]
-        if stem.endswith(".js"): stem = stem[:-3]
-        if stem.endswith(".mjs"): stem = stem[:-4]
+        if stem.endswith(".js"):
+            stem = stem[:-3]
+        if stem.endswith(".mjs"):
+            stem = stem[:-4]
         files.append(stem)
     installed: set[str] = set()
     for meta in cb.BUILDER_META.values():
         ct = meta.get("card_type", "")
         if not ct.startswith("custom:"):
             continue
-        bare = ct[len("custom:"):]  # e.g. apexcharts-card
+        bare = ct[len("custom:") :]  # e.g. apexcharts-card
         if any(bare in f or f in bare for f in files):
             installed.add(ct)
     # Bundle-based plugins: if any of the bundle's filename fragments are
@@ -187,25 +230,33 @@ def installed_card_types(client) -> set[str]:
     return installed
 
 
-def validate_card(card: dict, path: str = "",
-                    *, installed: set[str] | None = None) -> list[dict]:
+def validate_card(card: dict, path: str = "", *, installed: set[str] | None = None) -> list[dict]:
     """Validate a single card. Returns a list of issues."""
     issues: list[dict] = []
     if not isinstance(card, dict):
-        return [{"severity": "error", "path": path,
-                  "message": f"expected card dict, got {type(card).__name__}"}]
+        return [
+            {
+                "severity": "error",
+                "path": path,
+                "message": f"expected card dict, got {type(card).__name__}",
+            }
+        ]
     t = card.get("type")
     if not isinstance(t, str):
-        return [{"severity": "error", "path": path,
-                  "message": "card has no 'type' field"}]
+        return [{"severity": "error", "path": path, "message": "card has no 'type' field"}]
 
     # Custom-card resource check
     if t.startswith("custom:") and installed is not None and t not in installed:
-        issues.append({
-            "severity": "error", "path": path,
-            "message": (f"{t!r} requires a HACS plugin that is not installed. "
-                          f"Install via HACS Frontend or skip this card."),
-        })
+        issues.append(
+            {
+                "severity": "error",
+                "path": path,
+                "message": (
+                    f"{t!r} requires a HACS plugin that is not installed. "
+                    f"Install via HACS Frontend or skip this card."
+                ),
+            }
+        )
 
     # Required-field check via builder signature (WARNING, not error —
     # HA accepts some "required by builder" cards without those fields
@@ -217,26 +268,33 @@ def validate_card(card: dict, path: str = "",
         required = _required_kwargs(fn)
         for r in required:
             if r not in card:
-                issues.append({
-                    "severity": "warning", "path": path,
-                    "message": (f"field {r!r} missing for {t!r} — builder "
-                                  f"requires it, but HA may accept the card "
-                                  f"if it uses tap_action/templates"),
-                })
+                issues.append(
+                    {
+                        "severity": "warning",
+                        "path": path,
+                        "message": (
+                            f"field {r!r} missing for {t!r} — builder "
+                            f"requires it, but HA may accept the card "
+                            f"if it uses tap_action/templates"
+                        ),
+                    }
+                )
     elif not t.startswith("custom:") and t not in _KNOWN_NATIVE_TYPES:
         # Native unknown type — warn (HA may still know it; we just don't).
-        issues.append({
-            "severity": "warning", "path": path,
-            "message": f"unknown native card type {t!r} (no builder registered)",
-        })
+        issues.append(
+            {
+                "severity": "warning",
+                "path": path,
+                "message": f"unknown native card type {t!r} (no builder registered)",
+            }
+        )
 
     # Stray card_mod check
     issues.extend(_check_no_stray_card_mod(card, path=path))
     return issues
 
 
-def validate_dashboard(dash: dict, *, client=None,
-                          installed: set[str] | None = None) -> list[dict]:
+def validate_dashboard(dash: dict, *, client=None, installed: set[str] | None = None) -> list[dict]:
     """Walk all card slots and validate each card.
 
     `client` — pass an HA client to auto-discover installed custom cards

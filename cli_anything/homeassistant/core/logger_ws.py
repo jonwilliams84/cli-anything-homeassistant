@@ -84,9 +84,7 @@ def integration_log_level(
         raise ValueError("integration is required and must be non-empty")
     valid_levels = {"debug", "info", "warning", "error", "critical"}
     if level not in valid_levels:
-        raise ValueError(
-            f"level must be one of {sorted(valid_levels)}, got {level!r}"
-        )
+        raise ValueError(f"level must be one of {sorted(valid_levels)}, got {level!r}")
     valid_persistence = {"none", "once"}
     if persistence not in valid_persistence:
         raise ValueError(

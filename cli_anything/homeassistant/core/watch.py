@@ -13,16 +13,19 @@ is raised. Returns the list of records collected during the watch.
 
 from __future__ import annotations
 
+import logging
 import threading
-import time
 from typing import Any, Callable, Optional
 
 
-def subscribe_events(client, *,
-                      event_type: Optional[str] = None,
-                      duration: Optional[float] = None,
-                      limit: Optional[int] = None,
-                      callback: Optional[Callable[[dict], None]] = None) -> list[dict]:
+def subscribe_events(
+    client,
+    *,
+    event_type: Optional[str] = None,
+    duration: Optional[float] = None,
+    limit: Optional[int] = None,
+    callback: Optional[Callable[[dict], None]] = None,
+) -> list[dict]:
     """Tail the HA event bus for `duration` seconds.
 
     Returns a list of `{event_type, data, time_fired, origin, context}` records.
@@ -41,13 +44,29 @@ def subscribe_events(client, *,
             try:
                 callback(event)
             except Exception:
-                pass
+                # A caller-supplied callback must never abort the watch, but
+                # discarding its exception silently (the previous
+                # `except Exception: pass`) meant a broken callback produced a
+                # watch that quietly collected fewer events with no diagnostic
+                # anywhere - the caller just saw short results.
+                logging.getLogger(__name__).warning(
+                    "watch callback failed for event %s",
+                    (event.get("event_type") if isinstance(event, dict) else type(event).__name__),
+                    exc_info=True,
+                )
         if limit and len(collected) >= limit:
             stop.set()
 
-    th = threading.Thread(target=client.ws_subscribe, args=(
-        "subscribe_events", payload or None, on_msg, stop,
-    ), daemon=True)
+    th = threading.Thread(
+        target=client.ws_subscribe,
+        args=(
+            "subscribe_events",
+            payload or None,
+            on_msg,
+            stop,
+        ),
+        daemon=True,
+    )
     th.start()
     try:
         if duration is None:
@@ -62,10 +81,14 @@ def subscribe_events(client, *,
     return collected
 
 
-def watch_state(client, entity_id: str, *,
-                 until_state: Optional[str] = None,
-                 duration: Optional[float] = None,
-                 callback: Optional[Callable[[dict], None]] = None) -> list[dict]:
+def watch_state(
+    client,
+    entity_id: str,
+    *,
+    until_state: Optional[str] = None,
+    duration: Optional[float] = None,
+    callback: Optional[Callable[[dict], None]] = None,
+) -> list[dict]:
     """Watch one entity's state changes.
 
     Returns each `state_changed` event whose `data.entity_id` matches.
@@ -88,15 +111,31 @@ def watch_state(client, entity_id: str, *,
             try:
                 callback(event)
             except Exception:
-                pass
+                # A caller-supplied callback must never abort the watch, but
+                # discarding its exception silently (the previous
+                # `except Exception: pass`) meant a broken callback produced a
+                # watch that quietly collected fewer events with no diagnostic
+                # anywhere - the caller just saw short results.
+                logging.getLogger(__name__).warning(
+                    "watch callback failed for event %s",
+                    (event.get("event_type") if isinstance(event, dict) else type(event).__name__),
+                    exc_info=True,
+                )
         if until_state is not None:
             new = (data.get("new_state") or {}).get("state")
             if new == until_state:
                 stop.set()
 
-    th = threading.Thread(target=client.ws_subscribe, args=(
-        "subscribe_events", {"event_type": "state_changed"}, on_msg, stop,
-    ), daemon=True)
+    th = threading.Thread(
+        target=client.ws_subscribe,
+        args=(
+            "subscribe_events",
+            {"event_type": "state_changed"},
+            on_msg,
+            stop,
+        ),
+        daemon=True,
+    )
     th.start()
     try:
         if duration is None:

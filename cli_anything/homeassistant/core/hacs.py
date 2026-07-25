@@ -23,8 +23,13 @@ from typing import Any, Optional
 # HACS repo categories (depends on the user's HACS config, but these are the
 # built-in ones the frontend offers when adding a custom repository).
 CATEGORIES = (
-    "integration", "plugin", "theme",
-    "appdaemon", "python_script", "netdaemon", "template",
+    "integration",
+    "plugin",
+    "theme",
+    "appdaemon",
+    "python_script",
+    "netdaemon",
+    "template",
 )
 
 
@@ -33,10 +38,13 @@ def info(client) -> dict:
     return client.ws_call("hacs/info") or {}
 
 
-def list_repos(client, *,
-                installed_only: bool = False,
-                category: Optional[str] = None,
-                pattern: Optional[str] = None) -> list[dict]:
+def list_repos(
+    client,
+    *,
+    installed_only: bool = False,
+    category: Optional[str] = None,
+    pattern: Optional[str] = None,
+) -> list[dict]:
     """List repositories known to HACS.
 
     `installed_only=True`  → only the ones with files on disk
@@ -77,8 +85,9 @@ def find_repo(client, ident: str) -> Optional[dict]:
         if (r.get("full_name") or "").lower() == ident_l:
             return r
     # Short name match (the part after the slash) — only if unique
-    short_matches = [r for r in rows
-                     if (r.get("full_name") or "").lower().split("/")[-1] == ident_l]
+    short_matches = [
+        r for r in rows if (r.get("full_name") or "").lower().split("/")[-1] == ident_l
+    ]
     if len(short_matches) == 1:
         return short_matches[0]
     if len(short_matches) > 1:
@@ -88,9 +97,9 @@ def find_repo(client, ident: str) -> Optional[dict]:
             + ". Use the full user/repo form."
         )
     # Loose substring match — only if unique among INSTALLED repos
-    installed_substr = [r for r in rows
-                        if r.get("installed")
-                        and ident_l in (r.get("full_name") or "").lower()]
+    installed_substr = [
+        r for r in rows if r.get("installed") and ident_l in (r.get("full_name") or "").lower()
+    ]
     if len(installed_substr) == 1:
         return installed_substr[0]
     return None
@@ -110,15 +119,16 @@ def add_repo(client, repository: str, *, category: str = "integration") -> Any:
 
     ``repository`` must be the ``owner/repo`` GitHub slug (not a URL or id).
     """
-    if not repository or repository.count("/") != 1 or repository.startswith("/") \
-            or repository.endswith("/"):
-        raise ValueError(
-            f"repository must be the 'owner/repo' GitHub slug, got {repository!r}")
+    if (
+        not repository
+        or repository.count("/") != 1
+        or repository.startswith("/")
+        or repository.endswith("/")
+    ):
+        raise ValueError(f"repository must be the 'owner/repo' GitHub slug, got {repository!r}")
     if category not in CATEGORIES:
-        raise ValueError(
-            f"category must be one of {', '.join(CATEGORIES)}, got {category!r}")
-    return client.ws_call("hacs/repositories/add",
-                            {"repository": repository, "category": category})
+        raise ValueError(f"category must be one of {', '.join(CATEGORIES)}, got {category!r}")
+    return client.ws_call("hacs/repositories/add", {"repository": repository, "category": category})
 
 
 def show(client, ident: str) -> dict:
@@ -147,8 +157,7 @@ def remove(client, ident: str) -> Any:
     repo = find_repo(client, ident)
     if not repo:
         raise KeyError(f"no HACS repo matching {ident!r}")
-    return client.ws_call("hacs/repository/remove",
-                            {"repository": str(repo["id"])})
+    return client.ws_call("hacs/repository/remove", {"repository": str(repo["id"])})
 
 
 def refresh(client, ident: str) -> Any:
@@ -156,8 +165,7 @@ def refresh(client, ident: str) -> Any:
     repo = find_repo(client, ident)
     if not repo:
         raise KeyError(f"no HACS repo matching {ident!r}")
-    return client.ws_call("hacs/repository/refresh",
-                            {"repository": str(repo["id"])})
+    return client.ws_call("hacs/repository/refresh", {"repository": str(repo["id"])})
 
 
 hacs_info = info

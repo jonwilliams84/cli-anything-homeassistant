@@ -23,7 +23,6 @@ Service-call output is always wrapped in ``{"service": "profiler.<name>",
 
 from __future__ import annotations
 
-from typing import Any
 
 from cli_anything.homeassistant.core import services as services_core
 
@@ -32,6 +31,7 @@ _DOMAIN = "profiler"
 
 
 # ──────────────────────────────────────────────────────────────────── helpers
+
 
 def _call(client, service: str, data: dict | None = None) -> dict:
     response = services_core.call_service(client, _DOMAIN, service, service_data=data)
@@ -65,6 +65,7 @@ def _exposed_services(client) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────── services
+
 
 def start(client, *, seconds: int = 60) -> dict:
     if seconds <= 0:
@@ -109,6 +110,7 @@ def log_events(client) -> dict:
 
 
 # ───────────────────────────────────────────────────────────────────── status
+
 
 def status(client) -> dict:
     """Cheap probe — is the profiler integration loaded? Which services exist?"""

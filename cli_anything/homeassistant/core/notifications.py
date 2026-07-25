@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from cli_anything.homeassistant.core import services as services_core
-from cli_anything.homeassistant.core import states as states_core
 
 
 def list_notifications(client) -> list[dict]:
@@ -31,34 +30,44 @@ def list_notifications(client) -> list[dict]:
     for n in items:
         if not isinstance(n, dict):
             continue
-        rows.append({
-            "notification_id": n.get("notification_id"),
-            "title": n.get("title"),
-            "message": n.get("message"),
-            "created_at": n.get("created_at"),
-            "status": n.get("status"),
-        })
+        rows.append(
+            {
+                "notification_id": n.get("notification_id"),
+                "title": n.get("title"),
+                "message": n.get("message"),
+                "created_at": n.get("created_at"),
+                "status": n.get("status"),
+            }
+        )
     return rows
 
 
-def create(client, *, message: str, title: Optional[str] = None,
-            notification_id: Optional[str] = None) -> Any:
+def create(
+    client, *, message: str, title: Optional[str] = None, notification_id: Optional[str] = None
+) -> Any:
     """Create (or update by id) a persistent notification."""
     if not message:
         raise ValueError("message is required")
     data: dict[str, Any] = {"message": message}
-    if title:           data["title"] = title
-    if notification_id: data["notification_id"] = notification_id
-    return services_core.call_service(client, "persistent_notification", "create",
-                                       service_data=data)
+    if title:
+        data["title"] = title
+    if notification_id:
+        data["notification_id"] = notification_id
+    return services_core.call_service(
+        client, "persistent_notification", "create", service_data=data
+    )
 
 
 def dismiss(client, notification_id: str) -> Any:
     """Dismiss one notification by id (the slug after `persistent_notification.`)."""
     if not notification_id:
         raise ValueError("notification_id is required")
-    return services_core.call_service(client, "persistent_notification", "dismiss",
-                                       service_data={"notification_id": notification_id})
+    return services_core.call_service(
+        client,
+        "persistent_notification",
+        "dismiss",
+        service_data={"notification_id": notification_id},
+    )
 
 
 def dismiss_all(client) -> Any:
@@ -70,5 +79,9 @@ def mark_read(client, notification_id: str) -> Any:
     """Mark a notification as read without dismissing it."""
     if not notification_id:
         raise ValueError("notification_id is required")
-    return services_core.call_service(client, "persistent_notification", "mark_read",
-                                       service_data={"notification_id": notification_id})
+    return services_core.call_service(
+        client,
+        "persistent_notification",
+        "mark_read",
+        service_data={"notification_id": notification_id},
+    )
