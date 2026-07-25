@@ -29,12 +29,17 @@ VALID_TYPES = {
 }
 
 
-def create(client, *, name: str, state_template: str,
-            template_type: str = "sensor",
-            unit_of_measurement: str | None = None,
-            device_class: str | None = None,
-            state_class: str | None = None,
-            extra: dict | None = None) -> dict:
+def create(
+    client,
+    *,
+    name: str,
+    state_template: str,
+    template_type: str = "sensor",
+    unit_of_measurement: str | None = None,
+    device_class: str | None = None,
+    state_class: str | None = None,
+    extra: dict | None = None,
+) -> dict:
     """Create a UI-style template helper.
 
     Args:
@@ -52,23 +57,24 @@ def create(client, *, name: str, state_template: str,
     ``{"type": "create_entry", "title": "...", "result": {...}}``).
     """
     if template_type not in VALID_TYPES:
-        raise ValueError(f"template_type must be one of {sorted(VALID_TYPES)}; "
-                          f"got {template_type!r}")
+        raise ValueError(
+            f"template_type must be one of {sorted(VALID_TYPES)}; got {template_type!r}"
+        )
     if not name:
         raise ValueError("name is required")
     if not state_template:
         raise ValueError("state_template is required")
 
     # Step 1: initiate the config-flow for the template integration.
-    init = client.post("config/config_entries/flow",
-                       {"handler": "template", "show_advanced_options": False})
+    init = client.post(
+        "config/config_entries/flow", {"handler": "template", "show_advanced_options": False}
+    )
     flow_id = init.get("flow_id")
     if not flow_id:
         raise RuntimeError(f"template flow init failed: {init!r}")
 
     # Step 2: pick the template type (sensor / binary_sensor / ...).
-    client.post(f"config/config_entries/flow/{flow_id}",
-                {"next_step_id": template_type})
+    client.post(f"config/config_entries/flow/{flow_id}", {"next_step_id": template_type})
 
     # Step 3: submit the helper's config.
     payload: dict[str, Any] = {
@@ -87,12 +93,17 @@ def create(client, *, name: str, state_template: str,
     return client.post(f"config/config_entries/flow/{flow_id}", payload)
 
 
-def update(client, entry_id: str, *, name: str | None = None,
-            state_template: str | None = None,
-            unit_of_measurement: str | None = None,
-            device_class: str | None = None,
-            state_class: str | None = None,
-            extra: dict | None = None) -> dict:
+def update(
+    client,
+    entry_id: str,
+    *,
+    name: str | None = None,
+    state_template: str | None = None,
+    unit_of_measurement: str | None = None,
+    device_class: str | None = None,
+    state_class: str | None = None,
+    extra: dict | None = None,
+) -> dict:
     """Update an existing template helper's state template / options.
 
     Uses ``options-flow`` (init + configure), which is the documented way
@@ -103,8 +114,7 @@ def update(client, entry_id: str, *, name: str | None = None,
         raise ValueError("entry_id is required")
 
     # Pull current options to preserve untouched fields.
-    init = client.post("config/config_entries/options/flow",
-                       {"handler": entry_id})
+    init = client.post("config/config_entries/options/flow", {"handler": entry_id})
     flow_id = init.get("flow_id")
     if not flow_id:
         raise RuntimeError(f"options flow init failed: {init!r}")
@@ -117,12 +127,18 @@ def update(client, entry_id: str, *, name: str | None = None,
                 current[f["name"]] = desc["suggested_value"]
 
     # Apply caller's overrides.
-    if name is not None:                current["name"] = name
-    if state_template is not None:      current["state"] = state_template.strip()
-    if unit_of_measurement is not None: current["unit_of_measurement"] = unit_of_measurement
-    if device_class is not None:        current["device_class"] = device_class
-    if state_class is not None:         current["state_class"] = state_class
-    if extra:                           current.update(extra)
+    if name is not None:
+        current["name"] = name
+    if state_template is not None:
+        current["state"] = state_template.strip()
+    if unit_of_measurement is not None:
+        current["unit_of_measurement"] = unit_of_measurement
+    if device_class is not None:
+        current["device_class"] = device_class
+    if state_class is not None:
+        current["state_class"] = state_class
+    if extra:
+        current.update(extra)
 
     return client.post(f"config/config_entries/flow/{flow_id}", current)
 
@@ -151,8 +167,7 @@ def show(client, ident: str) -> dict:
         entry_id = ident
 
     # Use options-flow init to read the current values — but DON'T submit.
-    init = client.post("config/config_entries/options/flow",
-                       {"handler": entry_id})
+    init = client.post("config/config_entries/options/flow", {"handler": entry_id})
     flow_id = init.get("flow_id")
     schema = init.get("data_schema", []) or []
     current: dict[str, Any] = {}
@@ -171,8 +186,7 @@ def show(client, ident: str) -> dict:
 
     # Also pull the entry's basic metadata for context
     try:
-        entry_meta = client.ws_call("config_entries/get",
-                                       {"entry_id": entry_id}) or {}
+        entry_meta = client.ws_call("config_entries/get", {"entry_id": entry_id}) or {}
     except Exception:
         entry_meta = {}
 

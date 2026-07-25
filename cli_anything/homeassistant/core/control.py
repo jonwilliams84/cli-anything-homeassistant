@@ -22,8 +22,7 @@ def restart(client, *, safe_mode: bool = False) -> Any:
     data: dict[str, Any] = {}
     if safe_mode:
         data["safe_mode"] = True
-    return services_core.call_service(client, "homeassistant", "restart",
-                                       service_data=data or None)
+    return services_core.call_service(client, "homeassistant", "restart", service_data=data or None)
 
 
 def stop(client) -> Any:
@@ -70,13 +69,13 @@ def check_config(client, *, wait_secs: float = 8.0) -> dict:
     while time.time() < deadline:
         try:
             notification = states_core.get_state(
-                client, "persistent_notification.config_check_failed",
+                client,
+                "persistent_notification.config_check_failed",
             )
             break
         except Exception:
             time.sleep(0.5)
-    if not notification or notification.get("state") in (None, "unknown",
-                                                          "unavailable"):
+    if not notification or notification.get("state") in (None, "unknown", "unavailable"):
         return {"valid": True, "errors": None}
     attrs = notification.get("attributes") or {}
     return {
@@ -91,7 +90,6 @@ def safe_restart(client, *, wait_check_secs: float = 8.0) -> dict:
     """Belt-and-braces: check-config first; only restart on a clean result."""
     result = check_config(client, wait_secs=wait_check_secs)
     if not result.get("valid"):
-        return {"restarted": False, "reason": "check_config failed",
-                "check": result}
+        return {"restarted": False, "reason": "check_config failed", "check": result}
     restart(client)
     return {"restarted": True, "check": result}

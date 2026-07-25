@@ -19,9 +19,7 @@ _VALID_DOMAINS = frozenset({"automation", "script"})
 def _validate_domain(domain: str) -> None:
     """Raise ValueError when *domain* is not a valid trace domain."""
     if domain not in _VALID_DOMAINS:
-        raise ValueError(
-            f"domain must be one of {sorted(_VALID_DOMAINS)}, got {domain!r}"
-        )
+        raise ValueError(f"domain must be one of {sorted(_VALID_DOMAINS)}, got {domain!r}")
 
 
 def _validate_item_id(item_id: str) -> None:
@@ -106,9 +104,7 @@ def list_contexts(
           (HA's ``vol.Inclusive`` requires both or neither).
     """
     if (domain is None) != (item_id is None):
-        raise ValueError(
-            "domain and item_id must be supplied together or both omitted"
-        )
+        raise ValueError("domain and item_id must be supplied together or both omitted")
     payload: dict = {}
     if domain is not None:
         _validate_domain(domain)

@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # List helpers — enumerate what a device supports
 # ════════════════════════════════════════════════════════════════════════
 
+
 def list_triggers(client, *, device_id: str) -> list:
     """List the trigger descriptors supported by ``device_id``.
 
@@ -75,6 +76,7 @@ def list_actions(client, *, device_id: str) -> list:
 # ════════════════════════════════════════════════════════════════════════
 # Capabilities — option schema for a specific descriptor
 # ════════════════════════════════════════════════════════════════════════
+
 
 def trigger_capabilities(client, *, trigger: dict) -> dict:
     """Return the option schema for a specific trigger descriptor.
@@ -132,6 +134,7 @@ def action_capabilities(client, *, action: dict) -> dict:
 # Convenience — full device summary in one shot
 # ════════════════════════════════════════════════════════════════════════
 
+
 def summarise_device(client, *, device_id: str) -> dict:
     """Return triggers, conditions, and actions for ``device_id`` as one dict.
 
@@ -152,9 +155,9 @@ def summarise_device(client, *, device_id: str) -> dict:
         raise ValueError("device_id is required")
 
     tasks = {
-        "triggers":   lambda: list_triggers(client, device_id=device_id),
+        "triggers": lambda: list_triggers(client, device_id=device_id),
         "conditions": lambda: list_conditions(client, device_id=device_id),
-        "actions":    lambda: list_actions(client, device_id=device_id),
+        "actions": lambda: list_actions(client, device_id=device_id),
     }
 
     results: dict = {}
@@ -165,7 +168,7 @@ def summarise_device(client, *, device_id: str) -> dict:
             results[key] = future.result()
 
     return {
-        "triggers":   results["triggers"],
+        "triggers": results["triggers"],
         "conditions": results["conditions"],
-        "actions":    results["actions"],
+        "actions": results["actions"],
     }

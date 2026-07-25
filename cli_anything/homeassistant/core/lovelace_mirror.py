@@ -10,7 +10,7 @@ state, etc.).
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Iterable
 
 from cli_anything.homeassistant.core import lovelace as lovelace_core
 from cli_anything.homeassistant.core import lovelace_cards as lovelace_cards_core
@@ -32,12 +32,15 @@ def _section_room_keys(section: dict) -> Iterable[str]:
     """Yield every `state` value referenced via a `room_selector_*` entity
     inside a section's `visibility` predicates.
     """
+
     def walk(node):
         if isinstance(node, dict):
             ent = node.get("entity", "")
-            if (node.get("condition") == "state"
-                    and isinstance(ent, str)
-                    and "room_selector_" in ent):
+            if (
+                node.get("condition") == "state"
+                and isinstance(ent, str)
+                and "room_selector_" in ent
+            ):
                 state = node.get("state")
                 if isinstance(state, str):
                     yield state
@@ -46,6 +49,7 @@ def _section_room_keys(section: dict) -> Iterable[str]:
         elif isinstance(node, list):
             for v in node:
                 yield from walk(v)
+
     yield from walk(section.get("visibility", []))
 
 
@@ -63,16 +67,21 @@ def _filter_rooms_view(view: dict, allowed: set[str]) -> dict:
     return {**view, "sections": out}
 
 
-def mirror(client, *, source_url_path: str, dest_url_path: str,
-            substitutions: list[tuple[str, str]] | None = None,
-            keep_views: set[str] | None = None,
-            skip_views: set[str] | None = None,
-            allowed_rooms: set[str] | None = None,
-            blocked_subheadings: set[str] | None = None,
-            blocked_card_types: set[str] | None = None,
-            blocked_entity_prefixes: set[str] | None = None,
-            blocked_markdown_contains: set[str] | None = None,
-            dry_run: bool = False) -> dict:
+def mirror(
+    client,
+    *,
+    source_url_path: str,
+    dest_url_path: str,
+    substitutions: list[tuple[str, str]] | None = None,
+    keep_views: set[str] | None = None,
+    skip_views: set[str] | None = None,
+    allowed_rooms: set[str] | None = None,
+    blocked_subheadings: set[str] | None = None,
+    blocked_card_types: set[str] | None = None,
+    blocked_entity_prefixes: set[str] | None = None,
+    blocked_markdown_contains: set[str] | None = None,
+    dry_run: bool = False,
+) -> dict:
     """Mirror ``source_url_path`` → ``dest_url_path`` with optional
     filtering and substitutions. Returns a summary dict.
 
@@ -96,18 +105,15 @@ def mirror(client, *, source_url_path: str, dest_url_path: str,
     # View filter
     views = src_cfg.get("views", [])
     if keep_views is not None:
-        views = [v for v in views
-                 if (v.get("path") or v.get("title")) in keep_views]
+        views = [v for v in views if (v.get("path") or v.get("title")) in keep_views]
     elif skip_views:
-        views = [v for v in views
-                 if (v.get("path") or v.get("title")) not in skip_views]
+        views = [v for v in views if (v.get("path") or v.get("title")) not in skip_views]
 
     new_cfg = {**src_cfg, "views": views}
 
     # Per-target room filter (Rooms view section pruning)
     if allowed_rooms:
-        new_cfg["views"] = [_filter_rooms_view(v, allowed_rooms)
-                              for v in new_cfg["views"]]
+        new_cfg["views"] = [_filter_rooms_view(v, allowed_rooms) for v in new_cfg["views"]]
 
     # Substitutions
     if substitutions:
@@ -115,8 +121,12 @@ def mirror(client, *, source_url_path: str, dest_url_path: str,
 
     # Card pruning
     counters = {}
-    if (blocked_card_types or blocked_entity_prefixes
-            or blocked_markdown_contains or blocked_subheadings):
+    if (
+        blocked_card_types
+        or blocked_entity_prefixes
+        or blocked_markdown_contains
+        or blocked_subheadings
+    ):
         new_cfg, counters = lovelace_cards_core.prune(
             new_cfg,
             types=set(blocked_card_types) if blocked_card_types else None,

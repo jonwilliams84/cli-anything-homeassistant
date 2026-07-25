@@ -36,6 +36,7 @@ from cli_anything.homeassistant.core._ws_subscribe_utils import (
 # Internal helpers
 # ────────────────────────────────────────────────────────────────────────────
 
+
 def _validate_callable(fn: object, name: str = "on_status") -> None:
     if not callable(fn):
         raise ValueError(f"{name} must be callable")
@@ -49,6 +50,7 @@ def _validate_max_events(max_events: int | None) -> None:
 # ────────────────────────────────────────────────────────────────────────────
 # Public functions
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def info(client) -> dict:
     """Return the full hardware info dict from Home Assistant.

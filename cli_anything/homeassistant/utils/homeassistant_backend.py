@@ -96,7 +96,8 @@ class HomeAssistantClient:
             # the 401 is a per-endpoint policy denial.
             try:
                 probe = self.session.get(
-                    f"{self.base_url}/api/", timeout=min(self.timeout, 5),
+                    f"{self.base_url}/api/",
+                    timeout=min(self.timeout, 5),
                 )
                 if probe.ok:
                     raise HomeAssistantError(
@@ -136,13 +137,10 @@ class HomeAssistantClient:
             raise HomeAssistantError(f"Request timed out after {self.timeout}s: {exc}") from exc
         self._check_auth(resp)
         if not resp.ok:
-            raise HomeAssistantError(
-                f"GET {path} -> {resp.status_code}: {resp.text[:500]}"
-            )
+            raise HomeAssistantError(f"GET {path} -> {resp.status_code}: {resp.text[:500]}")
         return self._decode(resp)
 
-    def post(self, path: str, payload: Any = None,
-              params: dict | None = None) -> Any:
+    def post(self, path: str, payload: Any = None, params: dict | None = None) -> Any:
         """POST JSON payload to a REST endpoint and return the decoded response."""
         try:
             if payload is None:
@@ -151,13 +149,17 @@ class HomeAssistantClient:
                 # Used by /api/template which expects a JSON object body, but
                 # also for endpoints that take raw text. Default: send as JSON.
                 resp = self.session.post(
-                    self._url(path), params=params,
-                    json={"template": payload}, timeout=self.timeout,
+                    self._url(path),
+                    params=params,
+                    json={"template": payload},
+                    timeout=self.timeout,
                 )
             else:
                 resp = self.session.post(
-                    self._url(path), params=params,
-                    json=payload, timeout=self.timeout,
+                    self._url(path),
+                    params=params,
+                    json=payload,
+                    timeout=self.timeout,
                 )
         except requests.exceptions.ConnectionError as exc:
             raise self._connection_error(exc) from exc
@@ -165,9 +167,7 @@ class HomeAssistantClient:
             raise HomeAssistantError(f"Request timed out after {self.timeout}s: {exc}") from exc
         self._check_auth(resp)
         if not resp.ok:
-            raise HomeAssistantError(
-                f"POST {path} -> {resp.status_code}: {resp.text[:500]}"
-            )
+            raise HomeAssistantError(f"POST {path} -> {resp.status_code}: {resp.text[:500]}")
         return self._decode(resp)
 
     def delete(self, path: str, params: dict | None = None) -> Any:
@@ -178,9 +178,7 @@ class HomeAssistantClient:
             raise self._connection_error(exc) from exc
         self._check_auth(resp)
         if not resp.ok:
-            raise HomeAssistantError(
-                f"DELETE {path} -> {resp.status_code}: {resp.text[:500]}"
-            )
+            raise HomeAssistantError(f"DELETE {path} -> {resp.status_code}: {resp.text[:500]}")
         return self._decode(resp)
 
     # ------------------------------------------------------------------ WebSocket
@@ -216,9 +214,7 @@ class HomeAssistantClient:
         """Auth + single command exchange on an open WebSocket."""
         auth_required = json.loads(ws.recv())
         if auth_required.get("type") != "auth_required":
-            raise HomeAssistantError(
-                f"Unexpected WS handshake: {auth_required!r}"
-            )
+            raise HomeAssistantError(f"Unexpected WS handshake: {auth_required!r}")
         ws.send(json.dumps({"type": "auth", "access_token": self.token}))
         auth_result = json.loads(ws.recv())
         if auth_result.get("type") == "auth_invalid":
@@ -251,8 +247,9 @@ class HomeAssistantClient:
                 return data.get("result")
         raise HomeAssistantError(f"WS command {msg_type} timed out after {self.timeout}s")
 
-    def ws_subscribe(self, msg_type: str, payload: dict | None,
-                     on_message, stop_event: threading.Event) -> None:
+    def ws_subscribe(
+        self, msg_type: str, payload: dict | None, on_message, stop_event: threading.Event
+    ) -> None:
         """Subscribe and stream messages until ``stop_event`` is set.
 
         ``on_message`` receives parsed event dicts (the inner ``event`` payload).
@@ -301,9 +298,7 @@ class HomeAssistantClient:
                 if data.get("type") == "event" and data.get("id") == sub_id:
                     on_message(data.get("event"))
                 elif data.get("type") == "result" and not data.get("success", False):
-                    raise HomeAssistantError(
-                        f"WS subscribe failed: {data.get('error')}"
-                    )
+                    raise HomeAssistantError(f"WS subscribe failed: {data.get('error')}")
         finally:
             # Best-effort unsubscribe before close so the HA server isn't left
             # tracking a stale subscription id. Ignore failures — the socket
@@ -311,11 +306,15 @@ class HomeAssistantClient:
             if sub_id is not None:
                 try:
                     ws.settimeout(2.0)
-                    ws.send(json.dumps({
-                        "id": next(ids),
-                        "type": "unsubscribe_events",
-                        "subscription": sub_id,
-                    }))
+                    ws.send(
+                        json.dumps(
+                            {
+                                "id": next(ids),
+                                "type": "unsubscribe_events",
+                                "subscription": sub_id,
+                            }
+                        )
+                    )
                 except Exception:
                     pass
             try:

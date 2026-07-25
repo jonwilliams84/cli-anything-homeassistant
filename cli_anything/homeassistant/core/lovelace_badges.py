@@ -17,8 +17,7 @@ def list_badges(config: dict, view_path: str) -> list:
     return list(v.get("badges", []))
 
 
-def add_badge(config: dict, view_path: str, badge: str | dict,
-                *, index: int | None = None) -> Any:
+def add_badge(config: dict, view_path: str, badge: str | dict, *, index: int | None = None) -> Any:
     """Add a badge to a view. `badge` is an entity_id string or a dict."""
     if not badge:
         raise ValueError("badge required (entity_id or config dict)")
@@ -35,14 +34,12 @@ def delete_badge(config: dict, view_path: str, badge_idx: int) -> dict:
     if not isinstance(badges, list):
         raise ValueError(f"view {view_path!r} has no badges list")
     if badge_idx < 0 or badge_idx >= len(badges):
-        raise IndexError(f"badge index {badge_idx} out of range "
-                          f"(view has {len(badges)} badges)")
+        raise IndexError(f"badge index {badge_idx} out of range (view has {len(badges)} badges)")
     badges.pop(badge_idx)
     return config
 
 
-def move_badge(config: dict, view_path: str, badge_idx: int,
-                 new_index: int) -> dict:
+def move_badge(config: dict, view_path: str, badge_idx: int, new_index: int) -> dict:
     v = lovelace_paths.get_view(config, view_path)
     badges = v.get("badges")
     if not isinstance(badges, list):

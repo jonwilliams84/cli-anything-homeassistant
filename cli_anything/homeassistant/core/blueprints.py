@@ -48,9 +48,7 @@ def _is_internal_host(host: str) -> bool:
 def _check_domain(domain: str) -> None:
     """Raise ValueError if *domain* is not a recognised blueprint domain."""
     if domain not in VALID_DOMAINS:
-        raise ValueError(
-            f"domain must be one of {VALID_DOMAINS}, got {domain!r}"
-        )
+        raise ValueError(f"domain must be one of {VALID_DOMAINS}, got {domain!r}")
 
 
 def list_blueprints(client, domain: str | None = None) -> dict:
@@ -89,15 +87,11 @@ def import_blueprint(client, *, url: str) -> dict:
     if not url:
         raise ValueError("url is required and must be non-empty")
     if not (url.startswith("http://") or url.startswith("https://")):
-        raise ValueError(
-            "url must start with http:// or https://"
-        )
+        raise ValueError("url must start with http:// or https://")
     parsed = urlparse(url)
     host = parsed.hostname or ""
     if _is_internal_host(host):
-        raise ValueError(
-            f"url points to a non-public host and is not allowed: {host!r}"
-        )
+        raise ValueError(f"url points to a non-public host and is not allowed: {host!r}")
     return client.ws_call("blueprint/import", {"url": url}) or {}
 
 
@@ -142,9 +136,7 @@ def delete_blueprint(client, *, domain: str, path: str) -> Any:
     _check_domain(domain)
     if not path:
         raise ValueError("path is required and must be non-empty")
-    return client.ws_call(
-        "blueprint/delete", {"domain": domain, "path": path}
-    )
+    return client.ws_call("blueprint/delete", {"domain": domain, "path": path})
 
 
 def substitute_blueprint(
@@ -167,13 +159,17 @@ def substitute_blueprint(
         raise ValueError("path is required and must be non-empty")
     if not isinstance(inputs, dict):
         raise ValueError("inputs must be a dict")
-    return client.ws_call(
-        "blueprint/substitute",
-        {"domain": domain, "path": path, "input": inputs},
-    ) or {}
+    return (
+        client.ws_call(
+            "blueprint/substitute",
+            {"domain": domain, "path": path, "input": inputs},
+        )
+        or {}
+    )
 
 
 # ─────────────────────────────────────────────────────── compat / shortcuts
+
 
 def show(client, domain: str, path: str) -> dict | None:
     """Return a single blueprint dict by domain+path, or None if not found.
@@ -188,20 +184,27 @@ def show(client, domain: str, path: str) -> dict | None:
     return blueprints.get(path)
 
 
-def substitute(client, *, domain: str, path: str,
-                 user_input: dict | None = None,
-                 input: dict | None = None,
-                 inputs: dict | None = None) -> dict:
+def substitute(
+    client,
+    *,
+    domain: str,
+    path: str,
+    user_input: dict | None = None,
+    input: dict | None = None,
+    inputs: dict | None = None,
+) -> dict:
     """Backwards-compatible alias for ``substitute_blueprint``.
 
     Accepts the legacy ``user_input=`` and ``input=`` kwargs as well as the new ``inputs=``.
     """
     # Count how many are provided
-    provided = sum([
-        user_input is not None,
-        input is not None,
-        inputs is not None,
-    ])
+    provided = sum(
+        [
+            user_input is not None,
+            input is not None,
+            inputs is not None,
+        ]
+    )
     if provided > 1:
         # Check if all provided values are identical
         values = [v for v in [user_input, input, inputs] if v is not None]
@@ -215,5 +218,4 @@ def substitute(client, *, domain: str, path: str,
     payload_input = user_input or input or inputs
     if not isinstance(payload_input, dict):
         raise ValueError("input must be a dict")
-    return substitute_blueprint(client, domain=domain, path=path,
-                                  inputs=payload_input)
+    return substitute_blueprint(client, domain=domain, path=path, inputs=payload_input)

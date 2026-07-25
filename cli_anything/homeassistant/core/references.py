@@ -37,8 +37,7 @@ def _walk_strings(obj: Any, path: str = ""):
         yield path, obj
 
 
-def _matches_entity(text: str, entity_id: str, *,
-                     also_match_unique_id: str | None = None) -> bool:
+def _matches_entity(text: str, entity_id: str, *, also_match_unique_id: str | None = None) -> bool:
     """Return True iff `text` mentions `entity_id` as a whole token."""
     # Use a word-boundary-style match (avoid 'sensor.foo' matching 'sensor.foo_bar')
     pat = re.compile(r"(?<![a-zA-Z0-9_])" + re.escape(entity_id) + r"(?![a-zA-Z0-9_])")
@@ -66,6 +65,7 @@ def _snippet(text: str, entity_id: str, *, span: int = 40) -> str:
 
 
 # ── UI-managed automations / scripts / scenes ───────────────────────────────
+
 
 def _ui_configs(client, domain: str) -> list[tuple[str, dict]]:
     """Return [(id, config)] for every UI-managed item in `domain`."""
@@ -100,12 +100,12 @@ def _ui_configs(client, domain: str) -> list[tuple[str, dict]]:
 
 # ── template helpers ────────────────────────────────────────────────────────
 
+
 def _template_helper_entries(client) -> list[dict]:
     """Return [{entry_id, title, options}] for every template config entry."""
     out: list[dict] = []
     try:
-        entries = client.ws_call("config_entries/get",
-                                    {"domain_list": ["template"]}) or []
+        entries = client.ws_call("config_entries/get", {"domain_list": ["template"]}) or []
     except Exception:
         try:
             entries = client.ws_call("config_entries/get") or []
@@ -117,8 +117,7 @@ def _template_helper_entries(client) -> list[dict]:
         if not entry_id:
             continue
         try:
-            init = client.post("config/config_entries/options/flow",
-                                {"handler": entry_id})
+            init = client.post("config/config_entries/options/flow", {"handler": entry_id})
             opts: dict = {}
             for f in init.get("data_schema", []) or []:
                 if isinstance(f, dict) and "name" in f:
@@ -129,18 +128,17 @@ def _template_helper_entries(client) -> list[dict]:
             flow_id = init.get("flow_id")
             if flow_id:
                 try:
-                    client.request("DELETE",
-                                    f"config/config_entries/options/flow/{flow_id}")
+                    client.request("DELETE", f"config/config_entries/options/flow/{flow_id}")
                 except Exception:
                     pass
-            out.append({"entry_id": entry_id, "title": e.get("title"),
-                         "options": opts})
+            out.append({"entry_id": entry_id, "title": e.get("title"), "options": opts})
         except Exception:
             continue
     return out
 
 
 # ── Lovelace ────────────────────────────────────────────────────────────────
+
 
 def _lovelace_configs(client) -> list[tuple[str, dict]]:
     """Return [(url_path or 'lovelace', config)] for every dashboard."""
@@ -171,9 +169,14 @@ def _lovelace_configs(client) -> list[tuple[str, dict]]:
 
 # ── public ──────────────────────────────────────────────────────────────────
 
-def find_references(client, entity_id: str, *,
-                     include_kinds: Iterable[str] | None = None,
-                     max_hits_per_kind: int = 30) -> list[dict]:
+
+def find_references(
+    client,
+    entity_id: str,
+    *,
+    include_kinds: Iterable[str] | None = None,
+    max_hits_per_kind: int = 30,
+) -> list[dict]:
     """Return all references to `entity_id` across UI-managed config.
 
     `include_kinds` filters which categories to search: any subset of
@@ -181,9 +184,17 @@ def find_references(client, entity_id: str, *,
     """
     if not entity_id or "." not in entity_id:
         raise ValueError("entity_id must be in 'domain.object' form")
-    kinds = set(include_kinds) if include_kinds else {
-        "automation", "script", "scene", "template_helper", "lovelace",
-    }
+    kinds = (
+        set(include_kinds)
+        if include_kinds
+        else {
+            "automation",
+            "script",
+            "scene",
+            "template_helper",
+            "lovelace",
+        }
+    )
     hits: list[dict] = []
 
     # automations / scripts / scenes — all share the same /api/config/<d>/config/<id> shape
@@ -200,13 +211,15 @@ def find_references(client, entity_id: str, *,
                     if _matches_entity(s, entity_id):
                         matched_path = p
                         break
-                hits.append({
-                    "kind": kind,
-                    "entity_id": ent_id,
-                    "name": cfg.get("alias") or cfg.get("description") or ent_id,
-                    "where": matched_path or "?",
-                    "snippet": _snippet(blob, entity_id),
-                })
+                hits.append(
+                    {
+                        "kind": kind,
+                        "entity_id": ent_id,
+                        "name": cfg.get("alias") or cfg.get("description") or ent_id,
+                        "where": matched_path or "?",
+                        "snippet": _snippet(blob, entity_id),
+                    }
+                )
                 count += 1
                 if count >= max_hits_per_kind:
                     break
@@ -221,13 +234,15 @@ def find_references(client, entity_id: str, *,
                     if _matches_entity(s, entity_id):
                         matched_path = p
                         break
-                hits.append({
-                    "kind": "template_helper",
-                    "entry_id": entry["entry_id"],
-                    "name": entry.get("title"),
-                    "where": matched_path or "?",
-                    "snippet": _snippet(blob, entity_id),
-                })
+                hits.append(
+                    {
+                        "kind": "template_helper",
+                        "entry_id": entry["entry_id"],
+                        "name": entry.get("title"),
+                        "where": matched_path or "?",
+                        "snippet": _snippet(blob, entity_id),
+                    }
+                )
                 count += 1
                 if count >= max_hits_per_kind:
                     break
@@ -242,12 +257,14 @@ def find_references(client, entity_id: str, *,
             for p, s in _walk_strings(cfg):
                 if not _matches_entity(s, entity_id):
                     continue
-                hits.append({
-                    "kind": "lovelace",
-                    "dashboard": url,
-                    "where": p,
-                    "snippet": _snippet(s, entity_id),
-                })
+                hits.append(
+                    {
+                        "kind": "lovelace",
+                        "dashboard": url,
+                        "where": p,
+                        "snippet": _snippet(s, entity_id),
+                    }
+                )
                 count += 1
                 if count >= max_hits_per_kind:
                     break

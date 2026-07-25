@@ -62,9 +62,7 @@ def write(
     if not message:
         raise ValueError("message is required")
     if level not in _VALID_LEVELS:
-        raise ValueError(
-            f"level must be one of {sorted(_VALID_LEVELS)}, got {level!r}"
-        )
+        raise ValueError(f"level must be one of {sorted(_VALID_LEVELS)}, got {level!r}")
     payload: dict[str, Any] = {"message": message, "level": level}
     if logger is not None:
         payload["logger"] = logger

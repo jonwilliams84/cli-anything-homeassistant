@@ -18,6 +18,7 @@ from __future__ import annotations
 # list_items — WS shopping_list/items
 # ════════════════════════════════════════════════════════════════════════
 
+
 def list_items(client) -> list[dict]:
     """Return the list of items in the shopping list.
 
@@ -34,6 +35,7 @@ def list_items(client) -> list[dict]:
 # ════════════════════════════════════════════════════════════════════════
 # add_item — WS shopping_list/items/add
 # ════════════════════════════════════════════════════════════════════════
+
 
 def add_item(client, *, name: str) -> dict:
     """Add a new item to the shopping list.
@@ -52,10 +54,10 @@ def add_item(client, *, name: str) -> dict:
 # update_item — WS shopping_list/items/update
 # ════════════════════════════════════════════════════════════════════════
 
-def update_item(client, *,
-                item_id: str,
-                name: str | None = None,
-                complete: bool | None = None) -> dict:
+
+def update_item(
+    client, *, item_id: str, name: str | None = None, complete: bool | None = None
+) -> dict:
     """Update an existing shopping list item.
 
     ``item_id`` — the id of the item to update (required, non-empty).
@@ -81,6 +83,7 @@ def update_item(client, *,
 # remove_item — WS shopping_list/items/remove
 # ════════════════════════════════════════════════════════════════════════
 
+
 def remove_item(client, *, item_id: str) -> dict:
     """Remove an item from the shopping list.
 
@@ -97,6 +100,7 @@ def remove_item(client, *, item_id: str) -> dict:
 # clear_completed — WS shopping_list/items/clear
 # ════════════════════════════════════════════════════════════════════════
 
+
 def clear_completed(client) -> dict:
     """Clear all completed items from the shopping list.
 
@@ -108,6 +112,7 @@ def clear_completed(client) -> dict:
 # ════════════════════════════════════════════════════════════════════════
 # reorder_items — WS shopping_list/items/reorder
 # ════════════════════════════════════════════════════════════════════════
+
 
 def reorder_items(client, *, item_ids: list[str]) -> dict:
     """Reorder items in the shopping list.

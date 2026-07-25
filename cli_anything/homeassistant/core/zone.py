@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 # ─────────────────────────────────────────────────────────────────── list
 
+
 def list_zones(client) -> list[dict]:
     """Return every storage-defined zone (does not include YAML zones).
 
@@ -48,6 +49,7 @@ def find_zone(client, ident: str) -> Optional[dict]:
 
 
 # ─────────────────────────────────────────────────────────────── create
+
 
 def create(
     client,
@@ -87,6 +89,7 @@ def create(
 
 # ─────────────────────────────────────────────────────────────── update
 
+
 def update(
     client,
     zone_id: str,
@@ -103,16 +106,23 @@ def update(
         raise ValueError("zone_id is required")
 
     payload: dict[str, Any] = {"zone_id": zone_id}
-    if name is not None:       payload["name"] = name
-    if latitude is not None:   payload["latitude"] = float(latitude)
-    if longitude is not None:  payload["longitude"] = float(longitude)
-    if radius is not None:     payload["radius"] = float(radius)
-    if icon is not None:       payload["icon"] = icon
-    if passive is not None:    payload["passive"] = bool(passive)
+    if name is not None:
+        payload["name"] = name
+    if latitude is not None:
+        payload["latitude"] = float(latitude)
+    if longitude is not None:
+        payload["longitude"] = float(longitude)
+    if radius is not None:
+        payload["radius"] = float(radius)
+    if icon is not None:
+        payload["icon"] = icon
+    if passive is not None:
+        payload["passive"] = bool(passive)
     return client.ws_call("config/zone/update", payload) or {}
 
 
 # ─────────────────────────────────────────────────────────────── delete
+
 
 def delete(client, zone_id: str) -> Any:
     """Delete a storage zone. YAML-declared zones cannot be removed via API."""
@@ -123,6 +133,7 @@ def delete(client, zone_id: str) -> Any:
 
 # ──────────────────────────────────────────────────────────── derived helpers
 
+
 def list_state_zones(client) -> list[dict]:
     """List every ``zone.*`` entity state (storage + YAML zones combined).
 
@@ -130,10 +141,13 @@ def list_state_zones(client) -> list[dict]:
     where they came from. Returns the raw entity-state dicts.
     """
     data = client.get("states") or []
-    return [s for s in data
-            if isinstance(s, dict)
-            and isinstance(s.get("entity_id"), str)
-            and s["entity_id"].startswith("zone.")]
+    return [
+        s
+        for s in data
+        if isinstance(s, dict)
+        and isinstance(s.get("entity_id"), str)
+        and s["entity_id"].startswith("zone.")
+    ]
 
 
 def entities_in_zone(client, zone_id_or_entity: str) -> list[dict]:

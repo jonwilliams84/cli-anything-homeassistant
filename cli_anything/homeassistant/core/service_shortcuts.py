@@ -8,9 +8,15 @@ omitting None-valued kwargs from the final request.
 from __future__ import annotations
 
 
-def notify(client, *, message: str, title: str | None = None,
-           target: str | list[str] | None = None, data: dict | None = None,
-           service: str = "notify") -> dict:
+def notify(
+    client,
+    *,
+    message: str,
+    title: str | None = None,
+    target: str | list[str] | None = None,
+    data: dict | None = None,
+    service: str = "notify",
+) -> dict:
     """Send a notification.
 
     POST services/notify/<service>.
@@ -30,8 +36,9 @@ def notify(client, *, message: str, title: str | None = None,
     return client.post(f"services/notify/{service}", payload)
 
 
-def mqtt_publish(client, *, topic: str, payload: str | None = None,
-                 qos: int = 0, retain: bool = False) -> dict:
+def mqtt_publish(
+    client, *, topic: str, payload: str | None = None, qos: int = 0, retain: bool = False
+) -> dict:
     """Publish to an MQTT topic.
 
     POST services/mqtt/publish.
@@ -179,9 +186,9 @@ def alarm_disarm(client, entity_id: str, *, code: str | None = None) -> dict:
     return client.post("services/alarm_control_panel/alarm_disarm", payload)
 
 
-def persistent_notification_create(client, *, message: str,
-                                   title: str | None = None,
-                                   notification_id: str | None = None) -> dict:
+def persistent_notification_create(
+    client, *, message: str, title: str | None = None, notification_id: str | None = None
+) -> dict:
     """Create a persistent notification.
 
     POST services/persistent_notification/create.

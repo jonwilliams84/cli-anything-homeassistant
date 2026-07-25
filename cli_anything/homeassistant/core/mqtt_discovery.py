@@ -21,8 +21,7 @@ def _norm_prefix(prefix: str) -> str:
     return prefix.rstrip("/")
 
 
-def list_discovered(client, prefix: str = "homeassistant",
-                     timeout: float = 5.0) -> list[dict]:
+def list_discovered(client, prefix: str = "homeassistant", timeout: float = 5.0) -> list[dict]:
     """Subscribe briefly and collect all retained discovery messages.
 
     Returns one row per topic: {topic, domain, object_id, component,
@@ -48,15 +47,17 @@ def list_discovered(client, prefix: str = "homeassistant",
             payload = json.loads(r["payload"]) if r["payload"] else {}
         except (json.JSONDecodeError, ValueError):
             payload = {}
-        out.append({
-            "topic": r["topic"],
-            "component": component,
-            "node_id": node_id,
-            "object_id": object_id,
-            "name": payload.get("name"),
-            "unique_id": payload.get("unique_id") or payload.get("uniq_id"),
-            "device": (payload.get("device") or {}).get("name"),
-        })
+        out.append(
+            {
+                "topic": r["topic"],
+                "component": component,
+                "node_id": node_id,
+                "object_id": object_id,
+                "name": payload.get("name"),
+                "unique_id": payload.get("unique_id") or payload.get("uniq_id"),
+                "device": (payload.get("device") or {}).get("name"),
+            }
+        )
     return out
 
 
@@ -75,7 +76,9 @@ def show(client, topic: str, *, timeout: float = 3.0) -> dict | None:
 def delete(client, topic: str) -> Any:
     """Wipe a discovery topic by publishing an empty retained message."""
     return services_core.call_service(
-        client, "mqtt", "publish",
+        client,
+        "mqtt",
+        "publish",
         service_data={
             "topic": topic,
             "payload": "",
@@ -91,29 +94,41 @@ def republish(client) -> Any:
 
 # ── internal ────────────────────────────────────────────────────────────────
 
-def _subscribe_collect(client, topic_filter: str, *,
-                        timeout: float = 5.0, limit: int = 5000) -> list[dict]:
+
+def _subscribe_collect(
+    client, topic_filter: str, *, timeout: float = 5.0, limit: int = 5000
+) -> list[dict]:
     """Use HA's WebSocket mqtt/subscribe to collect retained + live messages."""
-    import threading, time
+    import threading
+
     out: list[dict] = []
     stop = threading.Event()
 
     def on_msg(event):
         if not isinstance(event, dict):
             return
-        out.append({
-            "topic": event.get("topic"),
-            "payload": event.get("payload"),
-            "qos": event.get("qos"),
-            "retain": event.get("retain"),
-        })
+        out.append(
+            {
+                "topic": event.get("topic"),
+                "payload": event.get("payload"),
+                "qos": event.get("qos"),
+                "retain": event.get("retain"),
+            }
+        )
         if len(out) >= limit:
             stop.set()
 
     # Run the subscriber in a thread; cap by timeout
-    th = threading.Thread(target=client.ws_subscribe, args=(
-        "mqtt/subscribe", {"topic": topic_filter}, on_msg, stop,
-    ), daemon=True)
+    th = threading.Thread(
+        target=client.ws_subscribe,
+        args=(
+            "mqtt/subscribe",
+            {"topic": topic_filter},
+            on_msg,
+            stop,
+        ),
+        daemon=True,
+    )
     th.start()
     th.join(timeout=timeout)
     stop.set()

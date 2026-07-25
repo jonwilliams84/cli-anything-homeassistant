@@ -47,8 +47,15 @@ def parse_lines(text: str) -> Iterator[dict]:
                 "raw": raw,
             }
         else:
-            yield {"ts": None, "ts_dt": None, "level": None, "thread": None,
-                   "component": None, "message": None, "raw": raw}
+            yield {
+                "ts": None,
+                "ts_dt": None,
+                "level": None,
+                "thread": None,
+                "component": None,
+                "message": None,
+                "raw": raw,
+            }
 
 
 # Allow "1h", "30m", "15s", "2026-05-11 08:17", "2026-05-11T08:17:00",
@@ -64,16 +71,24 @@ def parse_since(value: str, now: datetime | None = None) -> datetime:
     if m:
         n = int(m.group(1))
         unit = m.group(2).lower()
-        delta = {"s": timedelta(seconds=n), "m": timedelta(minutes=n),
-                 "h": timedelta(hours=n), "d": timedelta(days=n)}[unit]
+        delta = {
+            "s": timedelta(seconds=n),
+            "m": timedelta(minutes=n),
+            "h": timedelta(hours=n),
+            "d": timedelta(days=n),
+        }[unit]
         return now - delta
     # "ago" suffix (e.g. "1h ago")
     if s.lower().endswith(" ago"):
         return parse_since(s[:-4].strip(), now=now)
     # absolute timestamps
     for fmt in (
-        "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
-        "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
         "%Y-%m-%d",
     ):
         try:
@@ -90,11 +105,14 @@ def parse_since(value: str, now: datetime | None = None) -> datetime:
     raise ValueError(f"unrecognised --since value: {value!r}")
 
 
-def filter_records(records: Iterable[dict], *,
-                    since: datetime | None = None,
-                    errors_only: bool = False,
-                    component: str | None = None,
-                    level: str | None = None) -> Iterator[dict]:
+def filter_records(
+    records: Iterable[dict],
+    *,
+    since: datetime | None = None,
+    errors_only: bool = False,
+    component: str | None = None,
+    level: str | None = None,
+) -> Iterator[dict]:
     """Apply structural filters to parsed records.
 
     When `since` is set, records with no parseable timestamp (stack-trace
@@ -115,10 +133,12 @@ def filter_records(records: Iterable[dict], *,
         yield r
 
 
-def bucket_counts(records: Iterable[dict], *,
-                   by: str = "component", top: int = 20) -> list[tuple[str, int]]:
+def bucket_counts(
+    records: Iterable[dict], *, by: str = "component", top: int = 20
+) -> list[tuple[str, int]]:
     """Count records bucketed by component / level / hour. Return top N as a list."""
     from collections import Counter
+
     c: Counter[str] = Counter()
     for r in records:
         if by == "component":

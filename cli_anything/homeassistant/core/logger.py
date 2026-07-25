@@ -10,8 +10,7 @@ from typing import Any
 
 from cli_anything.homeassistant.core import services as services_core
 
-VALID_LEVELS = {"critical", "fatal", "error", "warning", "warn",
-                 "info", "debug", "notset"}
+VALID_LEVELS = {"critical", "fatal", "error", "warning", "warn", "info", "debug", "notset"}
 
 
 def set_level(client, levels: dict[str, str]) -> Any:
@@ -32,13 +31,13 @@ def set_level(client, levels: dict[str, str]) -> Any:
         if lv not in VALID_LEVELS:
             raise ValueError(f"invalid level {v!r}; expected one of {sorted(VALID_LEVELS)}")
         payload[k] = lv
-    return services_core.call_service(client, "logger", "set_level",
-                                       service_data=payload)
+    return services_core.call_service(client, "logger", "set_level", service_data=payload)
 
 
 def set_default_level(client, level: str) -> Any:
     """Change the global default log level."""
     if level.strip().lower() not in VALID_LEVELS:
         raise ValueError(f"invalid level {level!r}")
-    return services_core.call_service(client, "logger", "set_default_level",
-                                       service_data={"level": level.strip().lower()})
+    return services_core.call_service(
+        client, "logger", "set_default_level", service_data={"level": level.strip().lower()}
+    )

@@ -16,28 +16,37 @@ def trigger(client, entity_id: str, skip_condition: bool = False) -> dict:
         raise ValueError(f"Expected an automation entity_id, got: {entity_id}")
     data = {"skip_condition": skip_condition} if skip_condition else None
     return services_core.call_service(
-        client, "automation", "trigger",
-        service_data=data, target={"entity_id": entity_id},
+        client,
+        "automation",
+        "trigger",
+        service_data=data,
+        target={"entity_id": entity_id},
     )
 
 
 def toggle(client, entity_id: str) -> dict:
     return services_core.call_service(
-        client, "automation", "toggle",
+        client,
+        "automation",
+        "toggle",
         target={"entity_id": entity_id},
     )
 
 
 def turn_on(client, entity_id: str) -> dict:
     return services_core.call_service(
-        client, "automation", "turn_on",
+        client,
+        "automation",
+        "turn_on",
         target={"entity_id": entity_id},
     )
 
 
 def turn_off(client, entity_id: str) -> dict:
     return services_core.call_service(
-        client, "automation", "turn_off",
+        client,
+        "automation",
+        "turn_off",
         target={"entity_id": entity_id},
     )
 
@@ -79,8 +88,7 @@ def list_traces(client, entity_id: str) -> list[dict]:
     HA keeps a small ring buffer (default 5 traces) per automation.
     """
     item_id = _automation_item_id(client, entity_id)
-    result = client.ws_call("trace/list", {"domain": "automation",
-                                              "item_id": item_id})
+    result = client.ws_call("trace/list", {"domain": "automation", "item_id": item_id})
     return result if isinstance(result, list) else []
 
 
@@ -91,16 +99,16 @@ def get_trace(client, entity_id: str, run_id: str | None = None) -> dict:
     """
     item_id = _automation_item_id(client, entity_id)
     if run_id is None:
-        traces = client.ws_call("trace/list", {"domain": "automation",
-                                                  "item_id": item_id}) or []
+        traces = client.ws_call("trace/list", {"domain": "automation", "item_id": item_id}) or []
         if not traces:
             return {}
         run_id = traces[-1].get("run_id")
         if not run_id:
             return {}
-    return client.ws_call("trace/get", {"domain": "automation",
-                                            "item_id": item_id,
-                                            "run_id": run_id}) or {}
+    return (
+        client.ws_call("trace/get", {"domain": "automation", "item_id": item_id, "run_id": run_id})
+        or {}
+    )
 
 
 def save_config(client, entity_id: str, config: dict) -> dict:

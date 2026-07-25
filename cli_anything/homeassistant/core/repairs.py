@@ -17,10 +17,13 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
-def list_issues(client, *,
-                 severity: Optional[str] = None,
-                 domain: Optional[str] = None,
-                 include_dismissed: bool = False) -> list[dict]:
+def list_issues(
+    client,
+    *,
+    severity: Optional[str] = None,
+    domain: Optional[str] = None,
+    include_dismissed: bool = False,
+) -> list[dict]:
     """List active (non-dismissed by default) repair issues."""
     data = client.ws_call("repairs/list_issues") or {}
     raw = data.get("issues") if isinstance(data, dict) else None
@@ -54,16 +57,18 @@ def show(client, issue_id: str, *, domain: Optional[str] = None) -> Optional[dic
     return None
 
 
-def ignore(client, *, issue_id: str, domain: str,
-            ignore_value: bool = True) -> Any:
+def ignore(client, *, issue_id: str, domain: str, ignore_value: bool = True) -> Any:
     """Dismiss an issue. Pass `ignore_value=False` to un-dismiss."""
     if not issue_id or not domain:
         raise ValueError("issue_id and domain are required")
-    return client.ws_call("repairs/ignore", {
-        "issue_id": issue_id,
-        "domain": domain,
-        "ignore": bool(ignore_value),
-    })
+    return client.ws_call(
+        "repairs/ignore",
+        {
+            "issue_id": issue_id,
+            "domain": domain,
+            "ignore": bool(ignore_value),
+        },
+    )
 
 
 def fix(client, *, issue_id: str, domain: str) -> dict:
@@ -74,7 +79,10 @@ def fix(client, *, issue_id: str, domain: str) -> dict:
     """
     if not issue_id or not domain:
         raise ValueError("issue_id and domain are required")
-    return client.post("repairs/issues/fix", {
-        "handler": domain,
-        "issue_id": issue_id,
-    })
+    return client.post(
+        "repairs/issues/fix",
+        {
+            "handler": domain,
+            "issue_id": issue_id,
+        },
+    )

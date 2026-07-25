@@ -19,11 +19,15 @@ from typing import Any
 
 # ────────────────────────────────────────────────────────── section mutators
 
-def with_section_options(section: dict, *,
-                         heading_style: str | None = None,
-                         top_margin: bool | None = None,
-                         column_span: int | None = None,
-                         row_span: int | None = None) -> dict:
+
+def with_section_options(
+    section: dict,
+    *,
+    heading_style: str | None = None,
+    top_margin: bool | None = None,
+    column_span: int | None = None,
+    row_span: int | None = None,
+) -> dict:
     """Mutate a section dict in-place, setting option fields.
 
     Validates and sets only the options passed (non-None). Returns the
@@ -40,8 +44,8 @@ def with_section_options(section: dict, *,
     if heading_style is not None:
         if heading_style not in ("title", "subtitle", "default"):
             raise ValueError(
-                f"heading_style must be 'title', 'subtitle', or 'default', "
-                f"got {heading_style!r}")
+                f"heading_style must be 'title', 'subtitle', or 'default', got {heading_style!r}"
+            )
         section["heading_style"] = heading_style
 
     if top_margin is not None:
@@ -49,14 +53,12 @@ def with_section_options(section: dict, *,
 
     if column_span is not None:
         if column_span not in (1, 2, 3, 4):
-            raise ValueError(
-                f"column_span must be 1-4, got {column_span}")
+            raise ValueError(f"column_span must be 1-4, got {column_span}")
         section["column_span"] = column_span
 
     if row_span is not None:
         if not isinstance(row_span, int) or row_span <= 0:
-            raise ValueError(
-                f"row_span must be > 0, got {row_span}")
+            raise ValueError(f"row_span must be > 0, got {row_span}")
         section["row_span"] = row_span
 
     return section
@@ -64,11 +66,10 @@ def with_section_options(section: dict, *,
 
 # ────────────────────────────────────────────────────────── section builders
 
-def hero_section(*,
-                 card: dict,
-                 column_span: int = 4,
-                 heading_style: str = "title",
-                 top_margin: bool = False) -> dict:
+
+def hero_section(
+    *, card: dict, column_span: int = 4, heading_style: str = "title", top_margin: bool = False
+) -> dict:
     """Build a hero section: a single-card grid with polish options.
 
     A hero section typically contains one prominent card (heading, big media,
@@ -87,8 +88,8 @@ def hero_section(*,
         raise ValueError(f"column_span must be 1-4, got {column_span}")
     if heading_style not in ("title", "subtitle", "default"):
         raise ValueError(
-            f"heading_style must be 'title', 'subtitle', or 'default', "
-            f"got {heading_style!r}")
+            f"heading_style must be 'title', 'subtitle', or 'default', got {heading_style!r}"
+        )
 
     section: dict[str, Any] = {
         "type": "grid",

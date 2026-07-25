@@ -17,14 +17,18 @@ def list_sections(config: dict, view_path: str) -> list[dict]:
     return list(v.get("sections", []))
 
 
-def add_section(config: dict, view_path: str, *,
-                  title: str | None = None,
-                  cards: list[dict] | None = None,
-                  column_span: int | None = None,
-                  row_span: int | None = None,
-                  header: dict | None = None,
-                  visibility: list[dict] | None = None,
-                  index: int | None = None) -> dict:
+def add_section(
+    config: dict,
+    view_path: str,
+    *,
+    title: str | None = None,
+    cards: list[dict] | None = None,
+    column_span: int | None = None,
+    row_span: int | None = None,
+    header: dict | None = None,
+    visibility: list[dict] | None = None,
+    index: int | None = None,
+) -> dict:
     """Add a new section to a sections view. Returns the section dict.
 
     `header` — pass a section header dict (use
@@ -38,10 +42,7 @@ def add_section(config: dict, view_path: str, *,
     """
     v = lovelace_paths.get_view(config, view_path)
     if v.get("type") != "sections":
-        raise ValueError(
-            f"view {view_path!r} is type={v.get('type')!r}, "
-            "not a sections view"
-        )
+        raise ValueError(f"view {view_path!r} is type={v.get('type')!r}, not a sections view")
     if title is not None and header is not None:
         raise ValueError("pass `header` OR `title`, not both")
     sections = v.setdefault("sections", [])
@@ -70,14 +71,14 @@ def delete_section(config: dict, view_path: str, section_idx: int) -> dict:
     if not isinstance(sections, list):
         raise ValueError(f"view {view_path!r} has no sections list")
     if section_idx < 0 or section_idx >= len(sections):
-        raise IndexError(f"section index {section_idx} out of range "
-                          f"(view has {len(sections)} sections)")
+        raise IndexError(
+            f"section index {section_idx} out of range (view has {len(sections)} sections)"
+        )
     sections.pop(section_idx)
     return config
 
 
-def move_section(config: dict, view_path: str, section_idx: int,
-                   new_index: int) -> dict:
+def move_section(config: dict, view_path: str, section_idx: int, new_index: int) -> dict:
     v = lovelace_paths.get_view(config, view_path)
     sections = v.get("sections")
     if not isinstance(sections, list):

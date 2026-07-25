@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 from cli_anything.homeassistant.core import template as template_core
-from cli_anything.homeassistant.core import states as states_core
 
 
 def expand(client, entity_id: str, *, include_state: bool = True) -> list[dict]:
@@ -18,7 +17,9 @@ def expand(client, entity_id: str, *, include_state: bool = True) -> list[dict]:
     if "." not in entity_id:
         raise ValueError("entity_id must be in 'domain.object' form")
     tpl = (
-        "{% for s in expand('" + entity_id + "') %}"
+        "{% for s in expand('"
+        + entity_id
+        + "') %}"
         + "{{ s.entity_id }}|||{{ s.state }}|||{{ s.attributes.friendly_name or '' }}\n"
         + "{% endfor %}"
     )

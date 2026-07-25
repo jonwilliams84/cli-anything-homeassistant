@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Optional
+from typing import Any
 
 from cli_anything.homeassistant.core import auth_tokens as auth_tokens_core
 
@@ -27,6 +27,7 @@ _DEFAULT_SUBSCRIBE_TIMEOUT = 10
 
 
 # ─────────────────────────────────────────────────────────────────── listing
+
 
 def list_image_entities(client, *, include_attributes: bool = False) -> list[dict]:
     """Return every ``image.*`` entity state.
@@ -65,8 +66,8 @@ def get_image_entity(client, entity_id: str) -> dict:
 
 # ────────────────────────────────────────────────────────────── proxy URLs
 
-def proxy_url(client, *, entity_id: str,
-               signed: bool = True, expires: int = 30) -> dict:
+
+def proxy_url(client, *, entity_id: str, signed: bool = True, expires: int = 30) -> dict:
     """Build the ``/api/image_proxy/<entity_id>`` URL.
 
     Returns ``{"entity_id", "path", "url", "signed", "expires"}``.
@@ -86,9 +87,11 @@ def proxy_url(client, *, entity_id: str,
 
     if not signed:
         return {
-            "entity_id": entity_id, "path": path,
+            "entity_id": entity_id,
+            "path": path,
             "url": f"{base}{path}" if base else path,
-            "signed": False, "expires": None,
+            "signed": False,
+            "expires": None,
         }
 
     result = auth_tokens_core.sign_path(client, path=path, expires=expires) or {}
@@ -103,6 +106,7 @@ def proxy_url(client, *, entity_id: str,
 
 
 # ──────────────────────────────────────────────────────────────── snapshot
+
 
 def snapshot(
     client,
@@ -129,9 +133,7 @@ def snapshot(
     if not output_path:
         raise ValueError("output_path is required")
     if os.path.exists(output_path) and not overwrite:
-        raise FileExistsError(
-            f"{output_path} already exists — pass overwrite=True (--overwrite)"
-        )
+        raise FileExistsError(f"{output_path} already exists — pass overwrite=True (--overwrite)")
 
     sess = getattr(client, "session", None)
     base = getattr(client, "base_url", None)
@@ -140,9 +142,14 @@ def snapshot(
     timeout = getattr(client, "timeout", 30)
 
     if signed:
-        result = auth_tokens_core.sign_path(
-            client, path=f"/api/image_proxy/{entity_id}", expires=expires,
-        ) or {}
+        result = (
+            auth_tokens_core.sign_path(
+                client,
+                path=f"/api/image_proxy/{entity_id}",
+                expires=expires,
+            )
+            or {}
+        )
         signed_path = result.get("path")
         if not signed_path:
             raise RuntimeError("auth/sign_path returned no signed path")
@@ -179,8 +186,10 @@ def snapshot(
 
 # ────────────────────────────────────────────────────────── live updates
 
+
 def subscribe_updates(
-    client, *,
+    client,
+    *,
     entity_id: str,
     timeout: int = _DEFAULT_SUBSCRIBE_TIMEOUT,
 ) -> list[dict]:
@@ -203,6 +212,7 @@ def subscribe_updates(
     timer.daemon = True
     timer.start()
     try:
+
         def on_event(ev: Any) -> None:
             if not isinstance(ev, dict):
                 return
@@ -211,8 +221,10 @@ def subscribe_updates(
                 captured.append(ev)
 
         client.ws_subscribe(
-            "subscribe_events", {"event_type": "state_changed"},
-            on_event, stop,
+            "subscribe_events",
+            {"event_type": "state_changed"},
+            on_event,
+            stop,
         )
     finally:
         timer.cancel()

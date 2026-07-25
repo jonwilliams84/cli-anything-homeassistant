@@ -40,6 +40,7 @@ from cli_anything.homeassistant.core._ws_subscribe_utils import (
 # 1. diagnostics_get — WS diagnostics/get
 # ════════════════════════════════════════════════════════════════════════
 
+
 def diagnostics_get(client, *, handler: str) -> Any:
     """Request handler-level (integration domain) diagnostics.
 
@@ -57,6 +58,7 @@ def diagnostics_get(client, *, handler: str) -> Any:
 # 2. update_release_notes — WS update/release_notes
 # ════════════════════════════════════════════════════════════════════════
 
+
 def update_release_notes(client, *, entity_id: str) -> Any:
     """Fetch release notes for an update entity.
 
@@ -73,6 +75,7 @@ def update_release_notes(client, *, entity_id: str) -> Any:
 # 3. usb_scan — WS usb/scan
 # ════════════════════════════════════════════════════════════════════════
 
+
 def usb_scan(client) -> Any:
     """Trigger a USB hardware rescan.
 
@@ -84,6 +87,7 @@ def usb_scan(client) -> Any:
 # ════════════════════════════════════════════════════════════════════════
 # 4. zha_devices_permit — WS zha/devices/permit
 # ════════════════════════════════════════════════════════════════════════
+
 
 def zha_devices_permit(client, *, duration: int = 60, ieee: str | None = None) -> Any:
     """Permit new ZHA device joins for a specified duration.
@@ -107,8 +111,17 @@ def zha_devices_permit(client, *, duration: int = 60, ieee: str | None = None) -
 # ════════════════════════════════════════════════════════════════════════
 
 _VALID_ITEM_TYPES = {
-    "automation", "config_entry", "area", "device", "entity",
-    "floor", "group", "label", "person", "scene", "script"
+    "automation",
+    "config_entry",
+    "area",
+    "device",
+    "entity",
+    "floor",
+    "group",
+    "label",
+    "person",
+    "scene",
+    "script",
 }
 
 
@@ -123,21 +136,16 @@ def search_related(client, *, item_type: str, item_id: str) -> Any:
     Uses WS command ``search/related``.
     """
     if item_type not in _VALID_ITEM_TYPES:
-        raise ValueError(
-            f"item_type must be one of {sorted(_VALID_ITEM_TYPES)}, "
-            f"got {item_type!r}"
-        )
+        raise ValueError(f"item_type must be one of {sorted(_VALID_ITEM_TYPES)}, got {item_type!r}")
     if not item_id:
         raise ValueError("item_id must be a non-empty string")
-    return client.ws_call("search/related", {
-        "item_type": item_type,
-        "item_id": item_id
-    })
+    return client.ws_call("search/related", {"item_type": item_type, "item_id": item_id})
 
 
 # ════════════════════════════════════════════════════════════════════════
 # 6. browse_media_player — WS media_player/browse_media
 # ════════════════════════════════════════════════════════════════════════
+
 
 def browse_media_player(
     client,
@@ -167,6 +175,7 @@ def browse_media_player(
 # ════════════════════════════════════════════════════════════════════════
 # 7. subscribe_persistent_notifications — WS persistent_notification/subscribe
 # ════════════════════════════════════════════════════════════════════════
+
 
 def subscribe_persistent_notifications(
     client,
@@ -211,6 +220,7 @@ def subscribe_persistent_notifications(
 # ════════════════════════════════════════════════════════════════════════
 # 8. subscribe_todo_items — WS todo/item/subscribe
 # ════════════════════════════════════════════════════════════════════════
+
 
 def subscribe_todo_items(
     client,
@@ -259,6 +269,7 @@ def subscribe_todo_items(
 # ════════════════════════════════════════════════════════════════════════
 # 9. subscribe_hardware_status — WS hardware/subscribe_system_status
 # ════════════════════════════════════════════════════════════════════════
+
 
 def subscribe_hardware_status(
     client,

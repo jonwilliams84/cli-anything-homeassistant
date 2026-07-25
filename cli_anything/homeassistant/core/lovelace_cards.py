@@ -61,9 +61,7 @@ def _resolve(cfg: dict, parts: list[tuple[str, int]]) -> tuple[Any, list[Any], i
             raise KeyError(f"{key!r} is not a list")
         parent_list = node[key]
         if idx < 0 or idx >= len(parent_list):
-            raise IndexError(
-                f"{key}[{idx}] out of range (size={len(parent_list)})"
-            )
+            raise IndexError(f"{key}[{idx}] out of range (size={len(parent_list)})")
         index = idx
         node = parent_list[idx]
     return node, parent_list, index  # type: ignore[return-value]
@@ -104,7 +102,11 @@ def all_cards(cfg: dict) -> list[tuple[str, dict]]:
 
 _CARD_LIST_SLOTS = ("cards",)
 _CARD_DICT_SLOTS = ("card", "default", "error_card")
-_DESCEND_LIST_SLOTS = ("views", "sections", "cards")  # walk into, but views/sections themselves are NOT cards
+_DESCEND_LIST_SLOTS = (
+    "views",
+    "sections",
+    "cards",
+)  # walk into, but views/sections themselves are NOT cards
 
 
 def walk_cards_strict(cfg: Any, *, with_path: bool = False):
@@ -119,6 +121,7 @@ def walk_cards_strict(cfg: Any, *, with_path: bool = False):
     ``masonry``/``sidebar``/``panel``/``sections``) are descended into but
     NOT yielded as cards.
     """
+
     def _go(node, path, is_card_position):
         if isinstance(node, dict):
             if is_card_position and isinstance(node.get("type"), str) and path:
@@ -129,7 +132,7 @@ def walk_cards_strict(cfg: Any, *, with_path: bool = False):
                     # In a sections-view each `section` is itself a card
                     # (typically a grid). `views[]` entries are layout
                     # objects, NOT cards. `cards[]` entries are cards.
-                    child_is_card = (k in ("cards", "sections"))
+                    child_is_card = k in ("cards", "sections")
                     for i, child in enumerate(v):
                         sub = f"{path}/{k}[{i}]" if path else f"{k}[{i}]"
                         yield from _go(child, sub, child_is_card)
@@ -141,6 +144,7 @@ def walk_cards_strict(cfg: Any, *, with_path: bool = False):
         elif isinstance(node, list):
             for i, child in enumerate(node):
                 yield from _go(child, f"[{i}]", is_card_position)
+
     yield from _go(cfg, "", False)
 
 
@@ -167,6 +171,7 @@ def find_cards(
     against the card's serialised JSON (so it works for any field).
     """
     import json
+
     out = []
     for p, c in all_cards(cfg):
         if card_type and c.get("type") != card_type:
@@ -182,6 +187,7 @@ def find_cards(
 
 
 # ---------------------------------------------------------------- editors
+
 
 def get_card(cfg: dict, pointer: str) -> dict:
     """Return the card at ``pointer`` (a copy is NOT made — modify with care)."""
@@ -275,12 +281,16 @@ def delete_at_pointer(cfg: dict, pointer: str) -> dict:
     elif isinstance(parent, dict):
         parent.pop(key, None)
     else:
-        raise ValueError(f"cannot delete from {type(parent).__name__}")
+        # Not SQL: bandit's hardcoded_sql_expressions pattern matches the words
+        # "delete from" in this error message, but there is no database or query
+        # anywhere in this module (it edits Lovelace YAML config).
+        raise ValueError(f"cannot delete from {type(parent).__name__}")  # nosec B608
     return cfg
 
 
-def insert_card(cfg: dict, parent_pointer: str, new_card: dict, *,
-                position: int | None = None) -> dict:
+def insert_card(
+    cfg: dict, parent_pointer: str, new_card: dict, *, position: int | None = None
+) -> dict:
     """Insert ``new_card`` into ``parent_pointer`` (which must address a card with
     a ``cards:`` array, OR a view). ``position=None`` appends.
     """
@@ -364,8 +374,7 @@ def lint(cfg: dict, all_entity_ids: set[str], known_card_types: set[str] | None 
             if not _ENTITY_RE.match(ref):
                 continue
             if ref not in all_entity_ids:
-                dead.append({"pointer": pointer, "entity": ref,
-                             "card_type": card.get("type")})
+                dead.append({"pointer": pointer, "entity": ref, "card_type": card.get("type")})
         if known_card_types is not None:
             t = card.get("type")
             if t and t not in known_card_types:
@@ -373,13 +382,17 @@ def lint(cfg: dict, all_entity_ids: set[str], known_card_types: set[str] | None 
         if _LINT_CTX.get("dashboard_url_path") and _LINT_CTX.get("known_view_paths") is not None:
             for nav in _navigation_paths(card):
                 problem = _validate_navigation_path(
-                    nav, _LINT_CTX["dashboard_url_path"],
-                    _LINT_CTX["known_view_paths"])
+                    nav, _LINT_CTX["dashboard_url_path"], _LINT_CTX["known_view_paths"]
+                )
                 if problem:
-                    bad_nav.append({"pointer": pointer,
-                                     "navigation_path": nav,
-                                     "problem": problem,
-                                     "card_type": card.get("type")})
+                    bad_nav.append(
+                        {
+                            "pointer": pointer,
+                            "navigation_path": nav,
+                            "problem": problem,
+                            "card_type": card.get("type"),
+                        }
+                    )
     result = {
         "cards": len(cards),
         "dead_entities": dead,
@@ -393,10 +406,13 @@ def lint(cfg: dict, all_entity_ids: set[str], known_card_types: set[str] | None 
 _LINT_CTX: dict = {}
 
 
-def lint_with_navigation(cfg: dict, all_entity_ids: set[str],
-                          dashboard_url_path: str,
-                          known_view_paths: set[str],
-                          known_card_types: set[str] | None = None) -> dict:
+def lint_with_navigation(
+    cfg: dict,
+    all_entity_ids: set[str],
+    dashboard_url_path: str,
+    known_view_paths: set[str],
+    known_card_types: set[str] | None = None,
+) -> dict:
     """Lint variant that also validates navigation_path references.
 
     `dashboard_url_path` is the current dashboard's `url_path`
@@ -426,8 +442,9 @@ def _navigation_paths(node):
             yield from _navigation_paths(v)
 
 
-def _validate_navigation_path(path: str, dashboard_url_path: str,
-                                known_view_paths: set[str]) -> str | None:
+def _validate_navigation_path(
+    path: str, dashboard_url_path: str, known_view_paths: set[str]
+) -> str | None:
     """Return None if `path` resolves to a valid view, else a reason."""
     if not path or not path.startswith("/"):
         return "navigation_path must start with /"
@@ -435,11 +452,9 @@ def _validate_navigation_path(path: str, dashboard_url_path: str,
     if not parts:
         return "empty navigation_path"
     if len(parts) == 1:
-        return None if parts[0] in known_view_paths else \
-               f"unknown view path {parts[0]!r}"
+        return None if parts[0] in known_view_paths else f"unknown view path {parts[0]!r}"
     if parts[0] != dashboard_url_path:
-        return (f"dashboard prefix {parts[0]!r} != current "
-                f"{dashboard_url_path!r}")
+        return f"dashboard prefix {parts[0]!r} != current {dashboard_url_path!r}"
     if parts[1] not in known_view_paths:
         return f"unknown view path {parts[1]!r} on dashboard {parts[0]!r}"
     return None
@@ -464,8 +479,7 @@ def _walk_template_strings(node, path=""):
             yield from _walk_template_strings(v, f"{path}[{i}]")
 
 
-def validate_templates(client, cfg: dict, *,
-                         skip_paths: tuple[str, ...] = ()) -> dict:
+def validate_templates(client, cfg: dict, *, skip_paths: tuple[str, ...] = ()) -> dict:
     """Render every Jinja template in ``cfg`` against the live state and
     return a list of failures.
 
@@ -490,21 +504,26 @@ def validate_templates(client, cfg: dict, *,
         try:
             template_core.render(client, tpl)
         except Exception as exc:  # noqa: BLE001
-            failures.append({
-                "pointer": pointer,
-                "field": field,
-                "template": tpl[:200],
-                "error": str(exc)[:300],
-            })
+            failures.append(
+                {
+                    "pointer": pointer,
+                    "field": field,
+                    "template": tpl[:200],
+                    "error": str(exc)[:300],
+                }
+            )
     return {"total_templates": total, "failures": failures}
 
 
 # ─── prune — recursive bulk-drop of cards ────────────────────────────
 
-def _card_matches_block(card: dict,
-                          types: set[str] | None,
-                          entity_prefixes: set[str] | None,
-                          markdown_contains: set[str] | None) -> bool:
+
+def _card_matches_block(
+    card: dict,
+    types: set[str] | None,
+    entity_prefixes: set[str] | None,
+    markdown_contains: set[str] | None,
+) -> bool:
     if types and card.get("type") in types:
         return True
     if entity_prefixes:
@@ -514,10 +533,10 @@ def _card_matches_block(card: dict,
         ents = card.get("entities")
         if isinstance(ents, list):
             for e in ents:
-                eid = e if isinstance(e, str) else (
-                    e.get("entity") if isinstance(e, dict) else None)
-                if isinstance(eid, str) and any(eid.startswith(p)
-                                                  for p in entity_prefixes):
+                eid = (
+                    e if isinstance(e, str) else (e.get("entity") if isinstance(e, dict) else None)
+                )
+                if isinstance(eid, str) and any(eid.startswith(p) for p in entity_prefixes):
                     return True
     if markdown_contains and card.get("type") == "markdown":
         content = card.get("content", "") or ""
@@ -526,8 +545,7 @@ def _card_matches_block(card: dict,
     return False
 
 
-def _prune_cards_list(cards, types, entity_prefixes, markdown_contains,
-                       counters):
+def _prune_cards_list(cards, types, entity_prefixes, markdown_contains, counters):
     if not isinstance(cards, list):
         return cards
     out = []
@@ -541,11 +559,13 @@ def _prune_cards_list(cards, types, entity_prefixes, markdown_contains,
         new = dict(c)
         for key in ("cards", "sections"):
             if key in new and isinstance(new[key], list):
-                new[key] = _prune_cards_list(new[key], types, entity_prefixes,
-                                                markdown_contains, counters)
+                new[key] = _prune_cards_list(
+                    new[key], types, entity_prefixes, markdown_contains, counters
+                )
         # If a container lost all its children, prune it too
-        if (new.get("type") in ("horizontal-stack", "vertical-stack", "grid")
-                and not new.get("cards")):
+        if new.get("type") in ("horizontal-stack", "vertical-stack", "grid") and not new.get(
+            "cards"
+        ):
             counters["dropped_empty_stacks"] += 1
             continue
         out.append(new)
@@ -560,8 +580,7 @@ def _strip_blocked_subheadings(cards, blocked):
     i = 0
     while i < len(cards):
         c = cards[i]
-        if (isinstance(c, dict) and c.get("type") == "heading"
-                and c.get("heading", "") in blocked):
+        if isinstance(c, dict) and c.get("type") == "heading" and c.get("heading", "") in blocked:
             i += 1
             while i < len(cards):
                 nxt = cards[i]
@@ -574,11 +593,14 @@ def _strip_blocked_subheadings(cards, blocked):
     return out
 
 
-def prune(cfg: dict, *,
-            types: set[str] | None = None,
-            entity_prefixes: set[str] | None = None,
-            markdown_contains: set[str] | None = None,
-            blocked_subheadings: set[str] | None = None) -> tuple[dict, dict]:
+def prune(
+    cfg: dict,
+    *,
+    types: set[str] | None = None,
+    entity_prefixes: set[str] | None = None,
+    markdown_contains: set[str] | None = None,
+    blocked_subheadings: set[str] | None = None,
+) -> tuple[dict, dict]:
     """Recursively remove cards from ``cfg``. Returns (new_cfg, stats).
 
     Pass any combination of:
@@ -595,8 +617,7 @@ def prune(cfg: dict, *,
     Recurses through nested ``cards``/``sections`` arrays. Empty stacks
     left behind are also dropped.
     """
-    counters = {"dropped_cards": 0, "dropped_empty_stacks": 0,
-                 "dropped_subheading_groups": 0}
+    counters = {"dropped_cards": 0, "dropped_empty_stacks": 0, "dropped_subheading_groups": 0}
     new_cfg = dict(cfg)
     new_views = []
     for view in cfg.get("views", []):
@@ -607,17 +628,19 @@ def prune(cfg: dict, *,
                 new_secs = []
                 for sec in v.get("sections", []):
                     before = len(sec.get("cards", []))
-                    new_sec = {**sec,
-                                "cards": _strip_blocked_subheadings(
-                                    sec.get("cards", []), blocked_subheadings)}
+                    new_sec = {
+                        **sec,
+                        "cards": _strip_blocked_subheadings(
+                            sec.get("cards", []), blocked_subheadings
+                        ),
+                    }
                     if len(new_sec["cards"]) != before:
                         counters["dropped_subheading_groups"] += 1
                     new_secs.append(new_sec)
                 v["sections"] = new_secs
             elif "cards" in v:
                 before = len(v.get("cards", []))
-                v["cards"] = _strip_blocked_subheadings(
-                    v.get("cards", []), blocked_subheadings)
+                v["cards"] = _strip_blocked_subheadings(v.get("cards", []), blocked_subheadings)
                 if len(v["cards"]) != before:
                     counters["dropped_subheading_groups"] += 1
 
@@ -625,15 +648,22 @@ def prune(cfg: dict, *,
         if types or entity_prefixes or markdown_contains:
             if "sections" in v:
                 v["sections"] = [
-                    {**sec, "cards": _prune_cards_list(
-                        sec.get("cards", []), types, entity_prefixes,
-                        markdown_contains, counters)}
+                    {
+                        **sec,
+                        "cards": _prune_cards_list(
+                            sec.get("cards", []),
+                            types,
+                            entity_prefixes,
+                            markdown_contains,
+                            counters,
+                        ),
+                    }
                     for sec in v.get("sections", [])
                 ]
             if "cards" in v:
                 v["cards"] = _prune_cards_list(
-                    v.get("cards", []), types, entity_prefixes,
-                    markdown_contains, counters)
+                    v.get("cards", []), types, entity_prefixes, markdown_contains, counters
+                )
         new_views.append(v)
     new_cfg["views"] = new_views
     return new_cfg, counters

@@ -22,10 +22,11 @@ registry does not currently know about — useful for catching typos.
 from __future__ import annotations
 
 import secrets
-from typing import Any, Optional
+from typing import Any
 
 
 # ─────────────────────────────────────────────────────────────────── discovery
+
 
 def list_registered(client) -> list[dict]:
     """Return the active webhook table via WebSocket ``webhook/list``.
@@ -78,14 +79,16 @@ def list_automation_webhooks(client) -> list[dict]:
             wid = t.get("webhook_id")
             if not wid:
                 continue
-            out.append({
-                "automation_id": aid,
-                "entity_id": eid,
-                "alias": cfg.get("alias") or attrs.get("friendly_name"),
-                "webhook_id": wid,
-                "allowed_methods": t.get("allowed_methods"),
-                "local_only": t.get("local_only"),
-            })
+            out.append(
+                {
+                    "automation_id": aid,
+                    "entity_id": eid,
+                    "alias": cfg.get("alias") or attrs.get("friendly_name"),
+                    "webhook_id": wid,
+                    "allowed_methods": t.get("allowed_methods"),
+                    "local_only": t.get("local_only"),
+                }
+            )
     return out
 
 
@@ -104,9 +107,7 @@ def list_mobile_app_webhooks(client) -> list[dict]:
     return []
 
 
-def list_webhooks(client, *,
-                   include_automations: bool = True,
-                   include_mobile: bool = True) -> dict:
+def list_webhooks(client, *, include_automations: bool = True, include_mobile: bool = True) -> dict:
     """Aggregate every webhook id this HA currently honours.
 
     Returns ``{"registered": [...], "automations": [...], "mobile_app": [...],
@@ -162,13 +163,10 @@ def trigger(
         raise ValueError("webhook_id is required")
     method = method.upper()
     if method not in _ALLOWED_METHODS:
-        raise ValueError(
-            f"method must be one of {sorted(_ALLOWED_METHODS)}, got {method!r}"
-        )
+        raise ValueError(f"method must be one of {sorted(_ALLOWED_METHODS)}, got {method!r}")
 
     if guard_registered:
-        known = {row.get("webhook_id") for row in list_registered(client)
-                 if isinstance(row, dict)}
+        known = {row.get("webhook_id") for row in list_registered(client) if isinstance(row, dict)}
         if webhook_id not in known:
             raise ValueError(
                 f"webhook_id {webhook_id!r} is not in the registered list; "
@@ -179,8 +177,10 @@ def trigger(
     if method == "POST":
         resp = client.post(path, body)
         return {
-            "webhook_id": webhook_id, "method": "POST",
-            "ok": True, "response": resp,
+            "webhook_id": webhook_id,
+            "method": "POST",
+            "ok": True,
+            "response": resp,
         }
 
     # The HA REST client we use only exposes get/post/delete; for PUT/HEAD/GET
@@ -188,9 +188,7 @@ def trigger(
     sess = getattr(client, "session", None)
     base = getattr(client, "base_url", None)
     if sess is None or base is None:
-        raise ValueError(
-            "client lacks HTTP session — only POST is supported on this client"
-        )
+        raise ValueError("client lacks HTTP session — only POST is supported on this client")
     url = f"{base}/api/webhook/{webhook_id}"
     timeout = getattr(client, "timeout", 30)
     if method == "PUT":
@@ -214,12 +212,14 @@ def trigger(
 
 # ────────────────────────────────────────────────────────────── id generation
 
+
 def generate_id() -> dict:
     """Mint a fresh webhook id (32 url-safe characters, same as HA's RNG)."""
     return {"webhook_id": secrets.token_urlsafe(24)}
 
 
 # ─────────────────────────────────────────────────────────────────── cloudhooks
+
 
 def cloudhooks(client) -> list[dict]:
     """Return cloudhook bindings — webhook_id ↔ external cloudhook_url.
@@ -251,10 +251,13 @@ def cloudhook_create(client, webhook_id: str) -> dict:
     """Create a Nabu Casa cloudhook for an existing local webhook id."""
     if not webhook_id:
         raise ValueError("webhook_id is required")
-    return client.ws_call(
-        "cloud/cloudhook/create",
-        {"webhook_id": webhook_id},
-    ) or {}
+    return (
+        client.ws_call(
+            "cloud/cloudhook/create",
+            {"webhook_id": webhook_id},
+        )
+        or {}
+    )
 
 
 def cloudhook_delete(client, webhook_id: str) -> Any:

@@ -46,8 +46,9 @@ def reload_entry(client, entry_id: str) -> dict:
     return client.post(f"config/config_entries/entry/{entry_id}/reload")
 
 
-def update_entry(client, entry_id: str, *, options: dict | None = None,
-                 title: str | None = None) -> dict:
+def update_entry(
+    client, entry_id: str, *, options: dict | None = None, title: str | None = None
+) -> dict:
     """Update a config entry's title and/or its in-memory options dict.
 
     Note: this updates `entry.title` and `entry.data` directly via the
@@ -74,16 +75,14 @@ def options_flow_init(client, entry_id: str) -> dict:
     """
     if not entry_id:
         raise ValueError("entry_id is required")
-    return client.post("config/config_entries/options/flow",
-                       {"handler": entry_id})
+    return client.post("config/config_entries/options/flow", {"handler": entry_id})
 
 
 def options_flow_configure(client, flow_id: str, user_input: dict) -> dict:
     """Submit user input to an active options flow, returning the result."""
     if not flow_id:
         raise ValueError("flow_id is required")
-    return client.post(f"config/config_entries/options/flow/{flow_id}",
-                       user_input or {})
+    return client.post(f"config/config_entries/options/flow/{flow_id}", user_input or {})
 
 
 def options_flow_set(client, entry_id: str, user_input: dict) -> dict:
@@ -102,8 +101,8 @@ def options_flow_set(client, entry_id: str, user_input: dict) -> dict:
 
 # ─── config-FLOW (new-integration creation) ─────────────────────────────────
 
-def flow_init(client, handler: str, *,
-               show_advanced_options: bool = False) -> dict:
+
+def flow_init(client, handler: str, *, show_advanced_options: bool = False) -> dict:
     """Start a new config flow for `handler` (the integration domain).
 
     Returns the first step's form descriptor: {flow_id, step_id,
@@ -121,8 +120,7 @@ def flow_configure(client, flow_id: str, user_input: dict | None = None) -> dict
     """Submit user input to the active step of a config flow."""
     if not flow_id:
         raise ValueError("flow_id is required")
-    return client.post(f"config/config_entries/flow/{flow_id}",
-                       user_input or {})
+    return client.post(f"config/config_entries/flow/{flow_id}", user_input or {})
 
 
 def flow_abort(client, flow_id: str) -> dict:
@@ -139,25 +137,28 @@ def flow_get(client, flow_id: str) -> dict:
     return client.get(f"config/config_entries/flow/{flow_id}")
 
 
-def create(client, handler: str, user_input: dict,
-            *, show_advanced_options: bool = False) -> dict:
+def create(client, handler: str, user_input: dict, *, show_advanced_options: bool = False) -> dict:
     """Convenience: init a flow and submit `user_input` to its first step.
 
     Most simple integrations finish in a single step (host + creds), so this
     is the one-shot "configure this integration with these args" call.
     Multi-step flows should be driven via `flow_init` + `flow_configure`.
     """
-    init = flow_init(client, handler,
-                       show_advanced_options=show_advanced_options)
+    init = flow_init(client, handler, show_advanced_options=show_advanced_options)
     flow_id = init.get("flow_id")
     if not flow_id:
         return init  # the init itself might be the final step
     return flow_configure(client, flow_id, user_input)
 
 
-def walk(client, handler: str, steps: list[dict], *,
-          show_advanced_options: bool = False,
-          stop_on_form: bool = False) -> dict:
+def walk(
+    client,
+    handler: str,
+    steps: list[dict],
+    *,
+    show_advanced_options: bool = False,
+    stop_on_form: bool = False,
+) -> dict:
     """Drive a multi-step config flow: init → step → step → ...
 
     `steps` is the list of form payloads, one per step. The flow is
@@ -176,18 +177,20 @@ def walk(client, handler: str, steps: list[dict], *,
         raise ValueError("steps must be a list of dicts")
 
     history: list[dict] = []
-    current = flow_init(client, handler,
-                          show_advanced_options=show_advanced_options)
+    current = flow_init(client, handler, show_advanced_options=show_advanced_options)
     flow_id = current.get("flow_id")
-    history.append({"step": "init", "type": current.get("type"),
-                     "step_id": current.get("step_id"),
-                     "response": current})
+    history.append(
+        {
+            "step": "init",
+            "type": current.get("type"),
+            "step_id": current.get("step_id"),
+            "response": current,
+        }
+    )
     if current.get("type") in ("create_entry", "abort"):
-        return {"flow_id": flow_id, "history": history,
-                "final": current, "completed": True}
+        return {"flow_id": flow_id, "history": history, "final": current, "completed": True}
     if not flow_id:
-        return {"flow_id": None, "history": history,
-                "final": current, "completed": False}
+        return {"flow_id": None, "history": history, "final": current, "completed": False}
 
     completed = False
     for i, payload in enumerate(steps):
@@ -198,25 +201,29 @@ def walk(client, handler: str, steps: list[dict], *,
                 flow_abort(client, flow_id)
             except Exception:
                 pass
-            history.append({"step": f"submit[{i}]", "error": str(exc),
-                             "payload": payload})
-            return {"flow_id": flow_id, "history": history,
-                    "final": None, "completed": False}
-        history.append({"step": f"submit[{i}]", "type": resp.get("type"),
-                         "step_id": resp.get("step_id"),
-                         "response": resp})
+            history.append({"step": f"submit[{i}]", "error": str(exc), "payload": payload})
+            return {"flow_id": flow_id, "history": history, "final": None, "completed": False}
+        history.append(
+            {
+                "step": f"submit[{i}]",
+                "type": resp.get("type"),
+                "step_id": resp.get("step_id"),
+                "response": resp,
+            }
+        )
         if resp.get("type") in ("create_entry", "abort"):
             completed = True
-            return {"flow_id": flow_id, "history": history,
-                    "final": resp, "completed": True}
+            return {"flow_id": flow_id, "history": history, "final": resp, "completed": True}
         if resp.get("type") == "form" and stop_on_form:
-            return {"flow_id": flow_id, "history": history,
-                    "final": resp, "completed": False}
+            return {"flow_id": flow_id, "history": history, "final": resp, "completed": False}
 
     # Ran out of payloads but flow isn't done.
-    return {"flow_id": flow_id, "history": history,
-            "final": current if not history else history[-1].get("response"),
-            "completed": completed}
+    return {
+        "flow_id": flow_id,
+        "history": history,
+        "final": current if not history else history[-1].get("response"),
+        "completed": completed,
+    }
 
 
 def disable_entry(client, entry_id: str, disabled: bool = True) -> dict:

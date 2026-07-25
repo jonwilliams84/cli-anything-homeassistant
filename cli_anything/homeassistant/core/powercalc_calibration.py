@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from cli_anything.homeassistant.core import powercalc as _pc
 
@@ -53,6 +53,7 @@ DEFAULT_MAX_RETRIES = 2
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
 
 def _read_power(client, entity_id: str) -> float | None:
     """Read a sensor and return its float state, or None on failure."""
@@ -93,15 +94,10 @@ def _measure(
         if i < samples - 1 and delay > 0:
             sleep(delay)
     if not raw:
-        raise RuntimeError(
-            f"got no usable readings from {entity_id!r} over {duration_seconds}s"
-        )
+        raise RuntimeError(f"got no usable readings from {entity_id!r} over {duration_seconds}s")
     mean = sum(raw) / len(raw)
     spread = max(raw) - min(raw)
-    stdev = (
-        math.sqrt(sum((x - mean) ** 2 for x in raw) / len(raw))
-        if len(raw) > 1 else 0.0
-    )
+    stdev = math.sqrt(sum((x - mean) ** 2 for x in raw) / len(raw)) if len(raw) > 1 else 0.0
     return {
         "n": len(raw),
         "mean": mean,
@@ -176,8 +172,7 @@ def _snapshot(client, state_entities, power_entities) -> dict:
     return snap
 
 
-def _snapshot_changed(pre: dict | None, post: dict | None, *,
-                      epsilon_w: float) -> str | None:
+def _snapshot_changed(pre: dict | None, post: dict | None, *, epsilon_w: float) -> str | None:
     """Return the entity_id of the first confounder that moved, else None.
 
     Discrete ``state`` entries: any change counts (on/off/brightness).
@@ -242,22 +237,19 @@ def _measure_stable(
     while True:
         attempts += 1
         pre = watch_fn() if watch_fn else None
-        last = _measure(client, entity_id, duration_seconds=duration_seconds,
-                        samples=samples, sleep=sleep)
+        last = _measure(
+            client, entity_id, duration_seconds=duration_seconds, samples=samples, sleep=sleep
+        )
         post = watch_fn() if watch_fn else None
 
         spread_ok = max_spread_w is None or last["spread"] <= max_spread_w
-        moved = (_snapshot_changed(pre, post, epsilon_w=watch_epsilon_w)
-                 if watch_fn else None)
+        moved = _snapshot_changed(pre, post, epsilon_w=watch_epsilon_w) if watch_fn else None
 
         if spread_ok and not moved:
-            return {**last, "attempts": attempts, "accepted": True,
-                    "confounder": None}
+            return {**last, "attempts": attempts, "accepted": True, "confounder": None}
         if attempts > max_retries:
-            reason = (f"changed:{moved}" if moved
-                      else f"spread>{max_spread_w:g}w")
-            return {**last, "attempts": attempts, "accepted": False,
-                    "confounder": reason}
+            reason = f"changed:{moved}" if moved else f"spread>{max_spread_w:g}w"
+            return {**last, "attempts": attempts, "accepted": False, "confounder": reason}
         # Brief settle before retrying so we don't just re-sample the same
         # transient. Bounded so a 0-duration test window doesn't stall.
         if duration_seconds > 0:
@@ -294,32 +286,30 @@ def _time_weighted_mean(points: list[dict]) -> dict:
     last - first as the total span).
     """
     if not points:
-        return {"n": 0, "mean": None, "min": None, "max": None,
-                "first": None, "last": None}
+        return {"n": 0, "mean": None, "min": None, "max": None, "first": None, "last": None}
 
     parsed: list[tuple[datetime, float]] = []
     for p in points:
         try:
-            ts = datetime.fromisoformat(
-                p["last_changed"].replace("Z", "+00:00")
-            )
+            ts = datetime.fromisoformat(p["last_changed"].replace("Z", "+00:00"))
             v = float(p["state"])
         except (KeyError, ValueError, TypeError):
             continue
         parsed.append((ts, v))
 
     if not parsed:
-        return {"n": 0, "mean": None, "min": None, "max": None,
-                "first": None, "last": None}
+        return {"n": 0, "mean": None, "min": None, "max": None, "first": None, "last": None}
 
     total_span = (parsed[-1][0] - parsed[0][0]).total_seconds()
     if total_span <= 0:
-        return {"n": len(parsed),
-                "mean": parsed[-1][1],
-                "min": min(v for _, v in parsed),
-                "max": max(v for _, v in parsed),
-                "first": parsed[0][0].isoformat(),
-                "last": parsed[-1][0].isoformat()}
+        return {
+            "n": len(parsed),
+            "mean": parsed[-1][1],
+            "min": min(v for _, v in parsed),
+            "max": max(v for _, v in parsed),
+            "first": parsed[0][0].isoformat(),
+            "last": parsed[-1][0].isoformat(),
+        }
 
     weighted_sum = 0.0
     for i in range(len(parsed) - 1):
@@ -345,9 +335,7 @@ def _call_service(
 ) -> Any:
     """Helper: POST services/<domain>/<svc> with the supplied payload."""
     if "." not in service:
-        raise ValueError(
-            f"service must be 'domain.name' (got {service!r})"
-        )
+        raise ValueError(f"service must be 'domain.name' (got {service!r})")
     domain, name = service.split(".", 1)
     payload: dict = {}
     if isinstance(target, dict):
@@ -359,8 +347,7 @@ def _call_service(
     return client.post(f"services/{domain}/{name}", payload)
 
 
-def virtual_power_entries(client, *,
-                          title_contains: str | None = None) -> list[dict]:
+def virtual_power_entries(client, *, title_contains: str | None = None) -> list[dict]:
     """Enumerate every fixed-mode powercalc virtual_power entry with the
     metadata calibration tools need.
 
@@ -416,9 +403,9 @@ def virtual_power_entries(client, *,
             continue
         fname = a.get("friendly_name") or ""
         if fname.endswith(" Power"):
-            fname = fname[:-len(" Power")]
+            fname = fname[: -len(" Power")]
         if fname.endswith(" power"):
-            fname = fname[:-len(" power")]
+            fname = fname[: -len(" power")]
         entry_id = by_title.get(fname.strip())
         if not entry_id:
             continue
@@ -427,18 +414,21 @@ def virtual_power_entries(client, *,
         # state as a proxy ONLY when the source is currently off — that's
         # the "configured fixed power but multiplied by 0" zero case;
         # otherwise we can't tell from attributes alone.
-        out.append({
-            "entry_id": entry_id,
-            "title": fname.strip(),
-            "source_entity": source,
-            "calculation_mode": mode,
-            "power_sensor": s["entity_id"],
-            "previous_power_w": None,
-        })
+        out.append(
+            {
+                "entry_id": entry_id,
+                "title": fname.strip(),
+                "source_entity": source,
+                "calculation_mode": mode,
+                "power_sensor": s["entity_id"],
+                "previous_power_w": None,
+            }
+        )
     return out
 
 
 # ── audit ─────────────────────────────────────────────────────────────────
+
 
 def audit(
     client,
@@ -494,21 +484,21 @@ def audit(
             eid_core = eid_core.replace("__", "_")
         eid_core = eid_core.strip("_")
         candidate = f"sensor.{eid_core}_power"
-        stats = _time_weighted_mean(
-            _history_series(client, candidate, hours=hours)
-        )
+        stats = _time_weighted_mean(_history_series(client, candidate, hours=hours))
         if stats.get("mean") is None:
             continue
         # Skip the Home Total itself in the per-group ranking.
         if candidate == home_total:
             continue
-        group_results.append({
-            "title": title,
-            "entity_id": candidate,
-            "mean": round(stats["mean"], 1),
-            "min": stats["min"],
-            "max": stats["max"],
-        })
+        group_results.append(
+            {
+                "title": title,
+                "entity_id": candidate,
+                "mean": round(stats["mean"], 1),
+                "min": stats["min"],
+                "max": stats["max"],
+            }
+        )
 
     # Compute contribution percentages
     group_results.sort(key=lambda r: -(r["mean"] or 0))
@@ -533,6 +523,7 @@ def audit(
 
 
 # ── calibrate (single-shot, fixed-power) ──────────────────────────────────
+
 
 def calibrate(
     client,
@@ -584,26 +575,35 @@ def calibrate(
     watch_fn = None
     if max_spread_w is not None:
         excl = {target} if isinstance(target, str) else set()
-        se, pe = _confounder_watchset(client, exclude=excl,
-                                      smart_meter=smart_meter)
+        se, pe = _confounder_watchset(client, exclude=excl, smart_meter=smart_meter)
         if se or pe:
             watch_fn = lambda: _snapshot(client, se, pe)  # noqa: E731
 
-    baseline = _measure_stable(client, smart_meter,
-                               duration_seconds=baseline_seconds,
-                               samples=samples, max_spread_w=max_spread_w,
-                               max_retries=max_retries, watch_fn=watch_fn,
-                               sleep=sleep)
+    baseline = _measure_stable(
+        client,
+        smart_meter,
+        duration_seconds=baseline_seconds,
+        samples=samples,
+        max_spread_w=max_spread_w,
+        max_retries=max_retries,
+        watch_fn=watch_fn,
+        sleep=sleep,
+    )
 
     _call_service(client, service_on, target=target)
     if stabilisation_seconds > 0:
         sleep(stabilisation_seconds)
 
-    load = _measure_stable(client, smart_meter,
-                           duration_seconds=load_seconds,
-                           samples=samples, max_spread_w=max_spread_w,
-                           max_retries=max_retries, watch_fn=watch_fn,
-                           sleep=sleep)
+    load = _measure_stable(
+        client,
+        smart_meter,
+        duration_seconds=load_seconds,
+        samples=samples,
+        max_spread_w=max_spread_w,
+        max_retries=max_retries,
+        watch_fn=watch_fn,
+        sleep=sleep,
+    )
 
     delta_w = round(load["mean"] - baseline["mean"], 1)
     noisy = not (baseline["accepted"] and load["accepted"])
@@ -644,8 +644,8 @@ def calibrate(
 
 # ── calibrate-template (multi-step, variable) ─────────────────────────────
 
-def _state_template(source_entity: str, attribute: str,
-                    state_value_to_power: list[tuple]) -> str:
+
+def _state_template(source_entity: str, attribute: str, state_value_to_power: list[tuple]) -> str:
     """Build a piecewise Jinja template from sorted ``(value, watts)`` pairs.
 
     Output looks like::
@@ -666,12 +666,10 @@ def _state_template(source_entity: str, attribute: str,
     pairs = sorted(state_value_to_power, key=lambda kv: kv[0])
     values = [v for v, _ in pairs]
     watts = [w for _, w in pairs]
-    midpoints = [(values[i] + values[i + 1]) / 2
-                 for i in range(len(values) - 1)]
+    midpoints = [(values[i] + values[i + 1]) / 2 for i in range(len(values) - 1)]
 
     lines: list[str] = [
-        f"{{% set v = state_attr('{source_entity}', '{attribute}') "
-        f"| float(0) %}}",
+        f"{{% set v = state_attr('{source_entity}', '{attribute}') | float(0) %}}",
         f"{{% if not is_state('{source_entity}', 'on') %}}0",
     ]
     for i, cut in enumerate(midpoints):
@@ -740,40 +738,50 @@ def calibrate_template(
     # under test (its source entity) is excluded. Disabled when gate is off.
     watch_fn = None
     if max_spread_w is not None:
-        se, pe = _confounder_watchset(client, exclude={source_entity},
-                                      smart_meter=smart_meter)
+        se, pe = _confounder_watchset(client, exclude={source_entity}, smart_meter=smart_meter)
         if se or pe:
             watch_fn = lambda: _snapshot(client, se, pe)  # noqa: E731
 
     # Take baseline with device off
     _call_service(client, service_off, target=source_entity)
     sleep(stabilisation_seconds)
-    baseline = _measure_stable(client, smart_meter,
-                               duration_seconds=baseline_seconds,
-                               samples=samples, max_spread_w=max_spread_w,
-                               max_retries=max_retries, watch_fn=watch_fn,
-                               sleep=sleep)
+    baseline = _measure_stable(
+        client,
+        smart_meter,
+        duration_seconds=baseline_seconds,
+        samples=samples,
+        max_spread_w=max_spread_w,
+        max_retries=max_retries,
+        watch_fn=watch_fn,
+        sleep=sleep,
+    )
     baseline_noisy = not baseline["accepted"]
 
     steps: list[dict] = []
     for v in states:
-        _call_service(client, service_set, target=source_entity,
-                       service_data={state_arg: v})
+        _call_service(client, service_set, target=source_entity, service_data={state_arg: v})
         sleep(stabilisation_seconds)
-        load = _measure_stable(client, smart_meter,
-                               duration_seconds=load_seconds,
-                               samples=samples, max_spread_w=max_spread_w,
-                               max_retries=max_retries, watch_fn=watch_fn,
-                               sleep=sleep)
-        steps.append({
-            "value": v,
-            "load_mean": load["mean"],
-            "delta_w": round(load["mean"] - baseline["mean"], 1),
-            "spread": load["spread"],
-            "attempts": load["attempts"],
-            "excluded": not load["accepted"],
-            "confounder": load["confounder"],
-        })
+        load = _measure_stable(
+            client,
+            smart_meter,
+            duration_seconds=load_seconds,
+            samples=samples,
+            max_spread_w=max_spread_w,
+            max_retries=max_retries,
+            watch_fn=watch_fn,
+            sleep=sleep,
+        )
+        steps.append(
+            {
+                "value": v,
+                "load_mean": load["mean"],
+                "delta_w": round(load["mean"] - baseline["mean"], 1),
+                "spread": load["spread"],
+                "attempts": load["attempts"],
+                "excluded": not load["accepted"],
+                "confounder": load["confounder"],
+            }
+        )
 
     # Switch off after the walk
     try:
@@ -787,7 +795,8 @@ def calibrate_template(
     template: str | None = None
     if clean:
         template = _state_template(
-            source_entity, attribute,
+            source_entity,
+            attribute,
             [(s["value"], max(s["delta_w"], 0)) for s in clean],
         )
 
@@ -813,8 +822,8 @@ def calibrate_template(
 
 # ── auto-calibrate (passive, historical) ──────────────────────────────────
 
-def _list_state_history(client, entity_id: str, *,
-                         hours: float) -> list[dict]:
+
+def _list_state_history(client, entity_id: str, *, hours: float) -> list[dict]:
     """Same as :func:`_history_series` but returns all state changes
     (without minimal_response — we need full attribute payload here)."""
     end = datetime.now(tz=timezone.utc)
@@ -844,9 +853,7 @@ def _smart_meter_window_mean(
     vals: list[float] = []
     for p in series:
         try:
-            ts = datetime.fromisoformat(
-                p["last_changed"].replace("Z", "+00:00")
-            ).timestamp()
+            ts = datetime.fromisoformat(p["last_changed"].replace("Z", "+00:00")).timestamp()
             if window_start_ts <= ts <= window_end_ts:
                 vals.append(float(p["state"]))
         except (KeyError, ValueError, TypeError):
@@ -906,8 +913,7 @@ def auto_calibrate(
           "applied": bool,
         }
     """
-    candidates_raw = virtual_power_entries(client,
-                                            title_contains=title_contains)
+    candidates_raw = virtual_power_entries(client, title_contains=title_contains)
 
     # Pull smart-meter history once — we'll slice windows out of it.
     sm_series = _list_state_history(client, smart_meter, hours=hours)
@@ -929,9 +935,7 @@ def auto_calibrate(
         ts_list: list[float] = []
         for p in hist:
             try:
-                ts = datetime.fromisoformat(
-                    p["last_changed"].replace("Z", "+00:00")
-                ).timestamp()
+                ts = datetime.fromisoformat(p["last_changed"].replace("Z", "+00:00")).timestamp()
                 ts_list.append(ts)
             except (KeyError, ValueError, TypeError):
                 continue
@@ -960,7 +964,7 @@ def auto_calibrate(
     skipped_count = 0
 
     for c in candidates_raw:
-        my_ts = sorted(source_transitions.get(c["source_entity"], []))
+        sorted(source_transitions.get(c["source_entity"], []))
         # We want ON-transitions specifically. Approximate by looking at
         # consecutive points where the state goes from off/0 to on/non-0.
         hist = _list_state_history(client, c["source_entity"], hours=hours)
@@ -970,8 +974,9 @@ def auto_calibrate(
             cur_state = (hist[i].get("state") or "").lower()
             # Treat "off" / "0" / "0.0" / "unavailable" → "non-off" as ON.
             was_off = prev_state in ("off", "0", "0.0", "")
-            is_on = cur_state in ("on",) or (cur_state not in (
-                "off", "0", "0.0", "", "unavailable", "unknown") and was_off)
+            is_on = cur_state in ("on",) or (
+                cur_state not in ("off", "0", "0.0", "", "unavailable", "unknown") and was_off
+            )
             if not (was_off and is_on):
                 continue
             try:
@@ -985,10 +990,13 @@ def auto_calibrate(
                 continue
 
             pre_mean = _smart_meter_window_mean(
-                sm_series, ts - pre_window_seconds, ts - 1,
+                sm_series,
+                ts - pre_window_seconds,
+                ts - 1,
             )
             post_mean = _smart_meter_window_mean(
-                sm_series, ts + quiet_seconds,
+                sm_series,
+                ts + quiet_seconds,
                 ts + quiet_seconds + post_window_seconds,
             )
             if pre_mean is None or post_mean is None:
@@ -997,40 +1005,44 @@ def auto_calibrate(
 
         if len(deltas) < min_samples:
             skipped_count += 1
-            out_candidates.append({**c,
-                                    "median_delta_w": None,
-                                    "samples": len(deltas),
-                                    "p25_w": None, "p75_w": None,
-                                    "applied": False,
-                                    "skip_reason": f"only {len(deltas)} clean "
-                                                    f"samples (need {min_samples})"})
+            out_candidates.append(
+                {
+                    **c,
+                    "median_delta_w": None,
+                    "samples": len(deltas),
+                    "p25_w": None,
+                    "p75_w": None,
+                    "applied": False,
+                    "skip_reason": f"only {len(deltas)} clean samples (need {min_samples})",
+                }
+            )
             continue
 
         deltas.sort()
         n = len(deltas)
-        median = deltas[n // 2] if n % 2 == 1 else \
-                 (deltas[n // 2 - 1] + deltas[n // 2]) / 2
+        median = deltas[n // 2] if n % 2 == 1 else (deltas[n // 2 - 1] + deltas[n // 2]) / 2
         p25 = deltas[max(0, n // 4)]
         p75 = deltas[min(n - 1, (3 * n) // 4)]
 
         applied = False
         if apply_ and median > 0:
             try:
-                _pc.set_fixed_power(client, c["entry_id"],
-                                    power=round(median, 1))
+                _pc.set_fixed_power(client, c["entry_id"], power=round(median, 1))
                 applied = True
                 applied_count += 1
             except Exception:
                 pass
 
-        out_candidates.append({
-            **c,
-            "median_delta_w": round(median, 1),
-            "samples": n,
-            "p25_w": round(p25, 1),
-            "p75_w": round(p75, 1),
-            "applied": applied,
-        })
+        out_candidates.append(
+            {
+                **c,
+                "median_delta_w": round(median, 1),
+                "samples": n,
+                "p25_w": round(p25, 1),
+                "p75_w": round(p75, 1),
+                "applied": applied,
+            }
+        )
 
     return {
         "window_hours": hours,

@@ -29,6 +29,7 @@ from typing import Any
 # Conversation
 # ════════════════════════════════════════════════════════════════════════
 
+
 def process(
     client,
     *,
@@ -133,6 +134,7 @@ def debug_agent(client, *, sentence: str, language: str) -> dict:
 # ════════════════════════════════════════════════════════════════════════
 # Assist Pipeline
 # ════════════════════════════════════════════════════════════════════════
+
 
 def list_pipelines(client) -> list:
     """Return pipeline debug records available on this HA instance.
