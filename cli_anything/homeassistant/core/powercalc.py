@@ -54,10 +54,13 @@ All of these are silent in raw API usage.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable
 
 from cli_anything.homeassistant.core import config_entries as _ce
 
+
+_LOGGER = logging.getLogger(__name__)
 
 POWERCALC_DOMAIN = "powercalc"
 
@@ -172,8 +175,8 @@ def get_group_config(client, entry_id: str) -> dict:
     if flow_id:
         try:
             client.delete(f"config/config_entries/options/flow/{flow_id}")
-        except Exception:  # noqa: BLE001 — abort is best-effort
-            pass
+        except Exception as exc:  # noqa: BLE001 — abort is best-effort
+            _LOGGER.debug("Could not abort options flow %s: %s", flow_id, exc)
     return out
 
 
