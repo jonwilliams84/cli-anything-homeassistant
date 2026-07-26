@@ -7,10 +7,13 @@ plugins so the agent can flag orphans.
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from typing import Iterable
 
 from cli_anything.homeassistant.core import lovelace_cards as cards_core
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def card_types_in_use(config: dict) -> dict[str, int]:
@@ -39,7 +42,8 @@ def types_across_dashboards(client) -> dict[str, dict[str, int]]:
         seen.add(url)
         try:
             cfg = lovelace_core.get_dashboard_config(client, url)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — HA signals absence via error
+            _LOGGER.warning("Skipping dashboard %s: %s", url, exc)
             continue
         types = card_types_in_use(cfg)
         if types:
@@ -49,8 +53,8 @@ def types_across_dashboards(client) -> dict[str, dict[str, int]]:
     try:
         cfg = lovelace_core.get_dashboard_config(client, None)
         out.setdefault("(default)", card_types_in_use(cfg))
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — default dashboard may not exist
+        _LOGGER.warning("Could not read default dashboard: %s", exc)
     return out
 
 
