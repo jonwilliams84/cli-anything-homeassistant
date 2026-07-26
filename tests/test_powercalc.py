@@ -590,3 +590,61 @@ class TestReadEntry:
         assert out["calculation_mode"] == "fixed"
         assert out["source_entity"] == "light.jonlamp"
         assert out["current_power_w"] == 1.0
+
+
+# ── regression: best-effort reload logs instead of silently passing (B110) ──
+
+class TestBestEffortReloadLogs:
+    """When reload_entry fails after set_fixed_power / set_standby, the
+    exception must be logged (debug) rather than silently swallowed."""
+
+    def test_set_fixed_power_logs_reload_failure(self, flow_client, caplog):
+        import logging
+        flow_client.queue_posts(
+            {"flow_id": "F1", "type": "menu", "menu_options": ["fixed"]},
+            {"type": "form"},
+            {"type": "create_entry"},
+        )
+        # Make reload_entry raise by monkeypatching it.
+        def boom(client, entry_id):
+            raise RuntimeError("reload exploded")
+        orig = powercalc.reload_entry
+        powercalc.reload_entry = boom
+        try:
+            with caplog.at_level(logging.DEBUG, logger=powercalc._LOGGER.name):
+                powercalc.set_fixed_power(flow_client, "E1", power=7.4)
+        finally:
+            powercalc.reload_entry = orig
+        assert any("reload" in r.message and "failed" in r.message
+                    for r in caplog.records if r.levelno == logging.DEBUG)
+
+    def test_set_standby_logs_reload_failure(self, flow_client, caplog):
+        import logging
+        flow_client.queue_posts(
+            {"flow_id": "F", "type": "menu",
+             "menu_options": ["basic_options", "fixed"]},
+            {"type": "form", "step_id": "basic_options"},
+            {"type": "create_entry"},
+        )
+        flow_client.set_get("states", [{
+            "entity_id": "sensor.jonlamp_power",
+            "state": "1.00",
+            "attributes": {"integration": "powercalc",
+                           "source_entity": "light.jonlamp"},
+        }])
+        monkeypatch_entries = lambda c, **k: [{"entry_id": "E1", "title": "X"}]
+        orig_le = powercalc.list_entries
+        powercalc.list_entries = monkeypatch_entries
+        def boom(client, entry_id):
+            raise RuntimeError("reload exploded")
+        orig_re = powercalc.reload_entry
+        powercalc.reload_entry = boom
+        try:
+            with caplog.at_level(logging.DEBUG, logger=powercalc._LOGGER.name):
+                powercalc.set_standby(flow_client, "E1", standby_power=1.0,
+                                      source_entity="light.jonlamp")
+        finally:
+            powercalc.list_entries = orig_le
+            powercalc.reload_entry = orig_re
+        assert any("reload" in r.message and "failed" in r.message
+                    for r in caplog.records if r.levelno == logging.DEBUG)

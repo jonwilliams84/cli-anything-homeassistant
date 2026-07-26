@@ -29,12 +29,15 @@ caller's setup uses a different name they pass it explicitly.
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from cli_anything.homeassistant.core import powercalc as _pc
+
+_LOGGER = logging.getLogger(__name__)
 
 
 DEFAULT_SMART_METER = "sensor.smart_meter_electricity_power"
@@ -620,8 +623,11 @@ def calibrate(
     if service_off:
         try:
             _call_service(client, service_off, target=target)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 — teardown is best-effort
+            _LOGGER.debug(
+                "best-effort service_off %s for %s failed",
+                service_off, entry_id, exc_info=True,
+            )
 
     applied = False
     if apply_ and delta_w > 0 and not noisy:
