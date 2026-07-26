@@ -266,8 +266,8 @@ def set_group_members(
     if reload:
         try:
             reload_entry(client, entry_id)
-        except Exception:  # noqa: BLE001 — reload is best-effort
-            pass
+        except Exception as exc:  # noqa: BLE001 — reload is best-effort
+            _LOGGER.debug("Could not reload config entry %s: %s", entry_id, exc)
 
     if verify:
         stored = get_group_config(client, entry_id)
@@ -455,7 +455,8 @@ def find_groups_containing(
         eid = e.get("entry_id")
         try:
             cfg = get_group_config(client, eid)
-        except Exception:  # noqa: BLE001 — not a group / unreadable
+        except Exception as exc:  # noqa: BLE001 — not a group / unreadable
+            _LOGGER.debug("Could not read group config for %s: %s", eid, exc)
             continue
         matched: dict[str, list] = {}
         for field, want in (
@@ -757,8 +758,8 @@ def set_power_template(client, entry_id: str, *, power_template: str, reload: bo
     if reload:
         try:
             reload_entry(client, entry_id)
-        except Exception:  # noqa: BLE001 — reload is best-effort
-            pass
+        except Exception as exc:  # noqa: BLE001 — reload is best-effort
+            _LOGGER.debug("Could not reload config entry %s: %s", entry_id, exc)
     return resp
 
 

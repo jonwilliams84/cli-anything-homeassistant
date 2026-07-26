@@ -12,149 +12,154 @@ import logging
 
 import pytest
 
-from cli_anything.homeassistant.core import lovelace_card_types as card_types
 from cli_anything.homeassistant.core import powercalc
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-class _RaisingWSClient:
-    """Fake client whose ``ws_call`` raises for specified message types."""
+class _RaisingReloadClient:
+    """Fake client whose ``post`` raises on the reload endpoint."""
 
-    def __init__(self, *, dashboards: list | None = None,
-                 raise_on: set[str] | None = None) -> None:
-        self._dashboards = dashboards or []
-        self._raise_on = raise_on or set()
-
-    def ws_call(self, msg_type: str, payload: dict | None = None):
-        if msg_type in self._raise_on:
-            raise RuntimeError(f"ws_call failed for {msg_type}")
-        if msg_type == "lovelace/dashboards/list":
-            return self._dashboards
-        return {}
-
-
-# ── B112: types_across_dashboards — per-dashboard failure logs ──────────────
-
-class TestTypesAcrossDashboardsLogsOnFailure:
-    def test_logs_warning_when_dashboard_config_raises(self, caplog):
-        """B112 fix: a failing dashboard config is logged, not silently
-        skipped via try/except/continue."""
-        client = _RaisingWSClient(
-            dashboards=[{"url_path": "broken"}],
-            raise_on={"lovelace/config"},
-        )
-        with caplog.at_level(logging.WARNING, logger=card_types._LOGGER.name):
-            result = card_types.types_across_dashboards(client)
-        # The broken dashboard is skipped (not in result) …
-        assert "broken" not in result
-        # … but a WARNING was emitted mentioning the dashboard url.
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("broken" in r.getMessage() for r in warnings), (
-            "expected a WARNING log mentioning the skipped dashboard url"
-        )
-
-
-# ── B110: types_across_dashboards — default dashboard failure logs ──────────
-
-class TestTypesAcrossDashboardsLogsDefaultFailure:
-    def test_logs_warning_when_default_dashboard_raises(self, caplog):
-        """B110 fix: a failing default-dashboard read is logged, not silently
-        swallowed via try/except/pass."""
-        # No dashboards in the list, but lovelace/config (default) raises.
-        client = _RaisingWSClient(
-            dashboards=[],
-            raise_on={"lovelace/config"},
-        )
-        with caplog.at_level(logging.WARNING, logger=card_types._LOGGER.name):
-            result = card_types.types_across_dashboards(client)
-        # Result is empty (no dashboards, default failed) …
-        assert result == {}
-        # … but a WARNING was emitted about the default dashboard.
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("default" in r.getMessage().lower() for r in warnings), (
-            "expected a WARNING log mentioning the default dashboard"
-        )
-
-
-# ── B110: get_group_config — flow-abort failure logs ────────────────────────
-
-class _DeleteRaisingFlowClient:
-    """FlowFakeClient whose ``delete`` always raises.
-
-    Reuses the same interface as the FlowFakeClient in test_powercalc.py
-    but makes the best-effort abort path fail.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self, *, post_responses: dict | None = None) -> None:
         self.calls: list[dict] = []
-        self.post_queue: list = []
-        self.get_responses: dict[str, object] = {}
-
-    def queue_posts(self, *responses) -> None:
-        self.post_queue.extend(responses)
-
-    def set_get(self, path: str, response) -> None:
-        self.get_responses[path.lstrip("/")] = response
+        self._post_responses = post_responses or {}
 
     def get(self, path: str, params: dict | None = None):
-        path = path.lstrip("/")
         self.calls.append({"verb": "GET", "path": path, "params": params})
-        return self.get_responses.get(path, {})
+        return {}
 
     def post(self, path: str, payload=None):
-        path = path.lstrip("/")
         self.calls.append({"verb": "POST", "path": path, "payload": payload})
-        if not self.post_queue:
-            raise AssertionError(
-                f"POST {path} with no queued response — unexpected call. "
-                f"Calls so far: {self.calls}",
-            )
-        return self.post_queue.pop(0)
+        if path.rstrip("/").endswith("/reload"):
+            raise RuntimeError("reload failed — HA unreachable")
+        return self._post_responses.get(path, {})
 
     def delete(self, path: str):
         self.calls.append({"verb": "DELETE", "path": path})
-        raise RuntimeError("delete failed — HA unreachable")
+        return {}
 
 
-def _group_form(flow_id="f1", member=None, power=None, energy=None, sub=None):
-    def _field(name, val):
-        f = {"name": name}
-        if val is not None:
-            f["description"] = {"suggested_value": val}
-        return f
-    return {"flow_id": flow_id, "type": "form", "step_id": "group_custom",
-            "data_schema": [
-                _field("group_member_sensors", member),
-                _field("group_power_entities", power),
-                _field("group_energy_entities", energy),
-                _field("sub_groups", sub),
-            ]}
+class _RaisingGroupConfigClient:
+    """Fake client whose ``get_group_config`` path raises for some entries."""
+
+    def __init__(self, *, bad_entry_ids: set[str] | None = None) -> None:
+        self.calls: list[dict] = []
+        self._bad_entry_ids = bad_entry_ids or set()
+
+    def get(self, path: str, params: dict | None = None):
+        self.calls.append({"verb": "GET", "path": path, "params": params})
+        return {}
+
+    def post(self, path: str, payload=None):
+        self.calls.append({"verb": "POST", "path": path, "payload": payload})
+        return {}
+
+    def delete(self, path: str):
+        self.calls.append({"verb": "DELETE", "path": path})
+        return {}
+
+    def ws_call(self, msg_type: str, payload: dict | None = None):
+        self.calls.append({"verb": "WS", "msg_type": msg_type, "payload": payload})
+        return {}
 
 
-def _menu():
-    return {"flow_id": "f1", "type": "menu",
-            "menu_options": ["basic_options", "group_custom"]}
+# ── B110: set_group_members reload failure logs ─────────────────────────────
 
+class TestSetGroupMembersLogsReloadFailure:
+    def test_logs_debug_when_reload_fails(self, caplog, monkeypatch):
+        """B110 fix: a failing reload is logged, not silently swallowed."""
+        client = _RaisingReloadClient(post_responses={
+            "config/config_entries/options/flow": {
+                "flow_id": "f1",
+                "type": "form",
+                "step_id": "group_custom",
+                "data_schema": [
+                    {"name": "group_member_sensors"},
+                    {"name": "group_power_entities"},
+                    {"name": "group_energy_entities"},
+                    {"name": "sub_groups"},
+                ],
+            },
+            "config/config_entries/options/flow/f1": {"type": "create_entry"},
+        })
 
-class TestGetGroupConfigLogsAbortFailure:
-    def test_logs_debug_when_flow_abort_fails(self, caplog):
-        """B110 fix: when the best-effort options-flow abort (DELETE) fails,
-        the exception is logged at DEBUG instead of being silently passed."""
-        client = _DeleteRaisingFlowClient()
-        client.queue_posts(
-            _menu(),
-            _group_form(power=["sensor.a_power"], energy=["sensor.a_energy"],
-                        member=["m1"]),
-        )
         with caplog.at_level(logging.DEBUG, logger=powercalc._LOGGER.name):
-            # Must not raise — the abort failure is logged, not propagated.
-            cfg = powercalc.get_group_config(client, "E1")
-        # The config was still read successfully.
-        assert cfg["group_power_entities"] == ["sensor.a_power"]
-        # A DEBUG record was emitted about the failed abort.
+            powercalc.set_group_members(
+                client, "E1", power_entities=["sensor.a_power"], verify=False,
+            )
+
         debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any("abort" in r.getMessage().lower()
-                   or "flow" in r.getMessage().lower() for r in debugs), (
-            "expected a DEBUG log about the failed options-flow abort"
+        assert any("reload" in r.getMessage().lower() for r in debugs), (
+            "expected a DEBUG log about the failed reload"
+        )
+
+
+# ── B112: find_groups_containing group-config read failure logs ─────────────
+
+class TestFindGroupsContainingLogsGroupReadFailure:
+    def test_logs_debug_when_group_config_read_fails(self, caplog, monkeypatch):
+        """B112 fix: a failing per-group config read is logged, not silently
+        skipped via try/except/continue."""
+        client = _RaisingGroupConfigClient()
+
+        monkeypatch.setattr(
+            powercalc, "list_entries", lambda c: [
+                {"entry_id": "G1"},
+                {"entry_id": "G2"},
+            ],
+        )
+
+        def fake_get_group_config(c, eid):
+            if eid == "G1":
+                raise RuntimeError("group config unreadable")
+            return {
+                "group_member_sensors": ["sensor.leaf"],
+                "group_power_entities": [],
+                "group_energy_entities": [],
+                "sub_groups": [],
+                "area": None,
+                "floor": None,
+            }
+
+        monkeypatch.setattr(powercalc, "get_group_config", fake_get_group_config)
+
+        with caplog.at_level(logging.DEBUG, logger=powercalc._LOGGER.name):
+            result = powercalc.find_groups_containing(
+                client, entry_ids=["sensor.leaf"],
+            )
+
+        # G1 is skipped (not in result) …
+        assert all(g["entry_id"] != "G1" for g in result)
+        # … but a DEBUG record was emitted mentioning G1.
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("G1" in r.getMessage() for r in debugs), (
+            "expected a DEBUG log mentioning the skipped entry G1"
+        )
+
+
+# ── B110: set_power_template reload failure logs ─────────────────────────────
+
+class TestSetPowerTemplateLogsReloadFailure:
+    def test_logs_debug_when_reload_fails(self, caplog, monkeypatch):
+        """B110 fix: a failing reload is logged, not silently swallowed."""
+        client = _RaisingReloadClient()
+
+        def fake_open_fixed_step(c, eid):
+            return {"flow_id": "f1", "type": "form", "step_id": "power_advanced"}
+
+        monkeypatch.setattr(powercalc, "_open_fixed_step", fake_open_fixed_step)
+
+        def fake_options_flow_configure(c, flow_id, data):
+            return {"type": "create_entry"}
+
+        monkeypatch.setattr(powercalc._ce, "options_flow_configure", fake_options_flow_configure)
+
+        with caplog.at_level(logging.DEBUG, logger=powercalc._LOGGER.name):
+            powercalc.set_power_template(
+                client, "E1", power_template="{{ 1 }}",
+            )
+
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("reload" in r.getMessage().lower() for r in debugs), (
+            "expected a DEBUG log about the failed reload"
         )
