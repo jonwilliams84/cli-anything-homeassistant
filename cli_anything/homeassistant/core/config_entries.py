@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def list_entries(client, domain: str | None = None) -> list[dict]:
@@ -199,8 +202,12 @@ def walk(
         except Exception as exc:
             try:
                 flow_abort(client, flow_id)
-            except Exception:
-                pass
+            except Exception as abort_exc:  # noqa: BLE001 — best-effort cleanup
+                _LOGGER.debug(
+                    "flow_abort failed while cleaning up flow %s: %s",
+                    flow_id,
+                    abort_exc,
+                )
             history.append({"step": f"submit[{i}]", "error": str(exc), "payload": payload})
             return {"flow_id": flow_id, "history": history, "final": None, "completed": False}
         history.append(

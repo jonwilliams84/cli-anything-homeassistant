@@ -10,7 +10,10 @@ require small adjustments.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _enrich(b: dict) -> dict:
@@ -124,7 +127,8 @@ def remove(client, backup_id: str, *, agent_ids: Optional[list[str]] = None) -> 
     for msg_type in ("backup/delete", "backup/remove"):
         try:
             return client.ws_call(msg_type, payload) or {}
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — try the next msg type
+            _LOGGER.debug("backup delete via %s failed: %s", msg_type, exc)
             continue
     raise RuntimeError("backup delete is not supported by this HA version")
 
