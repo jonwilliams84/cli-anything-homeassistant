@@ -174,7 +174,8 @@ def input_select_update(
         except Exception as exc:  # pragma: no cover — best-effort backfill
             _LOGGER.debug(
                 "input_select_update: state backfill for %s failed: %s",
-                entity_id, exc,
+                entity_id,
+                exc,
             )
     payload: dict = {"input_select_id": entity_id.split(".", 1)[1]}
     if options is not None:

@@ -205,7 +205,8 @@ def walk(
             except Exception as abort_exc:  # noqa: BLE001 — best-effort cleanup
                 _LOGGER.debug(
                     "flow_abort failed while cleaning up flow %s: %s",
-                    flow_id, abort_exc,
+                    flow_id,
+                    abort_exc,
                 )
             history.append({"step": f"submit[{i}]", "error": str(exc), "payload": payload})
             return {"flow_id": flow_id, "history": history, "final": None, "completed": False}
