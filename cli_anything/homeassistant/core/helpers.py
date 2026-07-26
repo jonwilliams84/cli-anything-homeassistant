@@ -44,6 +44,11 @@ persistent option changes. Same caveat applies if you ever see
 
 from __future__ import annotations
 
+import logging
+
+
+_LOGGER = logging.getLogger(__name__)
+
 
 def _get_state(client, entity_id: str) -> dict:
     states = client.get(f"states/{entity_id}")
@@ -166,8 +171,11 @@ def input_select_update(
                 name = attrs.get("friendly_name")
             if icon is None:
                 icon = attrs.get("icon")
-        except Exception:  # pragma: no cover — best-effort backfill
-            pass
+        except Exception as exc:  # pragma: no cover — best-effort backfill
+            _LOGGER.debug(
+                "input_select_update: state backfill for %s failed: %s",
+                entity_id, exc,
+            )
     payload: dict = {"input_select_id": entity_id.split(".", 1)[1]}
     if options is not None:
         if not isinstance(options, list) or not options:
