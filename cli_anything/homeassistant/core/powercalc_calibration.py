@@ -795,7 +795,9 @@ def calibrate_template(
     try:
         _call_service(client, service_off, target=source_entity)
     except Exception:
-        pass
+        _LOGGER.warning(
+            "Failed to switch off %s after calibration walk", source_entity, exc_info=True
+        )
 
     # Only fit the template from clean steps — noisy ones would distort it.
     clean = [s for s in steps if not s["excluded"]]
@@ -1039,7 +1041,9 @@ def auto_calibrate(
                 applied = True
                 applied_count += 1
             except Exception:
-                pass
+                _LOGGER.warning(
+                    "Failed to set fixed power for entry %s", c["entry_id"], exc_info=True
+                )
 
         out_candidates.append(
             {

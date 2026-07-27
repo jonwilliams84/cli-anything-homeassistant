@@ -28,7 +28,7 @@ def load_config(config_path: Path | None = None) -> dict:
     path = config_path or DEFAULT_CONFIG_PATH
     cfg = {
         "url": DEFAULT_URL,
-        "token": "",
+        "token": "",  # nosec: B105  # sentinel: empty string means "no token configured yet", not a hardcoded secret
         "verify_ssl": True,
         "timeout": DEFAULT_TIMEOUT,
     }
