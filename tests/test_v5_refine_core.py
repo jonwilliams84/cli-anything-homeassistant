@@ -365,3 +365,28 @@ class TestRecorderTop:
     def test_unknown_by_raises(self, fake_client):
         with pytest.raises(ValueError, match="by"):
             recorder_core.top_entities(fake_client, by="bytes")
+
+
+class TestBulkRemoveProgressCallbackFailure:
+    """Regression: a failing progress callback must not abort the loop."""
+
+    def test_progress_callback_failure_is_logged(self, fake_client, caplog):
+        import logging
+
+        def cb(done, total, ok, errs):
+            if done == 1:
+                raise RuntimeError("progress exploded")
+
+        with caplog.at_level(logging.DEBUG, logger=registry_core.__name__):
+            out = registry_core.bulk_remove_entities(
+                fake_client, entity_ids=["a", "b"], dry_run=True,
+                progress_every=1, on_progress=cb,
+            )
+
+        # Loop completed despite callback failure.
+        assert out["removed"] == ["a", "b"]
+        # A DEBUG log record was emitted for the failed callback.
+        assert any(
+            "Progress callback failed" in r.message and r.levelno == logging.DEBUG
+            for r in caplog.records
+        ), [r.message for r in caplog.records]

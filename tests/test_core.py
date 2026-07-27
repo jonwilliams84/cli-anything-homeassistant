@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 from pathlib import Path
@@ -1344,6 +1345,60 @@ class TestSubentries:
         rows = subentries_core.list_all(fake_client, domain="ollama")
         assert all(r["entry_domain"] == "ollama" for r in rows)
 
+
+    def test_list_all_logs_per_entry_failure_and_continues(self, fake_client, caplog):
+        """B112 fix: one unreachable parent entry must not abort the global listing."""
+        entries = [
+            {"entry_id": "e1", "domain": "google_generative_ai_conversation", "title": "Google AI"},
+            {"entry_id": "e2", "domain": "ollama", "title": "Ollama"},
+        ]
+
+        def ws_call(msg_type, payload=None):
+            if msg_type == "config_entries/get":
+                return entries
+            if msg_type == "config_entries/subentries/list" and payload.get("entry_id") == "e1":
+                raise RuntimeError("HA unreachable")
+            return self.SAMPLE_SUBS
+
+        fake_client.ws_call = ws_call  # type: ignore[assignment]
+
+        with caplog.at_level(logging.DEBUG, logger=subentries_core.__name__):
+            rows = subentries_core.list_all(fake_client)
+
+        # e1 failed but e2 still produced rows.
+        assert all(r["entry_id"] == "e2" for r in rows)
+        assert len(rows) == len(self.SAMPLE_SUBS)
+        # The failure for e1 was logged at DEBUG.
+        assert any(
+            "e1" in r.message and "Failed to list subentries" in r.message
+            and r.levelno == logging.DEBUG
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_read_subentry_logs_abort_failure(self, fake_client, caplog):
+        """B110 fix: a failing flow-abort is logged, not silently swallowed."""
+        fake_client.set_ws("config_entries/subentries/list", self.SAMPLE_SUBS)
+        fake_client.set("POST", "config/config_entries/subentries/flow", self.FORM)
+
+        def delete(path: str):
+            if "flow/fake-flow" in path:
+                raise RuntimeError("delete failed")
+            return {}
+
+        fake_client.delete = delete  # type: ignore[assignment]
+
+        with caplog.at_level(logging.DEBUG, logger=subentries_core.__name__):
+            out = subentries_core.read_subentry(fake_client, "entry-1", "s2")
+
+        # read_subentry still returns the parsed options.
+        assert out["subentry_id"] == "s2"
+        assert out["options"]["chat_model"] == "models/gemini-3-flash-preview"
+        # The abort failure was logged at DEBUG.
+        assert any(
+            "fake-flow" in r.message and "Failed to abort subentry flow" in r.message
+            and r.levelno == logging.DEBUG
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
 
 # ────────────────────────────────────────────────────────── config_entries.walk
 

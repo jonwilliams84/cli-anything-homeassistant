@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def list_areas(client) -> list[dict]:
@@ -246,8 +249,8 @@ def bulk_remove_entities(
         if on_progress is not None and (i % progress_every == 0 or i == total):
             try:
                 on_progress(i, total, len(removed), len(failed))
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: S110 - progress callback failure must not abort the operation
+                _LOGGER.debug("Progress callback failed for %s/%s: %s", i, total, exc)
     return {"removed": removed, "failed": failed, "dry_run": dry_run, "total": total}
 
 

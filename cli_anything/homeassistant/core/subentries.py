@@ -24,7 +24,10 @@ The endpoints used:
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def list_subentries(client, entry_id: str) -> list[dict]:
@@ -84,7 +87,8 @@ def list_all(
             continue
         try:
             subs = client.ws_call("config_entries/subentries/list", {"entry_id": eid}) or []
-        except Exception:
+        except Exception as exc:  # noqa: S112 - one unreachable parent entry must not abort the global listing
+            _LOGGER.debug("Failed to list subentries for %s: %s", eid, exc)
             continue
         for s in subs:
             if subentry_type and s.get("subentry_type") != subentry_type:
@@ -120,8 +124,8 @@ def _abort_flow(client, flow_id: str) -> None:
         return
     try:
         client.delete(f"config/config_entries/subentries/flow/{flow_id}")
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: S110 - flow-abort is best-effort cleanup
+        _LOGGER.debug("Failed to abort subentry flow %s: %s", flow_id, exc)
 
 
 def _current_values_from_schema(form: dict) -> dict:
