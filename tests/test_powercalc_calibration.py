@@ -860,3 +860,127 @@ class TestBestEffortServiceOffLogs:
         assert out["delta_w"] == 1800.0
         assert any("service_off" in r.message and "failed" in r.message
                     for r in caplog.records if r.levelno == logging.DEBUG)
+
+
+# ─────────────────────────── B110 regression: calibrate_template service_off
+
+class TestCalibrateTemplateServiceOffLogs:
+    """When service_off fails during calibrate_template, the exception must
+    be logged (warning) rather than silently swallowed."""
+
+    def test_service_off_failure_logs_warning(self, caplog):
+        import logging
+        client = _Client()
+        sequence = (
+            [{"state": "100"}] * 5           # baseline
+            + [{"state": "200"}] * 5          # at 0%
+        )
+        it = iter(sequence)
+
+        def fake_get(path, params=None):
+            if path.startswith("states/"):
+                return next(it)
+            return {}
+        client.get = fake_get
+
+        orig_post = client.post
+        off_call_count = {"n": 0}
+
+        def post_with_boom(path, payload=None):
+            if path.startswith("services/fan/turn_off"):
+                off_call_count["n"] += 1
+                # Only the second call (switch-off after the walk) should fail;
+                # the first call (baseline) must succeed so calibration proceeds.
+                if off_call_count["n"] == 2:
+                    raise RuntimeError("service_off exploded")
+            return orig_post(path, payload)
+        client.post = post_with_boom
+
+        with caplog.at_level(logging.WARNING, logger=cal._LOGGER.name):
+            out = cal.calibrate_template(
+                client, "E3",
+                source_entity="fan.test", attribute="percentage",
+                service_set="fan.set_percentage", state_arg="percentage",
+                service_off="fan.turn_off",
+                states=[0],
+                baseline_seconds=0, load_seconds=0,
+                stabilisation_seconds=0, samples=5,
+                apply_=False, sleep=lambda _: None,
+            )
+        # Calibration still completes despite service_off failure
+        assert out["baseline_mean_w"] == 100
+        # A warning was logged about the failure
+        assert any(
+            "Failed to switch off" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
+
+# ─────────────────────────── B110 regression: auto_calibrate set_fixed_power
+
+class TestAutoCalibrateSetFixedPowerLogs(TestAutoCalibrate):
+    """When set_fixed_power fails during auto_calibrate (apply_=True), the
+    exception must be logged (warning) rather than silently swallowed."""
+
+    def test_set_fixed_power_failure_logs_warning(self, caplog):
+        import logging
+        from cli_anything.homeassistant.core import powercalc as pc
+
+        client = _Client()
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        def at(secs, state):
+            return _hist_point(t0 + timedelta(seconds=secs), state)
+
+        fan_hist = []
+        sm_points = []
+        # 6 clean ON transitions, each adding +1000W for 40s
+        for i in range(6):
+            base_t = 100 + i * 200
+            fan_hist.extend([at(base_t, "on"), at(base_t + 60, "off")])
+            for off in range(-30, 0, 5):
+                sm_points.append(_hist_point(
+                    t0 + timedelta(seconds=base_t + off), 200))
+            for off in range(10, 51, 5):
+                sm_points.append(_hist_point(
+                    t0 + timedelta(seconds=base_t + off), 1200))
+
+        def routed_get(path, params=None):
+            if path.startswith("history/period/"):
+                eid = (params or {}).get("filter_entity_id")
+                if eid == cal.DEFAULT_SMART_METER:
+                    return [[*sm_points]]
+                if eid == "switch.tower_fan":
+                    return [[*fan_hist]]
+            if path == "states":
+                return client.responses.get(("GET", "states"), [])
+            return {}
+        client.get = routed_get
+        self._wire_entries(client, [
+            {"entry_id": "E_FAN", "domain": "powercalc",
+             "title": "Tower Fan",
+             "options": {"entity_id": "switch.tower_fan", "power": 80}},
+        ])
+
+        # Make set_fixed_power raise.
+        orig = pc.set_fixed_power
+        pc.set_fixed_power = lambda c, eid, *, power: (_ for _ in ()).throw(
+            RuntimeError("set_fixed_power exploded"))
+        try:
+            with caplog.at_level(logging.WARNING, logger=cal._LOGGER.name):
+                out = cal.auto_calibrate(
+                    client, hours=1, min_samples=4, apply_=True,
+                )
+        finally:
+            pc.set_fixed_power = orig
+
+        c = next(c for c in out["candidates"] if c["entry_id"] == "E_FAN")
+        # The candidate is NOT marked applied because set_fixed_power failed
+        assert c["applied"] is False
+        # A warning was logged about the failure
+        assert any(
+            "Failed to set fixed power" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
