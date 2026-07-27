@@ -21,6 +21,7 @@ registry does not currently know about — useful for catching typos.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Any
 
@@ -64,6 +65,12 @@ def list_automation_webhooks(client) -> list[dict]:
         try:
             cfg = client.get(f"config/automation/config/{aid}")
         except Exception:
+            logging.getLogger(__name__).warning(
+                "Failed to fetch automation config for %s (%s)",
+                aid,
+                eid,
+                exc_info=True,
+            )
             continue
         if not isinstance(cfg, dict):
             continue
@@ -103,7 +110,10 @@ def list_mobile_app_webhooks(client) -> list[dict]:
         if isinstance(rows, list):
             return rows
     except Exception:
-        pass
+        logging.getLogger(__name__).warning(
+            "mobile_app/list_for_user failed; falling back to empty list",
+            exc_info=True,
+        )
     return []
 
 

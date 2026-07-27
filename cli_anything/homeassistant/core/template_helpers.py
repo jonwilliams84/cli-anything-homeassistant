@@ -16,6 +16,7 @@ distinct API endpoint) and adds template-specific conveniences.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 
@@ -182,7 +183,12 @@ def show(client, ident: str) -> dict:
         try:
             client.request("DELETE", f"config/config_entries/options/flow/{flow_id}")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning(
+                "Failed to abort options flow %s for entry %s",
+                flow_id,
+                entry_id,
+                exc_info=True,
+            )
 
     # Also pull the entry's basic metadata for context
     try:
