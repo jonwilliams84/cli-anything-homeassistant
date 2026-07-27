@@ -163,3 +163,165 @@ class TestSetPowerTemplateLogsReloadFailure:
         assert any("reload" in r.getMessage().lower() for r in debugs), (
             "expected a DEBUG log about the failed reload"
         )
+
+
+# ── B112: recorder.top_entities history-fetch failure logs ──────────────────
+
+class _RaisingHistoryClient:
+    """Fake client whose ``get`` raises for history/period paths."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def get(self, path: str, params: dict | None = None):
+        self.calls.append({"verb": "GET", "path": path, "params": params})
+        if path.startswith("history/period/"):
+            raise RuntimeError("history endpoint unreachable")
+        if path == "states":
+            return [{"entity_id": "sensor.bad", "attributes": {}}]
+        return []
+
+    def post(self, path: str, payload=None):
+        self.calls.append({"verb": "POST", "path": path, "payload": payload})
+        return {}
+
+    def delete(self, path: str):
+        self.calls.append({"verb": "DELETE", "path": path})
+        return {}
+
+    def ws_call(self, msg_type: str, payload: dict | None = None):
+        self.calls.append({"verb": "WS", "msg_type": msg_type, "payload": payload})
+        return {}
+
+
+class TestTopEntitiesLogsHistoryFetchFailure:
+    def test_logs_debug_when_history_fetch_fails(self, caplog):
+        """B112 fix: a failing per-entity history fetch is logged, not
+        silently skipped via try/except/continue."""
+        from cli_anything.homeassistant.core import recorder as recorder_core
+
+        client = _RaisingHistoryClient()
+
+        with caplog.at_level(logging.DEBUG, logger=recorder_core._LOGGER.name):
+            result = recorder_core.top_entities(client, entity_ids=["sensor.bad"])
+
+        # The failing entity is not in the result …
+        assert all(r["entity_id"] != "sensor.bad" for r in result)
+        # … but a DEBUG record was emitted mentioning the entity.
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("sensor.bad" in r.getMessage() for r in debugs), (
+            "expected a DEBUG log mentioning the skipped entity sensor.bad"
+        )
+
+
+# ── B112: references._ui_configs config-fetch failure logs ──────────────────
+
+class _RaisingConfigClient:
+    """Fake client whose ``get`` raises for config/<domain>/config paths."""
+
+    def __init__(self, *, bad_cfg_ids: set[str] | None = None):
+        self.calls: list[dict] = []
+        self._bad_cfg_ids = bad_cfg_ids or set()
+
+    def get(self, path: str, params: dict | None = None):
+        self.calls.append({"verb": "GET", "path": path, "params": params})
+        if path == "states":
+            return [
+                {"entity_id": "automation.good", "attributes": {"id": "good"}},
+                {"entity_id": "automation.bad", "attributes": {"id": "bad"}},
+            ]
+        if path.startswith("config/automation/config/"):
+            cfg_id = path.rsplit("/", 1)[-1]
+            if cfg_id in self._bad_cfg_ids:
+                raise RuntimeError("config endpoint unreadable")
+            return {"id": cfg_id, "triggers": []}
+        return []
+
+    def post(self, path: str, payload=None):
+        self.calls.append({"verb": "POST", "path": path, "payload": payload})
+        return {}
+
+    def delete(self, path: str):
+        self.calls.append({"verb": "DELETE", "path": path})
+        return {}
+
+    def ws_call(self, msg_type: str, payload: dict | None = None):
+        self.calls.append({"verb": "WS", "msg_type": msg_type, "payload": payload})
+        return []
+
+
+class TestUiConfigsLogsConfigFetchFailure:
+    def test_logs_debug_when_config_fetch_fails(self, caplog):
+        """B112 fix: a failing per-entity config fetch is logged, not
+        silently skipped via try/except/continue."""
+        from cli_anything.homeassistant.core import references as references_core
+
+        client = _RaisingConfigClient(bad_cfg_ids={"bad"})
+
+        with caplog.at_level(logging.DEBUG, logger=references_core._LOGGER.name):
+            result = references_core._ui_configs(client, "automation")
+
+        # The failing automation is not in the result …
+        assert all(eid != "automation.bad" for eid, _cfg in result)
+        # … but a DEBUG record was emitted mentioning it.
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("bad" in r.getMessage() for r in debugs), (
+            "expected a DEBUG log mentioning the skipped config id 'bad'"
+        )
+
+
+# ── B110: references._template_helper_entries abort-flow failure logs ────────
+
+class _TemplateFlowClient:
+    """Fake client that returns template entries but fails to abort the
+    options flow via ``delete``."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def get(self, path: str, params: dict | None = None):
+        self.calls.append({"verb": "GET", "path": path, "params": params})
+        return []
+
+    def post(self, path: str, payload=None):
+        self.calls.append({"verb": "POST", "path": path, "payload": payload})
+        if path == "config/config_entries/options/flow":
+            return {
+                "flow_id": "flow-1",
+                "data_schema": [
+                    {"name": "template", "description": {"suggested_value": "{{ 1 }}"}},
+                ],
+            }
+        return {}
+
+    def delete(self, path: str):
+        self.calls.append({"verb": "DELETE", "path": path})
+        if path.startswith("config/config_entries/options/flow/"):
+            raise RuntimeError("cannot abort options flow")
+        return {}
+
+    def ws_call(self, msg_type: str, payload: dict | None = None):
+        self.calls.append({"verb": "WS", "msg_type": msg_type, "payload": payload})
+        if msg_type == "config_entries/get":
+            return [{"entry_id": "E1", "domain": "template", "title": "My Template"}]
+        return []
+
+
+class TestTemplateHelperEntriesLogsAbortFlowFailure:
+    def test_logs_debug_when_abort_flow_fails(self, caplog):
+        """B110 fix: a failing options-flow abort is logged, not silently
+        swallowed via try/except/pass."""
+        from cli_anything.homeassistant.core import references as references_core
+
+        client = _TemplateFlowClient()
+
+        with caplog.at_level(logging.DEBUG, logger=references_core._LOGGER.name):
+            result = references_core._template_helper_entries(client)
+
+        # The entry is still returned (abort failure doesn't block it) …
+        assert any(e["entry_id"] == "E1" for e in result)
+        # … and a DEBUG record was emitted about the abort failure.
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("abort" in r.getMessage().lower() for r in debugs), (
+            "expected a DEBUG log about the failed options-flow abort"
+        )
