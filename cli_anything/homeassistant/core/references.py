@@ -21,8 +21,11 @@ all the UI-managed integrations above are.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Iterable
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _walk_strings(obj: Any, path: str = ""):
@@ -92,8 +95,9 @@ def _ui_configs(client, domain: str) -> list[tuple[str, dict]]:
             cfg = client.get(f"config/{domain}/config/{cfg_id}")
             if isinstance(cfg, dict):
                 out.append((eid, cfg))
-        except Exception:
-            # not UI-managed (YAML-only) — skip silently
+        except Exception as exc:  # noqa: BLE001
+            # not UI-managed (YAML-only) — log and skip
+            _LOGGER.debug("config fetch failed for %s/%s: %s", domain, cfg_id, exc)
             continue
     return out
 
@@ -128,9 +132,9 @@ def _template_helper_entries(client) -> list[dict]:
             flow_id = init.get("flow_id")
             if flow_id:
                 try:
-                    client.request("DELETE", f"config/config_entries/options/flow/{flow_id}")
-                except Exception:
-                    pass
+                    client.delete(f"config/config_entries/options/flow/{flow_id}")
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("failed to abort options flow %s: %s", flow_id, exc)
             out.append({"entry_id": entry_id, "title": e.get("title"), "options": opts})
         except Exception:
             continue

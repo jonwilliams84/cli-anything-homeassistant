@@ -9,8 +9,11 @@ historic data.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _iso(dt: datetime) -> str:
@@ -217,7 +220,8 @@ def top_entities(
                     "minimal_response": "true",
                 },
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("history fetch failed for %s: %s", eid, exc)
             continue
         points: list = []
         if isinstance(raw, list) and raw and isinstance(raw[0], list):
