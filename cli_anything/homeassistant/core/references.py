@@ -136,7 +136,8 @@ def _template_helper_entries(client) -> list[dict]:
                 except Exception as exc:  # noqa: BLE001
                     _LOGGER.debug("failed to abort options flow %s: %s", flow_id, exc)
             out.append({"entry_id": entry_id, "title": e.get("title"), "options": opts})
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("template helper read failed for %s: %s", entry_id, exc)
             continue
     return out
 
@@ -156,8 +157,8 @@ def _lovelace_configs(client) -> list[tuple[str, dict]]:
         cfg = client.ws_call("lovelace/config", {})
         if isinstance(cfg, dict):
             out.append(("lovelace", cfg))
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("lovelace main config fetch failed: %s", exc)
     for b in boards:
         url = b.get("url_path")
         if not url:
@@ -166,7 +167,8 @@ def _lovelace_configs(client) -> list[tuple[str, dict]]:
             cfg = client.ws_call("lovelace/config", {"url_path": url})
             if isinstance(cfg, dict):
                 out.append((url, cfg))
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("lovelace config fetch failed for %s: %s", url, exc)
             continue
     return out
 
