@@ -325,3 +325,105 @@ class TestTemplateHelperEntriesLogsAbortFlowFailure:
         assert any("abort" in r.getMessage().lower() for r in debugs), (
             "expected a DEBUG log about the failed options-flow abort"
         )
+
+
+# ── B112: references._template_helper_entries entry read failure logs ────────
+
+class _TemplateEntryReadFailureClient:
+    """Fake client that returns a template entry but raises while reading its
+    options flow."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def get(self, path: str, params: dict | None = None):
+        self.calls.append({"verb": "GET", "path": path, "params": params})
+        return []
+
+    def post(self, path: str, payload=None):
+        self.calls.append({"verb": "POST", "path": path, "payload": payload})
+        if path == "config/config_entries/options/flow":
+            raise RuntimeError("options flow unavailable")
+        return {}
+
+    def delete(self, path: str):
+        self.calls.append({"verb": "DELETE", "path": path})
+        return {}
+
+    def ws_call(self, msg_type: str, payload: dict | None = None):
+        self.calls.append({"verb": "WS", "msg_type": msg_type, "payload": payload})
+        if msg_type == "config_entries/get":
+            return [{"entry_id": "E2", "domain": "template", "title": "Broken"}]
+        return []
+
+
+class TestTemplateHelperEntriesLogsEntryReadFailure:
+    def test_logs_debug_when_entry_read_fails(self, caplog):
+        """B112 fix: a failing per-entry options-flow read is logged, not
+        silently skipped via try/except/continue."""
+        from cli_anything.homeassistant.core import references as references_core
+
+        client = _TemplateEntryReadFailureClient()
+
+        with caplog.at_level(logging.DEBUG, logger=references_core._LOGGER.name):
+            result = references_core._template_helper_entries(client)
+
+        # The broken entry is skipped …
+        assert not any(e["entry_id"] == "E2" for e in result)
+        # … and a DEBUG record was emitted mentioning E2.
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("E2" in r.getMessage() for r in debugs), (
+            "expected a DEBUG log mentioning the skipped entry E2"
+        )
+
+
+# ── B110/B112: references._lovelace_configs fetch failures log ──────────────
+
+class _LovelaceFailureClient:
+    """Fake client where every lovelace/config call raises."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def get(self, path: str, params: dict | None = None):
+        self.calls.append({"verb": "GET", "path": path, "params": params})
+        return []
+
+    def post(self, path: str, payload=None):
+        self.calls.append({"verb": "POST", "path": path, "payload": payload})
+        return {}
+
+    def delete(self, path: str):
+        self.calls.append({"verb": "DELETE", "path": path})
+        return {}
+
+    def ws_call(self, msg_type: str, payload: dict | None = None):
+        self.calls.append({"verb": "WS", "msg_type": msg_type, "payload": payload})
+        if msg_type == "lovelace/dashboards/list":
+            return [{"url_path": "mobile"}]
+        if msg_type == "lovelace/config":
+            raise RuntimeError("lovelace config unavailable")
+        return []
+
+
+class TestLovelaceConfigsLogsFetchFailures:
+    def test_logs_debug_when_main_and_dashboard_fetches_fail(self, caplog):
+        """B110/B112 fix: failing lovelace config fetches are logged, not
+        silently swallowed via try/except/pass or try/except/continue."""
+        from cli_anything.homeassistant.core import references as references_core
+
+        client = _LovelaceFailureClient()
+
+        with caplog.at_level(logging.DEBUG, logger=references_core._LOGGER.name):
+            result = references_core._lovelace_configs(client)
+
+        # No dashboards are returned …
+        assert result == []
+        # … but DEBUG records were emitted for the main and per-dashboard failures.
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("lovelace main config" in r.getMessage().lower() for r in debugs), (
+            "expected a DEBUG log about the failed main lovelace config fetch"
+        )
+        assert any("mobile" in r.getMessage() for r in debugs), (
+            "expected a DEBUG log mentioning the failed mobile dashboard fetch"
+        )
