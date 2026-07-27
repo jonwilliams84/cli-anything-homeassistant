@@ -626,7 +626,9 @@ def calibrate(
         except Exception:  # noqa: BLE001 — teardown is best-effort
             _LOGGER.debug(
                 "best-effort service_off %s for %s failed",
-                service_off, entry_id, exc_info=True,
+                service_off,
+                entry_id,
+                exc_info=True,
             )
 
     applied = False

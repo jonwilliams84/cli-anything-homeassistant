@@ -790,7 +790,8 @@ def set_fixed_power(client, entry_id: str, *, power: float, reload: bool = True)
         except Exception:  # noqa: BLE001 — reload is best-effort
             _LOGGER.debug(
                 "best-effort reload of %s after set_fixed_power failed",
-                entry_id, exc_info=True,
+                entry_id,
+                exc_info=True,
             )
     return resp
 
@@ -906,7 +907,8 @@ def set_standby(
         except Exception:  # noqa: BLE001 — reload is best-effort
             _LOGGER.debug(
                 "best-effort reload of %s after set_standby failed",
-                entry_id, exc_info=True,
+                entry_id,
+                exc_info=True,
             )
     return resp
 
