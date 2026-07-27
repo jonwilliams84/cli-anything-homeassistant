@@ -819,3 +819,44 @@ class TestCli:
         assert captured["quiet_seconds"] == 15.0
         assert captured["min_samples"] == 10
         assert captured["apply_"] is False
+
+
+# ── regression: best-effort service_off logs instead of silently passing (B110) ──
+
+class TestBestEffortServiceOffLogs:
+    """When service_off fails during calibrate, the exception must be logged
+    (debug) rather than silently swallowed."""
+
+    def test_calibrate_logs_service_off_failure(self, caplog):
+        import logging
+        client = _Client()
+        readings = iter([{"state": "200"}] * 6 + [{"state": "2000"}] * 6)
+
+        def fake_get(path, params=None):
+            if path.startswith("states/"):
+                return next(readings)
+            return {}
+        client.get = fake_get
+        client.responses[("WS", "config_entries/get")] = []
+
+        # Make service_off POST raise.
+        orig_post = client.post
+
+        def post_with_boom(path, payload=None):
+            if path.startswith("services/switch/turn_off"):
+                raise RuntimeError("service_off exploded")
+            return orig_post(path, payload)
+        client.post = post_with_boom
+
+        with caplog.at_level(logging.DEBUG, logger=cal._LOGGER.name):
+            out = cal.calibrate(
+                client, "E1",
+                service_on="switch.turn_on", target="switch.tower_fan",
+                service_off="switch.turn_off",
+                baseline_seconds=0, load_seconds=0,
+                stabilisation_seconds=0, samples=6,
+                apply_=False, sleep=lambda _: None,
+            )
+        assert out["delta_w"] == 1800.0
+        assert any("service_off" in r.message and "failed" in r.message
+                    for r in caplog.records if r.levelno == logging.DEBUG)
