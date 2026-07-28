@@ -427,3 +427,76 @@ class TestLovelaceConfigsLogsFetchFailures:
         assert any("mobile" in r.getMessage() for r in debugs), (
             "expected a DEBUG log mentioning the failed mobile dashboard fetch"
         )
+
+
+# ── B110: lovelace lint --check-types logs list_resources failure ──────────
+
+class TestLovelaceLintLogsListResourcesFailure:
+    """B110 fix: when lovelace_core.list_resources raises during
+    ``lovelace lint --check-types``, the exception is logged (not silently
+    swallowed via try/except/pass)."""
+
+    def test_logs_debug_when_list_resources_fails(self, caplog, monkeypatch):
+        from click.testing import CliRunner
+
+        from cli_anything.homeassistant import homeassistant_cli as cli_mod
+        from cli_anything.homeassistant.core import lovelace as lovelace_core
+
+        # Fake client — only needs to support the calls made by lovelace_lint.
+        class _FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, path, params=None):
+                self.calls.append(("GET", path))
+                return {}
+
+            def ws_call(self, msg_type, payload=None):
+                self.calls.append(("WS", msg_type))
+                if msg_type == "lovelace/config":
+                    return {"views": []}
+                if msg_type == "sensor/list" or msg_type == "state/list":
+                    return []
+                return []
+
+        fake_client = _FakeClient()
+        monkeypatch.setattr(cli_mod, "make_client", lambda ctx: fake_client)
+
+        # Make list_states return empty so all_eids is empty.
+        monkeypatch.setattr(
+            cli_mod.states_core, "list_states", lambda c: []
+        )
+        # Make list_resources raise — this is the path that used to be
+        # try/except/pass.
+        def _boom(client):
+            raise RuntimeError("list_resources unavailable")
+
+        monkeypatch.setattr(cli_mod.lovelace_core, "list_resources", _boom)
+
+        runner = CliRunner()
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="cli_anything.homeassistant.homeassistant_cli",
+        ):
+            result = runner.invoke(
+                cli_mod.cli,
+                ["--json", "lovelace", "lint", "default", "--check-types"],
+                obj={
+                    "url": "http://x",
+                    "token": "t",
+                    "verify_ssl": False,
+                    "timeout": 5,
+                    "as_json": True,
+                    "config_path": None,
+                },
+                catch_exceptions=False,
+            )
+
+        # The command should still succeed (exit 0) — the failure is
+        # non-fatal, just logged.
+        assert result.exit_code == 0, result.output
+
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any(
+            "lovelace resources" in r.getMessage().lower() for r in debugs
+        ), "expected a DEBUG log about the failed list_resources call"

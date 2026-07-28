@@ -1995,6 +1995,77 @@ class TestBackend:
             client.get("")
         assert "Cannot reach" in str(exc.value)
 
+    def test_token_none_defaults_to_empty(self):
+        """token=None should behave identically to token='' (no hardcoded password)."""
+        client = HomeAssistantClient(url="http://h:8123", token=None)
+        assert client.token == ""
+        assert "Authorization" not in client.session.headers
+
+    def test_token_none_ws_auth_sends_empty(self):
+        """When token is None, ws auth should send an empty access_token."""
+        import json as _json
+
+        client = HomeAssistantClient(url="http://h:8123", token=None)
+        sent = []
+
+        class FakeWS:
+            def __init__(self):
+                self._recv_queue = [
+                    _json.dumps({"type": "auth_required"}),
+                    _json.dumps({"type": "auth_ok"}),
+                    _json.dumps({"type": "result", "id": 1, "success": True, "result": []}),
+                ]
+
+            def recv(self):
+                return self._recv_queue.pop(0)
+
+            def send(self, data):
+                sent.append(data)
+
+            def close(self):
+                pass
+
+        fake_ws = FakeWS()
+        client._ws_run(fake_ws, "config/area_registry/list", None)
+        auth_msg = _json.loads(sent[0])
+        assert auth_msg["type"] == "auth"
+        assert auth_msg["access_token"] == ""
+
+    def test_ws_close_exception_logged(self, caplog):
+        """ws_call should log (not silently swallow) an exception from ws.close()."""
+        from cli_anything.homeassistant.utils import homeassistant_backend as backend
+
+        client = HomeAssistantClient(url="http://h:8123", token="x")
+
+        class FakeWS:
+            def __init__(self):
+                self._recv_queue = [
+                    json.dumps({"type": "auth_required"}),
+                    json.dumps({"type": "auth_ok"}),
+                    json.dumps({"type": "result", "id": 1, "success": True, "result": []}),
+                ]
+
+            def recv(self):
+                return self._recv_queue.pop(0)
+
+            def send(self, data):
+                pass
+
+            def close(self):
+                raise OSError("close failed")
+
+        # Monkeypatch create_connection to return our fake WS
+        orig_ws = backend.websocket
+        try:
+            backend.websocket = type("FakeWSModule", (), {"create_connection": staticmethod(lambda *a, **k: FakeWS())})()
+
+            with caplog.at_level("DEBUG", logger="cli_anything.homeassistant.utils.homeassistant_backend"):
+                result = client.ws_call("config/area_registry/list", None)
+            assert result == []
+            assert any("closing websocket" in r.message for r in caplog.records)
+        finally:
+            backend.websocket = orig_ws
+
 
 # ────────────────────────────────────────────────────────── CLI helpers
 

@@ -8,6 +8,7 @@ one or more API calls handled here.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from itertools import count
@@ -23,6 +24,8 @@ except ImportError:  # pragma: no cover
 
 
 _DEFAULT_TIMEOUT = 30
+
+_logger = logging.getLogger(__name__)
 
 
 def _normalize_base(url: str) -> str:
@@ -59,12 +62,12 @@ class HomeAssistantClient:
     def __init__(
         self,
         url: str = "http://localhost:8123",
-        token: str = "",
+        token: str | None = None,
         verify_ssl: bool = True,
         timeout: int = _DEFAULT_TIMEOUT,
     ):
         self.base_url = _normalize_base(url)
-        self.token = token
+        self.token = token or ""
         self.verify_ssl = verify_ssl
         self.timeout = timeout
         self.session = requests.Session()
@@ -208,7 +211,7 @@ class HomeAssistantClient:
             try:
                 ws.close()
             except Exception:  # pragma: no cover
-                pass
+                _logger.debug("error closing websocket", exc_info=True)
 
     def _ws_run(self, ws, msg_type: str, payload: dict | None) -> Any:
         """Auth + single command exchange on an open WebSocket."""
