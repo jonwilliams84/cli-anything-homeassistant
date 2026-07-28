@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 import sys
 import threading
@@ -3156,13 +3157,12 @@ def lovelace_lint(ctx, url_path, check_types, check_templates):
         # exact card names, so we just allow ALL custom: prefixes when there are
         # any resources registered).
         try:
-            resources = lovelace_core.list_resources(client)
-            if resources:
-                # We can't validate custom cards by name without per-resource
-                # introspection, so don't flag any custom: prefix.
-                pass
+            lovelace_core.list_resources(client)
         except Exception:
-            pass
+            logging.getLogger(__name__).debug(
+                "could not list lovelace resources; custom cards may be flagged",
+                exc_info=True,
+            )
     # Build the set of view paths on this dashboard so we can validate
     # tap_action navigation_paths.
     known_view_paths = {
