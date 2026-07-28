@@ -319,8 +319,8 @@ class HomeAssistantClient:
                         )
                     )
                 except Exception:
-                    pass
+                    _logger.debug("error sending unsubscribe_events", exc_info=True)
             try:
                 ws.close()
             except Exception:  # pragma: no cover
-                pass
+                _logger.debug("error closing websocket", exc_info=True)
