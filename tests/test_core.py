@@ -2066,6 +2066,106 @@ class TestBackend:
         finally:
             backend.websocket = orig_ws
 
+    def test_ws_subscribe_unsubscribe_exception_logged(self, caplog):
+        """ws_subscribe should log (not silently swallow) an exception from the
+        best-effort unsubscribe_events send in its finally block."""
+        import threading
+
+        from cli_anything.homeassistant.utils import homeassistant_backend as backend
+
+        client = HomeAssistantClient(url="http://h:8123", token="x")
+        stop_event = threading.Event()
+        stop_event.set()  # exit the recv loop immediately
+
+        class FakeWS:
+            def __init__(self):
+                self._recv_queue = [
+                    json.dumps({"type": "auth_required"}),
+                    json.dumps({"type": "auth_ok"}),
+                ]
+                self._send_count = 0
+
+            def recv(self):
+                return self._recv_queue.pop(0)
+
+            def settimeout(self, seconds):
+                pass
+
+            def send(self, data):
+                self._send_count += 1
+                # 1st send = auth, 2nd send = subscribe, 3rd = unsubscribe
+                if self._send_count == 3:
+                    raise OSError("unsubscribe send failed")
+
+            def close(self):
+                pass
+
+        fake_module = type(
+            "FakeWSModule",
+            (),
+            {
+                "create_connection": staticmethod(lambda *a, **k: FakeWS()),
+                "WebSocketTimeoutException": type("WebSocketTimeoutException", (Exception,), {}),
+                "WebSocketException": type("WebSocketException", (Exception,), {}),
+            },
+        )
+        orig_ws = backend.websocket
+        try:
+            backend.websocket = fake_module
+            with caplog.at_level("DEBUG", logger="cli_anything.homeassistant.utils.homeassistant_backend"):
+                client.ws_subscribe("subscribe_events", {"event_type": "state_changed"}, lambda ev: None, stop_event)
+            assert any("error sending unsubscribe_events" in r.message for r in caplog.records)
+        finally:
+            backend.websocket = orig_ws
+
+    def test_ws_subscribe_close_exception_logged(self, caplog):
+        """ws_subscribe should log (not silently swallow) an exception from
+        ws.close() in its finally block."""
+        import threading
+
+        from cli_anything.homeassistant.utils import homeassistant_backend as backend
+
+        client = HomeAssistantClient(url="http://h:8123", token="x")
+        stop_event = threading.Event()
+        stop_event.set()  # exit the recv loop immediately
+
+        class FakeWS:
+            def __init__(self):
+                self._recv_queue = [
+                    json.dumps({"type": "auth_required"}),
+                    json.dumps({"type": "auth_ok"}),
+                ]
+
+            def recv(self):
+                return self._recv_queue.pop(0)
+
+            def settimeout(self, seconds):
+                pass
+
+            def send(self, data):
+                pass
+
+            def close(self):
+                raise OSError("close failed")
+
+        fake_module = type(
+            "FakeWSModule",
+            (),
+            {
+                "create_connection": staticmethod(lambda *a, **k: FakeWS()),
+                "WebSocketTimeoutException": type("WebSocketTimeoutException", (Exception,), {}),
+                "WebSocketException": type("WebSocketException", (Exception,), {}),
+            },
+        )
+        orig_ws = backend.websocket
+        try:
+            backend.websocket = fake_module
+            with caplog.at_level("DEBUG", logger="cli_anything.homeassistant.utils.homeassistant_backend"):
+                client.ws_subscribe("subscribe_events", {"event_type": "state_changed"}, lambda ev: None, stop_event)
+            assert any("error closing websocket" in r.message for r in caplog.records)
+        finally:
+            backend.websocket = orig_ws
+
 
 # ────────────────────────────────────────────────────────── CLI helpers
 
