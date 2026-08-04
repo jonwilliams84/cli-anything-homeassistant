@@ -4,6 +4,23 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.47.1] — 2026-08-04
+
+### Fixed
+- **`service call` / `event fire` / `ws` — `str:` prefix to force string
+  values.** `-D` / `--data` values that are valid JSON were silently
+  coerced to dicts/lists/numbers/booleans by `parse_kv_pairs` (and the
+  WebSocket `--data` path). This is desirable for most service data but
+  broke `mqtt.publish` whose `payload` field must arrive at Home Assistant
+  as a **string** — a JSON payload like `{"contact":false}` was turned
+  into a dict, the call returned HTTP 200, and the published message was
+  unparseable by every subscriber with no error reported anywhere. Added
+  an explicit `str:` prefix: `-D 'payload=str:{"contact":false}'` keeps
+  the value as a literal string. Existing JSON coercion for numbers,
+  booleans, lists and nested objects is unchanged. To send a value that
+  literally starts with `str:`, use `str:str:...`. The `--data` help text
+  for `service call` and `ws` now documents the convention.
+
 ## [1.47.0] — 2026-07-19
 
 ### Security
