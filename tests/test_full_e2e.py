@@ -23,6 +23,10 @@ import pytest
 
 from cli_anything.homeassistant.core import (
     automation as automation_core,
+    device_class_units as device_class_units_core,
+    frontend_meta as frontend_meta_core,
+    state_stream as state_stream_core,
+    template_ws as template_ws_core,
     events as events_core,
     history as history_core,
     project,
@@ -993,3 +997,211 @@ class TestLiveScriptEngineCore:
         one = sorted(sources)[0]
         assert script_engine_core.entity_source_for(live_client, one) == sources[one]
         assert script_engine_core.entity_source_for(live_client, "light.ghost_xyz") is None
+
+
+class TestLiveFrontendTemplateWs:
+    """Live checks for the frontend/template-ws refine pass.
+
+    These WS commands (`render_template`, `get_panels`, `frontend/*`,
+    `integration/descriptions`, `sensor/*`, `subscribe_entities`) ship with
+    every HA build the harness supports, so they are asserted, not probed.
+    """
+
+    def test_render_template_keeps_native_type(self, live_client):
+        out = template_ws_core.render(live_client, "{{ 1 + 2 }}")
+        assert out["result"] == 3, out
+        assert isinstance(out["result"], int)
+
+    def test_render_template_listeners_name_the_entity(self, live_client):
+        out = template_ws_core.render(
+            live_client, "{{ states('persistent_notification.x') }}"
+        )
+        assert out["listeners"]["entities"] == ["persistent_notification.x"]
+
+    def test_listeners_all_flag_for_full_scan(self, live_client):
+        block = template_ws_core.listeners(live_client, "{{ states | count }}")
+        assert block["all"] is True
+
+    def test_depends_on_matches_listeners(self, live_client):
+        tpl = "{{ states('sun.sun') }}"
+        assert template_ws_core.depends_on(live_client, tpl, "sun.sun") is True
+        assert template_ws_core.depends_on(live_client, tpl, "light.nope") is False
+
+    def test_validate_reports_a_broken_template(self, live_client):
+        out = template_ws_core.validate(live_client, "{{ 1 | no_such_filter }}")
+        assert out["valid"] is False
+        assert out["error"]
+
+    def test_validate_accepts_a_good_template(self, live_client):
+        assert template_ws_core.validate(live_client, "{{ now().year }}")["valid"] is True
+
+    def test_panels_include_the_default_dashboard(self, live_client):
+        rows = frontend_meta_core.list_panels(live_client)
+        assert rows and all("url_path" in r for r in rows)
+        assert "lovelace" in {r["url_path"] for r in rows}
+
+    def test_get_panel_round_trip(self, live_client):
+        one = frontend_meta_core.list_panels(live_client)[0]
+        assert frontend_meta_core.get_panel(live_client, one["url_path"]) == one
+
+    def test_get_panel_unknown_raises(self, live_client):
+        with pytest.raises(ValueError):
+            frontend_meta_core.get_panel(live_client, "no_such_panel_xyz")
+
+    def test_frontend_version(self, live_client):
+        assert frontend_meta_core.frontend_version(live_client).get("version")
+
+    def test_translations_for_a_component(self, live_client):
+        res = frontend_meta_core.translations(
+            live_client, category="entity_component", integration="person"
+        )
+        assert isinstance(res, dict)
+
+    def test_icons_category(self, live_client):
+        assert isinstance(frontend_meta_core.icons(live_client, category="entity"), dict)
+
+    def test_integration_catalog_has_core_entries(self, live_client):
+        rows = frontend_meta_core.list_integrations(live_client)
+        assert len(rows) > 100
+        domains = {r["domain"] for r in rows}
+        assert "hue" in domains
+        assert frontend_meta_core.find_integration(live_client, "hue")["source"] == "core"
+
+    def test_integration_catalog_config_flow_filter(self, live_client):
+        rows = frontend_meta_core.list_integrations(live_client, config_flow_only=True)
+        assert rows and all(r["config_flow"] for r in rows)
+
+    def _skip_without_sensor_domain(self, exc):
+        """`sensor/*` WS commands are registered by the sensor integration.
+
+        A bare test config never loads it, so `unknown_command` here means
+        "this HA has no sensors", not a harness bug.
+        """
+        if "unknown_command" in str(exc):
+            pytest.skip("sensor integration not loaded in this HA config")
+        raise exc
+
+    def test_numeric_device_classes_include_temperature(self, live_client):
+        try:
+            classes = device_class_units_core.numeric_device_classes(live_client)
+        except Exception as exc:  # noqa: BLE001
+            self._skip_without_sensor_domain(exc)
+        assert "temperature" in classes
+        assert device_class_units_core.is_numeric_device_class(live_client, "temperature")
+
+    def test_temperature_units_are_convertible(self, live_client):
+        try:
+            units = device_class_units_core.sensor_convertible_units(live_client, "temperature")
+        except Exception as exc:  # noqa: BLE001
+            self._skip_without_sensor_domain(exc)
+        assert "°C" in units and "°F" in units
+        assert device_class_units_core.can_convert_to(live_client, "temperature", "°F")
+        assert not device_class_units_core.can_convert_to(live_client, "temperature", "kWh")
+
+    def test_unknown_device_class_has_no_units(self, live_client):
+        try:
+            units = device_class_units_core.sensor_convertible_units(live_client, "bogus")
+        except Exception as exc:  # noqa: BLE001
+            self._skip_without_sensor_domain(exc)
+        assert units == []
+
+    def test_entities_snapshot_matches_rest_states(self, live_client):
+        snap = state_stream_core.entities_snapshot(live_client, timeout_seconds=20)
+        rest = {s["entity_id"] for s in states_core.list_states(live_client)}
+        assert snap and set(snap) == rest
+
+    def test_entities_snapshot_entity_filter(self, live_client):
+        one = sorted({s["entity_id"] for s in states_core.list_states(live_client)})[0]
+        snap = state_stream_core.entities_snapshot(
+            live_client, entity_ids=[one], timeout_seconds=20
+        )
+        assert set(snap) == {one}
+
+
+class TestCLIFrontendTemplateWsSubprocess(TestCLISubprocess):
+    """The same surfaces through the installed CLI."""
+
+    def test_help_lists_new_groups(self, hass_instance):
+        r = self._run(["--help"], hass_instance)
+        assert r.returncode == 0
+        for grp in ("template-ws", "panel"):
+            assert grp in r.stdout, f"missing {grp!r} in --help output"
+
+    def test_template_ws_render_value_only(self, hass_instance):
+        r = self._run(["--json", "template-ws", "render", "{{ 6 * 7 }}", "--value-only"],
+                      hass_instance)
+        assert json.loads(r.stdout) == 42
+
+    def test_template_ws_listeners_entities_only(self, hass_instance):
+        r = self._run(
+            ["--json", "template-ws", "listeners", "{{ states('sun.sun') }}", "--entities-only"],
+            hass_instance,
+        )
+        assert json.loads(r.stdout) == ["sun.sun"]
+
+    def test_template_ws_uses_exit_code(self, hass_instance):
+        ok = self._run(
+            ["--json", "template-ws", "uses", "sun.sun", "{{ states('sun.sun') }}", "--exit-code"],
+            hass_instance,
+        )
+        assert ok.returncode == 0
+        bad = self._run(
+            ["--json", "template-ws", "uses", "light.nope", "{{ states('sun.sun') }}",
+             "--exit-code"],
+            hass_instance, check=False,
+        )
+        assert bad.returncode == 1
+
+    def test_template_ws_validate_exit_code(self, hass_instance):
+        r = self._run(["--json", "template-ws", "validate", "{{ 1 | no_such_filter }}"],
+                      hass_instance, check=False)
+        assert r.returncode != 0
+
+    def test_panel_list_and_get(self, hass_instance):
+        rows = json.loads(self._run(["--json", "panel", "list"], hass_instance).stdout)
+        assert rows
+        one = rows[0]["url_path"]
+        got = json.loads(self._run(["--json", "panel", "get", one], hass_instance).stdout)
+        assert got["url_path"] == one
+
+    def test_panel_dashboards_subset_of_list(self, hass_instance):
+        all_paths = {
+            r["url_path"]
+            for r in json.loads(self._run(["--json", "panel", "list"], hass_instance).stdout)
+        }
+        dash = json.loads(self._run(["--json", "panel", "dashboards"], hass_instance).stdout)
+        assert {d["url_path"] for d in dash} <= all_paths
+
+    def test_frontend_version(self, hass_instance):
+        r = self._run(["--json", "frontend", "version"], hass_instance)
+        assert json.loads(r.stdout).get("version")
+
+    def test_system_integrations_domains_only(self, hass_instance):
+        domains = json.loads(
+            self._run(["--json", "system", "integrations", "--domains-only"], hass_instance).stdout
+        )
+        # `hue` only appears once brand entries are unpacked (it lives under
+        # the `philips` brand in HA's generated catalog).
+        assert "hue" in domains
+        assert "sun" in domains
+
+    def test_entity_convertible_units_exit_code(self, hass_instance):
+        good = self._run(
+            ["--json", "entity", "convertible-units", "--device-class", "temperature",
+             "--unit", "°F", "--exit-code"],
+            hass_instance, check=False,
+        )
+        self._skip_if_unknown_command(good, "sensor/device_class_convertible_units")
+        assert good.returncode == 0
+        bad = self._run(
+            ["--json", "entity", "convertible-units", "--device-class", "temperature",
+             "--unit", "kWh", "--exit-code"],
+            hass_instance, check=False,
+        )
+        assert bad.returncode == 1
+
+    def test_state_stream_snapshot_ids_only(self, hass_instance):
+        ids = json.loads(
+            self._run(["--json", "state-stream", "snapshot", "--ids-only"], hass_instance).stdout
+        )
+        assert ids == sorted(ids) and ids
