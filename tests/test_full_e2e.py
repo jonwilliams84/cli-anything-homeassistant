@@ -28,6 +28,7 @@ from cli_anything.homeassistant.core import (
     project,
     registry as registry_core,
     script as script_core,
+    script_engine as script_engine_core,
     services as services_core,
     states as states_core,
     system as system_core,
@@ -716,3 +717,279 @@ class TestCLISubprocess:
         assert data["dry_run"] is True
         assert data["domain"] == "number"
         assert data["service"] == "set_value"
+
+    # ─────────────────────────────── v7: script-engine (`action`) group
+
+    def test_v7_action_run_live(self, hass_instance):
+        """`action run` executes an ad-hoc sequence through HA's script engine."""
+        r = self._run(
+            ["--json", "action", "run",
+             "--sequence",
+             json.dumps([
+                 {"action": "persistent_notification.create",
+                  "data": {"title": "v7 probe",
+                           "message": "cli-anything action run",
+                           "notification_id": "cli_anything_action_run"}},
+             ])],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        # HA returns the script run context (+ a null response for this seq).
+        assert "context" in data
+        assert data["context"].get("id")
+
+        nlist = self._run(["--json", "notifications", "list"], hass_instance)
+        assert nlist.returncode == 0, nlist.stderr
+        notes = json.loads(nlist.stdout)
+        assert any(
+            n.get("notification_id") == "cli_anything_action_run" for n in notes
+        ), f"notification not created by action run: {notes!r}"
+
+    def test_v7_action_run_service_shorthand_live(self, hass_instance):
+        r = self._run(
+            ["--json", "action", "run",
+             "--service", "persistent_notification.create",
+             "-d", "message=shorthand probe",
+             "-d", "notification_id=cli_anything_action_shorthand"],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "context" in json.loads(r.stdout)
+
+    def test_v7_action_run_dry_run_live(self, hass_instance):
+        r = self._run(
+            ["--json", "action", "run", "--service", "light.turn_on",
+             "-t", "entity_id=light.nope", "--dry-run"],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["dry_run"] is True
+        assert data["payload"]["sequence"][0]["action"] == "light.turn_on"
+
+    def test_v7_action_validate_live(self, hass_instance):
+        """Real `validate_config`: a good action block and a bogus one."""
+        good = self._run(
+            ["--json", "action", "validate",
+             "--actions", json.dumps([{"action": "homeassistant.check_config"}])],
+            hass_instance,
+        )
+        assert good.returncode == 0, good.stderr
+        assert json.loads(good.stdout)["actions"]["valid"] is True
+
+        bad = self._run(
+            ["--json", "action", "validate",
+             "--triggers", json.dumps([{"trigger": "not_a_real_trigger"}])],
+            hass_instance,
+        )
+        assert bad.returncode == 0, bad.stderr
+        result = json.loads(bad.stdout)["triggers"]
+        assert result["valid"] is False
+        assert result["error"]
+
+    def test_v7_action_validate_automation_live(self, hass_instance, tmp_path):
+        good_cfg = tmp_path / "good.json"
+        good_cfg.write_text(json.dumps({
+            "alias": "v7 probe",
+            "trigger": [{"trigger": "state", "entity_id": "sun.sun"}],
+            "action": [{"action": "homeassistant.check_config"}],
+        }))
+        r = self._run(
+            ["--json", "action", "validate-automation", str(good_cfg)], hass_instance
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["valid"] is True
+        assert sorted(data["checked"]) == ["actions", "triggers"]
+
+        bad_cfg = tmp_path / "bad.json"
+        bad_cfg.write_text(json.dumps({
+            "alias": "v7 broken",
+            "triggers": [{"trigger": "state", "entity_id": "sun.sun"}],
+            "actions": [{"action": "definitely.not_a_service", "data": []}],
+        }))
+        bad = self._run(
+            ["--json", "action", "validate-automation", str(bad_cfg)],
+            hass_instance, check=False,
+        )
+        assert bad.returncode != 0, bad.stdout
+        assert "invalid automation config" in (bad.stderr + bad.stdout).lower()
+
+    def test_v7_action_test_condition_live(self, hass_instance):
+        """Real `test_condition` — a template that is true, then one that is false."""
+        true_cond = self._run(
+            ["--json", "action", "test-condition",
+             "--condition",
+             json.dumps({"condition": "template", "value_template": "{{ 1 == 1 }}"}),
+             "--exit-code"],
+            hass_instance,
+        )
+        assert true_cond.returncode == 0, true_cond.stderr
+        assert json.loads(true_cond.stdout) == {"result": True}
+
+        false_cond = self._run(
+            ["--json", "action", "test-condition",
+             "--condition",
+             json.dumps({"condition": "template", "value_template": "{{ 1 == 2 }}"}),
+             "--exit-code"],
+            hass_instance, check=False,
+        )
+        assert false_cond.returncode == 1
+        assert json.loads(false_cond.stdout) == {"result": False}
+
+    def test_v7_entity_source_live(self, hass_instance):
+        r = self._run(["--json", "entity", "source"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        sources = json.loads(r.stdout)
+        assert isinstance(sources, dict)
+        assert sources, "entity/source returned nothing on a live instance"
+        assert all("domain" in v for v in sources.values())
+
+        grouped = self._run(
+            ["--json", "entity", "source", "--by-integration"], hass_instance
+        )
+        assert grouped.returncode == 0, grouped.stderr
+        by_int = json.loads(grouped.stdout)
+        assert isinstance(by_int, dict)
+        # Every entity in the flat map is accounted for exactly once.
+        assert sum(len(v) for v in by_int.values()) == len(sources)
+
+        # Single-entity lookup round-trips against the flat map.
+        entity_id = sorted(sources)[0]
+        one = self._run(["--json", "entity", "source", entity_id], hass_instance)
+        assert one.returncode == 0, one.stderr
+        detail = json.loads(one.stdout)
+        assert detail["loaded"] is True
+        assert detail["domain"] == sources[entity_id]["domain"]
+
+    def test_v7_workflow_validate_then_save_automation(self, hass_instance, tmp_path):
+        """Composability: validate → save → trigger → run its actions ad-hoc."""
+        cfg = {
+            "alias": "cli-anything v7 workflow",
+            "triggers": [{"trigger": "event", "event_type": "cli_anything_v7"}],
+            "conditions": [],
+            "actions": [{
+                "action": "persistent_notification.create",
+                "data": {"message": "v7 workflow fired",
+                         "notification_id": "cli_anything_v7_workflow"},
+            }],
+        }
+        cfg_file = tmp_path / "wf.json"
+        cfg_file.write_text(json.dumps(cfg))
+
+        pre = self._run(
+            ["--json", "action", "validate-automation", str(cfg_file)], hass_instance
+        )
+        assert pre.returncode == 0, pre.stderr
+        assert json.loads(pre.stdout)["valid"] is True
+
+        # The validated action block runs standalone through the script engine.
+        ran = self._run(
+            ["--json", "action", "run", "--sequence", json.dumps(cfg["actions"])],
+            hass_instance,
+        )
+        assert ran.returncode == 0, ran.stderr
+
+        notes = json.loads(
+            self._run(["--json", "notifications", "list"], hass_instance).stdout
+        )
+        assert any(
+            n.get("notification_id") == "cli_anything_v7_workflow" for n in notes
+        )
+
+
+class TestLiveScriptEngineCore:
+    """Core-module level checks against the real script-engine WS commands."""
+
+    def test_execute_script_returns_context(self, live_client):
+        result = script_engine_core.execute_script(
+            live_client,
+            [{"action": "persistent_notification.create",
+              "data": {"message": "core probe",
+                       "notification_id": "cli_anything_core_exec"}}],
+        )
+        assert isinstance(result, dict)
+        assert result.get("context", {}).get("id")
+
+    def test_execute_script_with_variables(self, live_client):
+        result = script_engine_core.execute_script(
+            live_client,
+            [{"action": "persistent_notification.create",
+              "data": {"message": "{{ msg }}",
+                       "notification_id": "cli_anything_core_vars"}}],
+            variables={"msg": "rendered from a script variable"},
+        )
+        assert result.get("context", {}).get("id")
+
+    def test_run_service_action(self, live_client):
+        result = script_engine_core.run_service_action(
+            live_client,
+            "persistent_notification.create",
+            data={"message": "helper probe",
+                  "notification_id": "cli_anything_core_helper"},
+        )
+        assert result.get("context", {}).get("id")
+
+    def test_validate_config_good_and_bad(self, live_client):
+        good = script_engine_core.validate_config(
+            live_client, actions=[{"action": "homeassistant.check_config"}]
+        )
+        assert good["actions"]["valid"] is True
+        bad = script_engine_core.validate_config(
+            live_client, conditions=[{"condition": "not_a_condition"}]
+        )
+        assert bad["conditions"]["valid"] is False
+        assert bad["conditions"]["error"]
+
+    def test_validate_automation_config_legacy_keys(self, live_client):
+        out = script_engine_core.validate_automation_config(
+            live_client,
+            {"trigger": [{"trigger": "event", "event_type": "x"}],
+             "action": [{"action": "homeassistant.check_config"}]},
+        )
+        assert out["valid"] is True
+        assert out["checked"] == ["actions", "triggers"]
+
+    def test_validate_script_config(self, live_client):
+        out = script_engine_core.validate_script_config(
+            live_client,
+            {"alias": "probe", "sequence": [{"action": "homeassistant.check_config"}]},
+        )
+        assert out["valid"] is True
+
+    def test_condition_holds_template(self, live_client):
+        assert script_engine_core.condition_holds(
+            live_client, {"condition": "template", "value_template": "{{ 2 > 1 }}"}
+        ) is True
+        assert script_engine_core.condition_holds(
+            live_client, {"condition": "template", "value_template": "{{ 2 < 1 }}"}
+        ) is False
+
+    def test_condition_with_variables(self, live_client):
+        assert script_engine_core.condition_holds(
+            live_client,
+            {"condition": "template", "value_template": "{{ limit > 5 }}"},
+            variables={"limit": 10},
+        ) is True
+
+    def test_test_conditions_batch_is_error_tolerant(self, live_client):
+        rows = script_engine_core.test_conditions(
+            live_client,
+            [
+                {"condition": "template", "value_template": "{{ true }}"},
+                {"condition": "totally_bogus"},
+            ],
+        )
+        assert rows[0]["result"] is True and rows[0]["error"] is None
+        assert rows[1]["result"] is None and rows[1]["error"]
+
+    def test_entity_source_matches_live_states(self, live_client):
+        sources = script_engine_core.entity_source(live_client)
+        assert isinstance(sources, dict) and sources
+        grouped = script_engine_core.sources_by_integration(live_client)
+        assert sum(len(v) for v in grouped.values()) == len(sources)
+        # persistent_notification is loaded by the test config.
+        one = sorted(sources)[0]
+        assert script_engine_core.entity_source_for(live_client, one) == sources[one]
+        assert script_engine_core.entity_source_for(live_client, "light.ghost_xyz") is None

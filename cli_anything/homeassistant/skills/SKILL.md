@@ -164,6 +164,9 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `entity <get-many/list-for-display/remove/subscribe-config-entries/integration-setup-info/statistic-during-period>` | Registry extras. |
 | `state delete <entity_id>` | Tear out a state-machine entry (registry untouched). |
 | `tag create/delete` | Full tag CRUD (was list/find/update only). |
+| **New in v1.48 — script-engine primitives** | |
+| `action`           | `run` (WS `execute_script` — ad-hoc action sequence through HA's script engine: traced, gets a context, can return a `response_variable`, creates no `script.*` entity; `--sequence`/`--sequence-file` or `--service light.turn_on -t entity_id=… -d k=v` shorthand; `--var k=v`; `--dry-run` prints the WS payload), `validate` (WS `validate_config` — `--triggers`/`--conditions`/`--actions` (+ `-file` variants), each answered `{valid, error}`), `validate-automation <file>` / `validate-script <file>` (whole config; legacy singular `trigger:`/`condition:`/`action:` keys auto-upgraded; **exits non-zero when invalid** so it chains with `&&`), `test-condition` (WS `test_condition` against live state; JSON list evaluates per-item error-tolerantly; `--exit-code` makes false → exit 1). |
+| `entity source`    | WS `entity/source` — which integration actually supplies an entity. `entity source` (full map), `entity source <entity_id>` (`{loaded, domain}`), `--by-integration` / `-i <domain>` to group/filter. Registry entry with no source = strong orphan signal. |
 
 Always start with `--help` if you're unsure:
 `cli-anything-homeassistant <group> [<subcommand>] --help`.
@@ -327,6 +330,48 @@ cli-anything-homeassistant image snapshot image.front_door /tmp/door.png --overw
 cli-anything-homeassistant image proxy-url image.front_door --expires 300 --json
 ```
 
+### Author an automation without shipping a broken one
+
+```bash
+# 1. Validate the config file first — non-zero exit + which block failed
+cli-anything-homeassistant action validate-automation morning.json
+
+# 2. Do its conditions hold right now?
+cli-anything-homeassistant action test-condition \
+  --condition '{"condition":"state","entity_id":"sun.sun","state":"below_horizon"}' \
+  --exit-code
+
+# 3. Dry-run just the action block (traced by HA, no entity created)
+cli-anything-homeassistant --json action run --sequence-file morning-actions.json
+
+# 4. Chain validate → save so a bad config can never land
+cli-anything-homeassistant action validate-automation morning.json \
+  && cli-anything-homeassistant automation save automation.morning morning.json --yes
+```
+
+### Run one action with a response (what `service call` can't do)
+
+```bash
+cli-anything-homeassistant --json action run \
+  --service calendar.get_events -t entity_id=calendar.home \
+  -d 'duration={"hours":24}' --response-variable agenda | jq '.response'
+```
+
+### Entity provenance / orphan hunting
+
+```bash
+# Which integration provides it?
+cli-anything-homeassistant --json entity source light.kitchen
+# {"entity_id": "light.kitchen", "loaded": true, "domain": "hue"}
+
+# Entity count per integration (biggest offenders first)
+cli-anything-homeassistant --json entity source --by-integration \
+  | jq 'map_values(length) | to_entries | sort_by(-.value) | .[:10]'
+
+# Registry says it exists but nothing supplies it → orphan
+cli-anything-homeassistant --json entity source sensor.suspect | jq '.loaded'
+```
+
 ### Profiler — live perf triage
 
 ```bash
@@ -424,6 +469,24 @@ These are paid in lost time. Read them before mutating anything.
   generic `entity remove` (which only tears the registry entry out, not the
   underlying automation/script config). Both are confirmation-gated like the
   other destructive verbs above; pass `--yes` when scripted.
+- **`action run` is not `service call`.** `action run` goes through HA's
+  *script engine* (WS `execute_script`, admin-only): the run is traced, gets a
+  script context, honours full script syntax (`choose`/`repeat`/`delay`/
+  `wait_template`/`stop`) and can collect a `response_variable`. `service call`
+  is a single REST POST. Use `action run` when you need sequencing, variables
+  or a response; use `service call` for one flat call. Both mutate for real —
+  `action run --dry-run` prints the WS payload without executing.
+- **Validate before you save.** `automation save` / `script save` will happily
+  write a config HA then refuses to load (it only shows up later in the error
+  log). `action validate-automation <file>` / `action validate-script <file>`
+  run HA's own validator and **exit non-zero** on failure, so always chain:
+  `action validate-automation a.json && automation save automation.x a.json --yes`.
+  Note HA validates *shape and referenced trigger/condition/action platforms* —
+  a service that doesn't exist yet still passes.
+- **`entity source` only lists entities whose integration is loaded.** That's
+  the point: a registry entry (`entity list`) with no `entity source` record is
+  a strong orphan signal, and complements `entity orphans` / `entity restored`
+  before an `entity prune`. Don't read a missing source as "entity deleted".
 - **`alarmo` mutates a home alarm — treat with care.** `sensor-remove` and
   `sensor-update --no-trigger-unavailable` *weaken* the alarm (the sensor no
   longer triggers or blocks arming). Both support `--dry-run` (prints the exact

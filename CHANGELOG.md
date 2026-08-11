@@ -4,6 +4,75 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.48.0] — 2026-08-11
+
+### Added — script-engine primitives (`action` group + `entity source`)
+
+The four core `websocket_api` commands that back Home Assistant's automation
+and script *editor* were the last big unwrapped surface in `commands.py`:
+`execute_script`, `validate_config`, `test_condition` and `entity/source`.
+Together they close the authoring loop — until now an agent could only write
+an automation blind, save it, and find out from the error log whether HA
+accepted it.
+
+New core module `core/script_engine.py` (pure functions, `FakeClient`-testable)
+and a new `action` command group:
+
+- **`action run`** — execute an ad-hoc action sequence via WS `execute_script`.
+  Runs through HA's script engine rather than a flat REST service call, so the
+  run is traced, gets a script context, supports full script syntax
+  (`choose`/`repeat`/`delay`/`wait_template`/`stop`) and can collect a
+  `response_variable` payload — all without creating a `script.*` entity.
+  Input via `--sequence` JSON, `--sequence-file`, or the
+  `--service domain.service -t k=v -d k=v` shorthand; `--var k=v` injects
+  script variables; `--dry-run` prints the WS payload and sends nothing.
+- **`action validate`** — WS `validate_config` on any combination of
+  `--triggers` / `--conditions` / `--actions` (each also `-file`). Returns
+  HA's own `{valid, error}` verdict per block.
+- **`action validate-automation <file>` / `action validate-script <file>`** —
+  pre-flight a whole config file before `automation save` / `script save`.
+  Legacy singular `trigger:` / `condition:` / `action:` keys are upgraded to
+  the plural spelling `validate_config` expects; results are folded into
+  `{valid, checked, results, errors}` and the command **exits non-zero when
+  invalid**, so it chains: `action validate-automation a.json && automation
+  save automation.x a.json --yes`.
+- **`action test-condition`** — WS `test_condition`: evaluate a condition
+  config against *live* state. A JSON list is evaluated per-item and is
+  error-tolerant (one bogus condition reports its error instead of aborting
+  the batch, mirroring `entity prune`). `--exit-code` turns a false result
+  into exit 1 for shell chaining; `--var k=v` injects variables.
+- **`entity source [entity_id]`** — WS `entity/source`: which integration
+  actually supplies an entity. This is provenance, not registry — only
+  entities whose integration is loaded appear, so a registry entry with no
+  source is a strong orphan signal that complements `entity orphans` /
+  `entity restored` before an `entity prune`. `--by-integration` groups
+  entity ids per integration, `-i <domain>` filters.
+
+### Fixed
+
+- New CLI commands appended to `homeassistant_cli.py` must land **above** the
+  `if __name__ == "__main__": main()` guard. Anything defined after it is
+  never registered when the CLI is invoked as
+  `python -m cli_anything.homeassistant.homeassistant_cli` (the guard runs
+  `main()` before the rest of the module body executes) — the e2e suite's
+  `_resolve_cli` fallback path. Caught by the new live subprocess tests.
+
+### Tests
+
+- `tests/test_script_engine.py` (71) — every function against `FakeClient`:
+  payload shapes, sequence coercion, legacy-key normalization, per-item error
+  tolerance, and each `ValueError` guard.
+- `tests/test_cli_action_wiring.py` (42) — full CliRunner coverage of the new
+  commands: inline vs file input, mutually-exclusive flags, dry-run, exit
+  codes on invalid configs / false conditions, plain and `--json` output.
+- `tests/test_full_e2e.py` (+18) — live against a real booted HA: a real
+  `execute_script` that creates a persistent notification, a real
+  `validate_config` rejecting a bogus trigger platform, real `test_condition`
+  template evaluation (true → exit 0, false + `--exit-code` → exit 1), real
+  `entity/source` cross-checked against the grouped view, and a
+  validate → run → verify workflow.
+- Suite: 2,910 → 3,041 passing, 0 regressions.
+
 ## [1.47.0] — 2026-07-19
 
 ### Security

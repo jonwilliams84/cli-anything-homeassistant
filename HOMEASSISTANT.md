@@ -64,6 +64,8 @@ WebSocket message types used by the harness:
 - `config_entries/get`
 - `system_health/info`
 - `subscribe_events`
+- `execute_script` / `validate_config` / `test_condition` / `entity/source`
+  (the script-engine primitives behind the `action` group and `entity source`)
 
 ## Data Model
 
@@ -165,6 +167,8 @@ stderr and return a non-zero exit code.
 | `webhook`      | `webhook/list` WS + automation/mobile-app scan; `trigger <id>` (POST/PUT/GET/HEAD) with a registered-id guard; `generate-id`; cloudhook CRUD via `cloud/cloudhook/*` |
 | `image`        | `image.*` entity domain: `list` / `show` / `snapshot <eid> <path>` (signed or direct), `proxy-url` (signed via `auth/sign_path`), `subscribe` to state-change events |
 | `profiler`     | Wraps the `profiler` integration's services (cProfile/memray/lru_stats/dump_log_objects/log_thread_frames/log_event_loop_scheduled/log_current_tasks/set_asyncio_debug/log_events) plus a `status` probe |
+| `action`       | Script-engine primitives — the pre-flight for `automation save` / `script save`. `run` (WS `execute_script`: ad-hoc sequence through HA's script engine — traced, gets a context, can return a `response_variable`, creates no entity; `--service` shorthand + `--dry-run`), `validate` (WS `validate_config` on triggers/conditions/actions), `validate-automation` / `validate-script` (whole config file, legacy singular keys upgraded, **exits non-zero when invalid** so it chains with `&&`), `test-condition` (WS `test_condition` against live state; a JSON list is evaluated per-item, error-tolerant; `--exit-code` for shell chaining) |
+| `entity source`| WS `entity/source` — which integration currently supplies an entity. Provenance, not registry: only entities whose integration is loaded appear, so a registry entry with no source is a strong orphan signal (pairs with `entity orphans` / `entity prune`). `--by-integration` groups, `-i <domain>` filters. |
 
 ### State Model
 
@@ -226,6 +230,10 @@ is fetched on demand. This means:
 | Ignore a repairs issue                | `system issue ignore homeassistant <issue_id>`                   |
 | Rescan USB / open Zigbee join         | `system usb-scan` / `system zha-permit-join --duration 120`      |
 | Tag automations by purpose            | `category create automation Alerts --icon mdi:alert`             |
+| Hit "Run actions" in the script editor | `action run --sequence-file seq.json` (or `--service light.turn_on -t entity_id=…`) |
+| The editor's red "invalid config" box | `action validate-automation morning.json`                        |
+| Hit "Test" next to a condition        | `action test-condition --condition '{"condition":"sun","after":"sunset"}'` |
+| "Provided by <integration>" in the entity dialog | `entity source light.kitchen --json`                  |
 
 ## Testing
 
