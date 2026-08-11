@@ -8,10 +8,10 @@ logic or renders templates locally. Every command supports `--json`.
 
 ## Layout
 - `cli_anything/homeassistant/homeassistant_cli.py` — the Click CLI + REPL (~10k lines, single file; all commands wired here). Entry point: `main`.
-- `cli_anything/homeassistant/core/` — ~100 modules, one HA API surface each (states, registry, lovelace*, automation, backup, statistics, powercalc*, …). Each is pure function-per-operation, callable from Python directly or via the Click wrapper.
+- `cli_anything/homeassistant/core/` — ~101 modules, one HA API surface each (states, registry, lovelace*, automation, backup, statistics, powercalc*, …). Each is pure function-per-operation, callable from Python directly or via the Click wrapper.
 - `cli_anything/homeassistant/utils/homeassistant_backend.py` — the wire client: `requests.Session` (REST) + websocket-client subscriber (WS). All core modules call through this.
 - `cli_anything/homeassistant/skills/SKILL.md` — packaged self-contained skill manifest (full command docs); packaged via `package_data`.
-- `tests/` — 55 files, 200+ unit tests. `tests/conftest.py` defines `FakeClient` (records every REST/WS call, returns prepared responses). E2e tests boot a real HA in a temp config dir.
+- `tests/` — 84 files, 3,000+ tests. `tests/conftest.py` defines `FakeClient` (records every REST/WS call, returns prepared responses). E2e tests boot a real HA in a temp config dir.
 - `HOMEASSISTANT.md` — SOP / agent operating guide. `CHANGELOG.md` — per-version detail.
 
 ## Commands
@@ -26,6 +26,6 @@ logic or renders templates locally. Every command supports `--json`.
 - Powercalc commands are safety wrappers over HA footguns (REPLACE-on-write options flow, binary_sensor no-op); preserve the backup-first / dry-run-by-default / `--apply`-to-commit pattern when extending them (mirrored in `entity prune`).
 
 ## Gotchas
-- `homeassistant_cli.py` is one huge file — grep for the command name; new commands go alongside existing siblings.
+- `homeassistant_cli.py` is one huge file — grep for the command name; new commands go alongside existing siblings. They must be defined **above** the trailing `if __name__ == "__main__": main()` guard: anything after it never registers when the CLI runs as `python -m cli_anything.homeassistant.homeassistant_cli` (the e2e fallback path), because `main()` executes before the rest of the module body.
 - Never commit a token: `.gitignore` excludes the connection-profile JSON.
 - Sibling family: `cli-anything-zigbee2mqtt`, `cli-anything-espresense` share the profile/JSON/REPL pattern.

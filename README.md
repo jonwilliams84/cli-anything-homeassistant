@@ -99,6 +99,8 @@ disable), `HASS_TIMEOUT` (seconds).
 | `zone` | Storage zone registry CRUD (`config/zone/*` WS) — `list`/`state-list`/`find`/`create`/`update`/`delete` + `entities <zone>` (who is inside right now). YAML-declared zones are read-only and surface via `state-list`. |
 | `webhook` | Webhook discovery (aggregates `webhook/list` WS, automation triggers, and mobile_app registrations) + `trigger <id>` (POST/PUT/GET/HEAD with registered-id guard) + `generate-id` + cloudhook CRUD via `cloud/cloudhook/*` |
 | `image` | `image.*` entity domain — `list`/`show`/`snapshot <entity_id> <path>` (signed via `auth/sign_path` or direct auth) + `proxy-url` (signed URL minted on demand) + `subscribe` for update events |
+| `action` | Script-engine primitives — `run` an ad-hoc action sequence (WS `execute_script`, no `script.*` entity needed), `validate` trigger/condition/action blocks, `validate-automation`/`validate-script` a whole config file (exit non-zero when invalid), `test-condition` against live state (`--exit-code` for shell chaining) |
+| `entity source` | Which integration actually supplies an entity (WS `entity/source`) — provenance, `--by-integration` to group, and a strong orphan signal when a registry entry has no source |
 | `profiler` | Pass-through to the `profiler` integration's services: `start` (cProfile), `memory` (memray), `dump-log-objects --type Class`, `log-thread-frames`/`log-current-tasks`/`log-event-loop-scheduled`/`log-events`, `lru-stats`, `set-asyncio-debug`. `status` is a cheap "is the integration even loaded" probe. |
 
 ## Quick examples
@@ -174,6 +176,29 @@ cli-anything-homeassistant powercalc calibrate-template <entry_id> \
 # OFF→ON transitions. numpy-only; needs ~7 days of history.
 cli-anything-homeassistant --json powercalc regress --hours 168                # dry-run
 cli-anything-homeassistant powercalc regress --title-contains Lamp --apply     # commit
+
+# Author an automation without writing a broken one (v1.48+)
+# 1. validate the config file — exits non-zero (and says which block) if bad
+cli-anything-homeassistant action validate-automation morning.json
+# 2. check the conditions actually hold right now
+cli-anything-homeassistant action test-condition \
+    --condition '{"condition":"state","entity_id":"sun.sun","state":"below_horizon"}' \
+    --exit-code
+# 3. dry-run the action block through HA's script engine (traced, no entity created)
+cli-anything-homeassistant --json action run --sequence-file morning-actions.json
+# 4. only now write it
+cli-anything-homeassistant action validate-automation morning.json \
+  && cli-anything-homeassistant automation save automation.morning morning.json --yes
+
+# One-off action with a response variable (things `service call` can't do:
+# script context, tracing, response collection)
+cli-anything-homeassistant --json action run \
+    --service calendar.get_events -t entity_id=calendar.home \
+    -d 'duration={"hours":24}' --response-variable agenda
+
+# Who actually provides this entity? (and what's an orphan)
+cli-anything-homeassistant --json entity source light.kitchen
+cli-anything-homeassistant --json entity source --by-integration | jq 'map_values(length)'
 ```
 
 ## Agent / `--json` mode

@@ -833,3 +833,86 @@ All new code paths are exercised by FakeClient (no live HA required for
 unit tests). E2E coverage against a real HA instance lands via the
 existing `tests/test_full_e2e.py` harness when run with a populated
 `homeassistant` install.
+
+---
+
+## Refine pass — v1.48.0 (script-engine primitives)
+
+### Gap that motivated it
+
+`websocket_api/commands.py` exposes 4 commands the harness had never wrapped —
+the ones behind HA's automation/script *editor*:
+
+| WS command        | Was covered? | Now                                   |
+|-------------------|--------------|---------------------------------------|
+| `execute_script`  | no           | `action run`                          |
+| `validate_config` | no           | `action validate` / `validate-automation` / `validate-script` |
+| `test_condition`  | no           | `action test-condition`               |
+| `entity/source`   | no           | `entity source`                       |
+
+### New module
+
+* `core/script_engine.py` — `execute_script`, `build_service_action`,
+  `run_service_action`, `validate_config`, `normalize_automation_config`,
+  `validate_automation_config`, `validate_script_config`, `test_condition`,
+  `condition_holds`, `test_conditions`, `entity_source`, `entity_source_for`,
+  `sources_by_integration`.
+
+### New CLI surface
+
+| Group | Commands |
+|-------|----------|
+| `action` | `run`, `validate`, `validate-automation`, `validate-script`, `test-condition` |
+| `entity` | `source` (new subcommand) |
+
+### Test results — v1.48.0
+
+```
+$ python3 -m pytest tests/ -q
+3041 passed, 4 skipped in 17.53s
+```
+
+- **Before:** 2,910 passed, 4 skipped.
+- **After:** 3,041 passed, 4 skipped (+131). 0 regressions.
+
+Breakdown of new tests:
+
+- `tests/test_script_engine.py` (71) — `execute_script` sequence coercion
+  (single mapping → list), variable inclusion/omission, `None`-result
+  normalization, every `ValueError` guard (empty sequence, non-mapping step,
+  bad `domain.service`, bad variables); `validate_config` block selection
+  (including "an explicitly empty block must still be sent"); legacy
+  `trigger:`/`condition:`/`action:` → plural normalization with plural
+  winning on conflict; verdict folding (`valid`/`checked`/`errors`, including
+  an invalid block with no error text); `test_condition` mapping + template-
+  string shorthand + variables; `test_conditions` per-item error tolerance
+  (first item raises, second still evaluates); `entity/source` flat map,
+  single lookup, unknown-entity `None`, grouping, filtering, and a
+  non-mapping source value falling into `unknown`.
+- `tests/test_cli_action_wiring.py` (42) — CliRunner over every new command:
+  inline JSON vs `-file` input, mutually-exclusive flag rejection
+  (`--service` + `--sequence`, `--data` without `--service`, inline + file),
+  invalid-JSON messaging, `--dry-run` making zero WS calls, `--exit-code`
+  semantics on true/false conditions, non-zero exit + reason text on invalid
+  automation/script configs, `entity source` in all four modes, plain
+  (non-`--json`) output, and help-surface registration.
+- `tests/test_full_e2e.py` (+18) — against a **real booted HA**:
+  `execute_script` really creating a persistent notification (verified via
+  `notifications list`), the `--service` shorthand, `--dry-run`,
+  `validate_config` genuinely rejecting `trigger: not_a_real_trigger`,
+  `validate-automation` on good and broken files (exit code checked),
+  `test_condition` on true/false templates (exit 0 vs exit 1), `entity/source`
+  cross-checked against `--by-integration` (counts must match) and a
+  single-entity lookup, plus a validate → run → verify workflow. The
+  `TestLiveScriptEngineCore` class exercises the same paths at core-module
+  level, including live variable rendering and batch error tolerance.
+
+### Regression caught by these tests
+
+New commands appended to `homeassistant_cli.py` after the
+`if __name__ == "__main__": main()` guard are silently never registered under
+`python -m cli_anything.homeassistant.homeassistant_cli` (the e2e
+`_resolve_cli` fallback), because `main()` runs before the rest of the module
+body. All 8 new subprocess e2e tests failed with `No such command 'action'`
+until the block was moved above the guard. Unit tests alone would not have
+caught it — the CliRunner imports the module, so the guard never fires.

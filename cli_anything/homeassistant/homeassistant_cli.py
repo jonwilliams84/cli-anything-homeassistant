@@ -123,6 +123,7 @@ from cli_anything.homeassistant.core import history_logbook as history_logbook_c
 from cli_anything.homeassistant.core import lovelace_layout_lint as lovelace_layout_lint_core
 from cli_anything.homeassistant.core import lovelace_sections_ext as lovelace_sections_ext_core
 from cli_anything.homeassistant.core import lovelace_views as lovelace_views_core
+from cli_anything.homeassistant.core import script_engine as script_engine_core
 from cli_anything.homeassistant.core import state_stream as state_stream_core
 from cli_anything.homeassistant.core import trace_debug as trace_debug_core
 from cli_anything.homeassistant.core import trace_debugger as trace_debugger_core
@@ -13500,6 +13501,248 @@ def trace_debugger_stop(ctx, domain, item_id, run_id):
             run_id=run_id,
         ),
     )
+
+
+# ─────────────────────────────────────────── action (script engine primitives)
+
+
+def _json_input(inline: str | None, file_path: str | None, what: str, *, required: bool = True):
+    """Load a JSON document from an inline string or a file.
+
+    Used by the `action` group, whose payloads (action sequences, trigger /
+    condition blocks) are too structured for key=value flags.
+    """
+    if inline and file_path:
+        raise click.BadParameter(f"pass only one of --{what} / --{what}-file")
+    raw = None
+    if file_path:
+        raw = Path(file_path).read_text()
+    elif inline:
+        raw = inline
+    if raw is None:
+        if required:
+            raise click.BadParameter(f"supply --{what} JSON or --{what}-file")
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise click.BadParameter(f"--{what} is not valid JSON: {exc}") from exc
+
+
+@cli.group()
+def action():
+    """Script-engine primitives: run / validate / test action + condition configs.
+
+    The pre-flight for `automation save` and `script save`: validate a config,
+    evaluate its conditions against live state, and dry-run its actions
+    without creating any entity.
+    """
+
+
+@action.command("run")
+@click.option("--sequence", default=None, help="Action sequence as a JSON list (or single object)")
+@click.option(
+    "--sequence-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Read the action sequence from a JSON file",
+)
+@click.option("--service", default=None, help="Shorthand: run a single 'domain.service' action")
+@click.option("--data", "-d", multiple=True, help="key=value service data (repeatable)")
+@click.option("--target", "-t", multiple=True, help="key=value target (repeatable)")
+@click.option(
+    "--response-variable",
+    default=None,
+    help="Capture the service response into this variable (shorthand mode)",
+)
+@click.option("--var", "variables", multiple=True, help="key=value script variable (repeatable)")
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="Print the WS payload; do not execute."
+)
+@click.pass_context
+def action_run(
+    ctx, sequence, sequence_file, service, data, target, response_variable, variables, dry_run
+):
+    """Execute an ad-hoc action sequence (WS `execute_script`).
+
+    Runs through HA's script engine — so the run is traced, gets a context,
+    and can return a `response_variable` payload — without creating a
+    `script.*` entity.
+
+    \b
+    ha action run --service light.turn_on -t entity_id=light.kitchen -d brightness=200
+    ha action run --sequence-file bedtime.json --var room=bedroom
+    """
+    if service:
+        if sequence or sequence_file:
+            raise click.BadParameter("pass either --service or --sequence/--sequence-file")
+        steps = [
+            script_engine_core.build_service_action(
+                service,
+                data=parse_kv_pairs(data) or None,
+                target=parse_kv_pairs(target) or None,
+                response_variable=response_variable,
+            )
+        ]
+    else:
+        if data or target or response_variable:
+            raise click.BadParameter("--data/--target/--response-variable require --service")
+        steps = _json_input(sequence, sequence_file, "sequence")
+    vars_ = parse_kv_pairs(variables) or None
+    if dry_run:
+        payload = {"sequence": steps}
+        if vars_:
+            payload["variables"] = vars_
+        emit(ctx, {"dry_run": True, "ws": "execute_script", "payload": payload})
+        return
+    emit(ctx, script_engine_core.execute_script(make_client(ctx), steps, variables=vars_))
+
+
+@action.command("validate")
+@click.option("--triggers", default=None, help="Trigger block as JSON")
+@click.option(
+    "--triggers-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Read the trigger block from a JSON file",
+)
+@click.option("--conditions", default=None, help="Condition block as JSON")
+@click.option(
+    "--conditions-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Read the condition block from a JSON file",
+)
+@click.option("--actions", default=None, help="Action block as JSON")
+@click.option(
+    "--actions-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Read the action block from a JSON file",
+)
+@click.pass_context
+def action_validate(
+    ctx, triggers, triggers_file, conditions, conditions_file, actions, actions_file
+):
+    """Validate trigger / condition / action blocks (WS `validate_config`).
+
+    Each supplied block comes back as {"valid": bool, "error": str|null} —
+    the same check the automation editor runs before it lets you save.
+    """
+    kwargs = {
+        "triggers": _json_input(triggers, triggers_file, "triggers", required=False),
+        "conditions": _json_input(conditions, conditions_file, "conditions", required=False),
+        "actions": _json_input(actions, actions_file, "actions", required=False),
+    }
+    if all(v is None for v in kwargs.values()):
+        raise click.BadParameter("supply at least one of --triggers / --conditions / --actions")
+    emit(ctx, script_engine_core.validate_config(make_client(ctx), **kwargs))
+
+
+@action.command("validate-automation")
+@click.argument("config_file", type=click.Path(exists=True, dir_okay=False))
+@click.pass_context
+def action_validate_automation(ctx, config_file):
+    """Pre-flight a whole automation config file before `automation save`.
+
+    Accepts both the modern plural keys (triggers/conditions/actions) and the
+    legacy singular ones. Exits non-zero when any block is invalid, so it
+    chains: `ha action validate-automation a.json && ha automation save ...`
+    """
+    cfg = json.loads(Path(config_file).read_text())
+    result = script_engine_core.validate_automation_config(make_client(ctx), cfg)
+    emit(ctx, result)
+    if not result.get("valid"):
+        raise click.ClickException(
+            "invalid automation config: "
+            + "; ".join(f"{e['block']}: {e['error']}" for e in result.get("errors", []))
+        )
+
+
+@action.command("validate-script")
+@click.argument("config_file", type=click.Path(exists=True, dir_okay=False))
+@click.pass_context
+def action_validate_script(ctx, config_file):
+    """Pre-flight a script config file (its `sequence`) before `script save`."""
+    cfg = json.loads(Path(config_file).read_text())
+    result = script_engine_core.validate_script_config(make_client(ctx), cfg)
+    emit(ctx, result)
+    if not result.get("valid"):
+        raise click.ClickException(
+            "invalid script config: "
+            + "; ".join(f"{e['block']}: {e['error']}" for e in result.get("errors", []))
+        )
+
+
+@action.command("test-condition")
+@click.option("--condition", default=None, help="Condition config as JSON (object or list)")
+@click.option(
+    "--condition-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Read the condition config from a JSON file",
+)
+@click.option("--var", "variables", multiple=True, help="key=value condition variable")
+@click.option(
+    "--exit-code",
+    is_flag=True,
+    default=False,
+    help="Exit 1 when the condition is false (for shell chaining).",
+)
+@click.pass_context
+def action_test_condition(ctx, condition, condition_file, variables, exit_code):
+    """Evaluate a condition against live state (WS `test_condition`).
+
+    A JSON list evaluates each condition independently (error-tolerant) and
+    reports one row per entry.
+
+    \b
+    ha action test-condition --condition '{"condition":"state",
+        "entity_id":"sun.sun","state":"above_horizon"}' --exit-code
+    """
+    cfg = _json_input(condition, condition_file, "condition")
+    vars_ = parse_kv_pairs(variables) or None
+    client = make_client(ctx)
+    if isinstance(cfg, list):
+        results = script_engine_core.test_conditions(client, cfg, variables=vars_)
+        emit(ctx, results)
+        holds = all(r.get("result") is True for r in results)
+    else:
+        holds = script_engine_core.condition_holds(client, cfg, variables=vars_)
+        emit(ctx, {"result": holds})
+    if exit_code and not holds:
+        sys.exit(1)
+
+
+@entity.command("source")
+@click.argument("entity_id", required=False)
+@click.option("--integration", "-i", default=None, help="Only entities from this integration")
+@click.option(
+    "--by-integration",
+    is_flag=True,
+    default=False,
+    help="Group entity ids by the integration that supplies them.",
+)
+@click.pass_context
+def entity_source_cmd(ctx, entity_id, integration, by_integration):
+    """Which integration supplies an entity (WS `entity/source`).
+
+    Provenance, as opposed to the registry: only entities whose integration is
+    actually loaded appear here — so a registry entry with no source is a
+    strong orphan signal (see `entity orphans`).
+    """
+    client = make_client(ctx)
+    if entity_id:
+        src = script_engine_core.entity_source_for(client, entity_id)
+        if src is None:
+            emit(ctx, {"entity_id": entity_id, "source": None, "loaded": False})
+            return
+        emit(ctx, {"entity_id": entity_id, "loaded": True, **src})
+        return
+    if by_integration or integration:
+        emit(ctx, script_engine_core.sources_by_integration(client, integration=integration))
+        return
+    emit(ctx, script_engine_core.entity_source(client))
 
 
 if __name__ == "__main__":
