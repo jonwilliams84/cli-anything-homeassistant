@@ -32,13 +32,16 @@ logic or renders templates locally. Every command supports `--json`.
   113 REST views on 2026.8.1. Require the `websocket_command(` decorator in
   scope when matching `vol.Required("type")` — without it five energy SOURCE
   kinds (`solar`, `gas`, `battery`, `water`, `grid`) come back as commands.
-- **CHECK `origin/main` BEFORE STARTING, NOT AT COMMIT TIME.** This pass was
-  built on a stale local branch and 15 commits had landed meanwhile, including
-  a 1.48.0 that covered `validate_config`/`test_condition`/`execute_script`/
+- **CHECK OUT THE BASE BEFORE STARTING. THIS PASS DID NOT.** Work began on
+  whichever branch the checkout happened to be sitting on — a stale `fix-ruff`
+  — with no `git fetch` first. Nothing drifted mid-pass: `origin/main` was
+  ALREADY 15 commits ahead before the first line was written, including a
+  1.48.0 that covered `validate_config`/`test_condition`/`execute_script`/
   `entity/source` as the `action` group and device-class units as `entity
   convertible-units`. Three finished, tested command groups were thrown away
-  rather than shipped as duplicates. `git fetch && git log origin/main` costs
-  seconds.
+  rather than shipped as duplicates. The fix is one command before any work:
+  `git fetch origin && git checkout -b <branch> origin/main`. Describing this
+  as "main moved while I worked" is the wrong lesson — it was never looked at.
 - **The session sets `Content-Type: application/json`, which breaks every
   multipart upload.** `requests` only generates a multipart boundary header
   when one is not already set, so `upload()` passes `headers={"Content-Type":

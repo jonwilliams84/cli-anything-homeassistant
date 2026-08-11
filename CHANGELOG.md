@@ -17,11 +17,12 @@ the `websocket_command(` decorator in scope drops five false positives —
 `solar`, `gas`, `battery`, `water`, `grid` are energy SOURCE kinds inside a
 schema, not commands.)*
 
-*(Overlap note: `validate_config`, `test_condition`, `execute_script`,
-`entity/source` and device-class units landed in 1.48.0 as the `action` group,
-`entity source` and `entity convertible-units` while this was being written.
-They are NOT duplicated here — `target source` and a `validate`/`units` group
-were written, measured, and then dropped in favour of what 1.48.0 shipped.)*
+*(Overlap note: this was written on a branch that had never been rebased —
+1.48.0 had already covered `validate_config`, `test_condition`,
+`execute_script`, `entity/source` and device-class units as the `action` group,
+`entity source` and `entity convertible-units`. They are NOT duplicated here:
+`target source` and a `validate`/`units` group were written, measured, and then
+dropped in favour of what 1.48.0 shipped.)*
 
 ### Added — what a target actually hits (`target`)
 
