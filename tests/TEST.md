@@ -994,18 +994,21 @@ scope drops exactly those five.
   `kubectl logs`, not from the response.
 
 
-### The pass was built on a stale base, and three finished groups were binned
+### The base was never checked out, and three finished groups were binned
 
-`origin/main` moved 15 commits while this was being written, one of them a
-**v1.48.0 that covered `validate_config` / `test_condition` / `execute_script` /
-`entity/source` as the `action` group and device-class units as `entity
-convertible-units`**. A `validate` group, a `units` group and `target source`
-were written, tested, exercised against the live instance — and then deleted
-rather than shipped as a second command for the same websocket call. Two
-commands for one job is worse than either.
+Work started on whichever branch the checkout was sitting on — a stale
+`fix-ruff` — with no `git fetch` first. `origin/main` was **already 15 commits
+ahead before the first line was written**, one of them a v1.48.0 that covered
+`validate_config` / `test_condition` / `execute_script` / `entity/source` as
+the `action` group and device-class units as `entity convertible-units`. A
+`validate` group, a `units` group and `target source` were written, tested,
+exercised against the live instance — and then deleted rather than shipped as a
+second command for the same websocket call. Two commands for one job is worse
+than either.
 
-`git fetch && git log origin/main` before starting costs seconds. The gotcha is
-recorded in CLAUDE.md so the next pass checks first.
+This was not drift discovered late; it was a base nobody looked at.
+`git fetch origin && git checkout -b <branch> origin/main` is one command and
+it goes first. Recorded in CLAUDE.md.
 
 ### Results
 
