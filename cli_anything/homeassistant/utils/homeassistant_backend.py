@@ -208,9 +208,7 @@ class HomeAssistantClient:
         with resp:
             self._check_auth(resp)
             if not resp.ok:
-                raise HomeAssistantError(
-                    f"GET {path} -> {resp.status_code}: {resp.text[:500]}"
-                )
+                raise HomeAssistantError(f"GET {path} -> {resp.status_code}: {resp.text[:500]}")
             written = 0
             with open(dest, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=chunk_size):

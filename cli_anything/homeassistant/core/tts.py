@@ -133,7 +133,11 @@ def get_url(
         if supported:
             checked = {"language_checked": True, "supported_languages": supported}
             if language not in supported:
-                near = [x for x in supported if x.split("-")[0].split("_")[0] == language.split("-")[0].split("_")[0]]
+                near = [
+                    x
+                    for x in supported
+                    if x.split("-")[0].split("_")[0] == language.split("-")[0].split("_")[0]
+                ]
                 raise ValueError(
                     f"{engine_id} does not support language {language!r}. HA would "
                     f"answer a bare 500 with no body. It declares "

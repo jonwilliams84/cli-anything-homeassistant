@@ -42,6 +42,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────── AI Task
 
+
 def ai_task_get(client) -> dict:
     """Which AI Task entity serves data generation and image generation."""
     data = client.ws_call("ai_task/preferences/get") or {}
@@ -85,6 +86,7 @@ def ai_task_set(
 
 # ─────────────────────────────────────────────────────────────── HTTP config
 
+
 def http_config(client) -> dict:
     """HA's stored HTTP configuration, stable and pending.
 
@@ -106,6 +108,7 @@ def http_config(client) -> dict:
 
 
 # ──────────────────────────────────────────────────── entity-id naming rules
+
 
 def entity_id_settings(client) -> dict:
     """The registry's `entity_id_parts` rule. `None` means HA's default."""
@@ -148,9 +151,12 @@ def automatic_entity_ids(client, entity_ids: list[str]) -> dict:
     """
     if not entity_ids:
         raise ValueError("Pass at least one entity_id.")
-    result = client.ws_call(
-        "config/entity_registry/get_automatic_entity_ids", {"entity_ids": entity_ids}
-    ) or {}
+    result = (
+        client.ws_call(
+            "config/entity_registry/get_automatic_entity_ids", {"entity_ids": entity_ids}
+        )
+        or {}
+    )
     rows = []
     for eid in entity_ids:
         suggested = result.get(eid)
@@ -167,6 +173,7 @@ def automatic_entity_ids(client, entity_ids: list[str]) -> dict:
 
 
 # ────────────────────────────────────────────────────── recorder per-entity
+
 
 def recorder_entity_options(client, entity_id: str) -> dict:
     """Whether the recorder is storing this entity at all.

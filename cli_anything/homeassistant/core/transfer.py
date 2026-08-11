@@ -165,10 +165,7 @@ def upload_file(client, file_path) -> dict:
         "bytes": file_path.stat().st_size,
         "file_id": file_id,
         "raw": result,
-        "note": (
-            "Staged, not stored. Hand file_id to a config flow; HA reaps "
-            "unclaimed uploads."
-        ),
+        "note": ("Staged, not stored. Hand file_id to a config flow; HA reaps unclaimed uploads."),
     }
 
 

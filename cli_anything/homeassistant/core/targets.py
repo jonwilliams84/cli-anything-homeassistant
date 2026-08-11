@@ -84,8 +84,7 @@ def _validate(target: dict) -> dict:
     unknown = [k for k in target if k not in TARGET_FIELDS]
     if unknown:
         raise ValueError(
-            f"Not a target field: {', '.join(unknown)}. HA accepts only "
-            f"{', '.join(TARGET_FIELDS)}."
+            f"Not a target field: {', '.join(unknown)}. HA accepts only {', '.join(TARGET_FIELDS)}."
         )
     return target
 
@@ -129,9 +128,7 @@ def extract(
 
 
 def _for_target(client, command: str, target: dict, expand_group: bool) -> list:
-    result = client.ws_call(
-        command, {"target": _validate(target), "expand_group": expand_group}
-    )
+    result = client.ws_call(command, {"target": _validate(target), "expand_group": expand_group})
     return result if isinstance(result, list) else []
 
 

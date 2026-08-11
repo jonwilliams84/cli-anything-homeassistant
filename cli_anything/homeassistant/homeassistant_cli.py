@@ -14326,9 +14326,13 @@ def target():
 @target.command("extract")
 @_target_options
 @click.option("--expand-group/--no-expand-group", default=False, show_default=True)
-@click.option("--primary-only/--all-entities", "primary_entities_only", default=True, show_default=True)
+@click.option(
+    "--primary-only/--all-entities", "primary_entities_only", default=True, show_default=True
+)
 @click.pass_context
-def target_extract(ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group, primary_entities_only):
+def target_extract(
+    ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group, primary_entities_only
+):
     """The entities a service call with this target would really hit.
 
     Read `missing_*`: an area or label HA cannot resolve contributes nothing to
@@ -14337,8 +14341,11 @@ def target_extract(ctx, entity_id, device_id, area_id, floor_id, label_id, expan
     report = targets_core.extract(
         make_client(ctx),
         targets_core.build_target(
-            entity_id=entity_id, device_id=device_id, area_id=area_id,
-            floor_id=floor_id, label_id=label_id,
+            entity_id=entity_id,
+            device_id=device_id,
+            area_id=area_id,
+            floor_id=floor_id,
+            label_id=label_id,
         ),
         expand_group=expand_group,
         primary_entities_only=primary_entities_only,
@@ -14352,12 +14359,20 @@ def target_extract(ctx, entity_id, device_id, area_id, floor_id, label_id, expan
 @click.pass_context
 def target_services(ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group):
     """Which services can be called against this target."""
-    emit(ctx, targets_core.services_for(
-        make_client(ctx),
-        targets_core.build_target(entity_id=entity_id, device_id=device_id,
-                                  area_id=area_id, floor_id=floor_id, label_id=label_id),
-        expand_group=expand_group,
-    ))
+    emit(
+        ctx,
+        targets_core.services_for(
+            make_client(ctx),
+            targets_core.build_target(
+                entity_id=entity_id,
+                device_id=device_id,
+                area_id=area_id,
+                floor_id=floor_id,
+                label_id=label_id,
+            ),
+            expand_group=expand_group,
+        ),
+    )
 
 
 @target.command("triggers")
@@ -14366,12 +14381,20 @@ def target_services(ctx, entity_id, device_id, area_id, floor_id, label_id, expa
 @click.pass_context
 def target_triggers(ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group):
     """Which triggers this target offers. An empty list is a real answer."""
-    emit(ctx, targets_core.triggers_for(
-        make_client(ctx),
-        targets_core.build_target(entity_id=entity_id, device_id=device_id,
-                                  area_id=area_id, floor_id=floor_id, label_id=label_id),
-        expand_group=expand_group,
-    ))
+    emit(
+        ctx,
+        targets_core.triggers_for(
+            make_client(ctx),
+            targets_core.build_target(
+                entity_id=entity_id,
+                device_id=device_id,
+                area_id=area_id,
+                floor_id=floor_id,
+                label_id=label_id,
+            ),
+            expand_group=expand_group,
+        ),
+    )
 
 
 @target.command("conditions")
@@ -14380,12 +14403,20 @@ def target_triggers(ctx, entity_id, device_id, area_id, floor_id, label_id, expa
 @click.pass_context
 def target_conditions(ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group):
     """Which conditions this target offers. An empty list is a real answer."""
-    emit(ctx, targets_core.conditions_for(
-        make_client(ctx),
-        targets_core.build_target(entity_id=entity_id, device_id=device_id,
-                                  area_id=area_id, floor_id=floor_id, label_id=label_id),
-        expand_group=expand_group,
-    ))
+    emit(
+        ctx,
+        targets_core.conditions_for(
+            make_client(ctx),
+            targets_core.build_target(
+                entity_id=entity_id,
+                device_id=device_id,
+                area_id=area_id,
+                floor_id=floor_id,
+                label_id=label_id,
+            ),
+            expand_group=expand_group,
+        ),
+    )
 
 
 @target.command("slugify")
@@ -14414,7 +14445,9 @@ def labs():
 def labs_list(ctx, enabled_only):
     """Every preview feature available here, with its state."""
     client = make_client(ctx)
-    emit(ctx, labs_core.enabled_features(client) if enabled_only else labs_core.list_features(client))
+    emit(
+        ctx, labs_core.enabled_features(client) if enabled_only else labs_core.list_features(client)
+    )
 
 
 @labs.command("show")
@@ -14440,9 +14473,12 @@ def labs_show(ctx, domain, preview_feature):
 @click.pass_context
 def labs_set(ctx, domain, preview_feature, enabled, create_backup):
     """Turn a preview feature on or off, reporting was/now."""
-    emit(ctx, labs_core.set_feature(
-        make_client(ctx), domain, preview_feature, enabled, create_backup=create_backup
-    ))
+    emit(
+        ctx,
+        labs_core.set_feature(
+            make_client(ctx), domain, preview_feature, enabled, create_backup=create_backup
+        ),
+    )
 
 
 # ─────────────────────────────────────────────────────────────── preferences
@@ -14472,11 +14508,14 @@ def prefs_ai_task(ctx, gen_data, gen_image):
     if gen_data is None and gen_image is None:
         emit(ctx, preferences_core.ai_task_get(client))
         return
-    emit(ctx, preferences_core.ai_task_set(
-        client,
-        gen_data_entity_id=(None if gen_data is None else (gen_data or None)),
-        gen_image_entity_id=(None if gen_image is None else (gen_image or None)),
-    ))
+    emit(
+        ctx,
+        preferences_core.ai_task_set(
+            client,
+            gen_data_entity_id=(None if gen_data is None else (gen_data or None)),
+            gen_image_entity_id=(None if gen_image is None else (gen_image or None)),
+        ),
+    )
 
 
 @prefs.command("http")
@@ -14491,7 +14530,11 @@ def prefs_http(ctx):
 
 
 @prefs.command("entity-naming")
-@click.option("--set-parts", default=None, help='JSON list, e.g. \'["device","entity"]\'; "null" restores the default')
+@click.option(
+    "--set-parts",
+    default=None,
+    help='JSON list, e.g. \'["device","entity"]\'; "null" restores the default',
+)
 @click.option("--yes", is_flag=True, default=False, help="Skip the prompt when writing.")
 @click.pass_context
 def prefs_entity_naming(ctx, set_parts, yes):
@@ -14590,7 +14633,9 @@ def intent():
 
 @intent.command("handle")
 @click.argument("name")
-@click.option("--slot", multiple=True, help="key=value, repeatable. Values are plain — HA wraps them.")
+@click.option(
+    "--slot", multiple=True, help="key=value, repeatable. Values are plain — HA wraps them."
+)
 @click.option("--language", default=None)
 @click.option("--assistant", default=None)
 @click.option("--device-id", default=None)
@@ -14603,10 +14648,17 @@ def intent_handle(ctx, name, slot, language, assistant, device_id):
             raise click.ClickException(f"--slot expects key=value, got {item!r}")
         key, _, value = item.partition("=")
         slots[key] = value
-    emit(ctx, intents_core.handle(
-        make_client(ctx), name, slots=slots or None,
-        language=language, assistant=assistant, device_id=device_id,
-    ))
+    emit(
+        ctx,
+        intents_core.handle(
+            make_client(ctx),
+            name,
+            slots=slots or None,
+            language=language,
+            assistant=assistant,
+            device_id=device_id,
+        ),
+    )
 
 
 # ─────────────────────────────────────────────────── transfer: bytes in / out
@@ -14629,9 +14681,12 @@ def backup_download(ctx, backup_id, dest, agent_id, password):
     and no body. No checksum is claimed: HA sends neither a digest nor a
     Content-Length, so the byte count is the only honest report.
     """
-    emit(ctx, transfer_core.download_backup(
-        make_client(ctx), backup_id, dest, agent_id=agent_id, password=password
-    ))
+    emit(
+        ctx,
+        transfer_core.download_backup(
+            make_client(ctx), backup_id, dest, agent_id=agent_id, password=password
+        ),
+    )
 
 
 @backup.command("upload")
@@ -14676,9 +14731,10 @@ def file_upload(ctx, file_path):
 @click.pass_context
 def media_upload(ctx, file_path, media_content_id):
     """Upload a file into the local media library."""
-    emit(ctx, transfer_core.upload_media(
-        make_client(ctx), file_path, media_content_id=media_content_id
-    ))
+    emit(
+        ctx,
+        transfer_core.upload_media(make_client(ctx), file_path, media_content_id=media_content_id),
+    )
 
 
 @media.command("search")
@@ -14692,10 +14748,15 @@ def media_search(ctx, query, media_content_id, filter_classes):
     A source that does not implement search contributes nothing, so an empty
     result means "nobody matched", not "search is unsupported".
     """
-    emit(ctx, media_source_core.search_media(
-        make_client(ctx), query=query, media_content_id=media_content_id,
-        filter_classes=list(filter_classes) or None,
-    ))
+    emit(
+        ctx,
+        media_source_core.search_media(
+            make_client(ctx),
+            query=query,
+            media_content_id=media_content_id,
+            filter_classes=list(filter_classes) or None,
+        ),
+    )
 
 
 @image.command("upload")
@@ -14733,15 +14794,18 @@ def tts_get_url(ctx, message, engine_id, language, options, cache, no_language_c
     declares neither). The language is checked against that engine's own list
     first unless --no-language-check.
     """
-    emit(ctx, tts_core.get_url(
-        make_client(ctx),
-        engine_id=engine_id,
-        message=message,
-        language=language,
-        options=_json_opt(options, "options"),
-        cache=cache,
-        check_language=not no_language_check,
-    ))
+    emit(
+        ctx,
+        tts_core.get_url(
+            make_client(ctx),
+            engine_id=engine_id,
+            message=message,
+            language=language,
+            options=_json_opt(options, "options"),
+            cache=cache,
+            check_language=not no_language_check,
+        ),
+    )
 
 
 @media_player_grp.command("search")
@@ -14757,11 +14821,16 @@ def media_player_search(ctx, entity_id, query, media_content_id, media_content_t
     (Music Assistant, Emby, Spotify) to search its own catalogue, which reaches
     content not exposed as a media source at all.
     """
-    emit(ctx, media_source_core.player_search(
-        make_client(ctx), entity_id=entity_id, query=query,
-        media_content_id=media_content_id, media_content_type=media_content_type,
-    ))
-
+    emit(
+        ctx,
+        media_source_core.player_search(
+            make_client(ctx),
+            entity_id=entity_id,
+            query=query,
+            media_content_id=media_content_id,
+            media_content_type=media_content_type,
+        ),
+    )
 
 
 if __name__ == "__main__":

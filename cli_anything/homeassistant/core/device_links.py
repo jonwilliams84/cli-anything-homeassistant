@@ -98,9 +98,7 @@ def split_for(client, device_id: str) -> dict:
 
 def linked_devices(client, device_id: str) -> dict:
     """Other registry entries HA considers the same physical device."""
-    data = client.ws_call(
-        "config/device_registry/list_linked_devices", {"device_id": device_id}
-    )
+    data = client.ws_call("config/device_registry/list_linked_devices", {"device_id": device_id})
     if isinstance(data, dict):
         rows = data.get("linked_devices") or data.get("devices") or []
     elif isinstance(data, list):
