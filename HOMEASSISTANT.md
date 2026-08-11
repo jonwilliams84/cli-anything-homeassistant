@@ -54,6 +54,13 @@ All requests require a **Long-Lived Access Token** (Bearer):
 | `GET /api/history/period[/<ts>]`      | Historical state changes                 |
 | `GET /api/logbook[/<ts>]`             | Logbook entries                          |
 | `WS /api/websocket`                   | All registry/system_health/subscriptions |
+| `GET /api/backup/download/<id>`       | Backup tarball (needs `?agent_id=`)      |
+| `POST /api/backup/upload`             | Push a backup back (`?agent_id=`, repeatable) |
+| `POST /api/file_upload`               | Stage a file, returns `file_id`          |
+| `POST /api/media_source/local_source/upload` | Into the media library (image/video/audio ONLY) |
+| `POST /api/image/upload`              | image_upload integration                 |
+| `POST /api/tts_get_url`               | Synthesise and return a playable URL     |
+| `POST /api/intent/handle`             | Fire an intent by name, no sentence parsing |
 
 WebSocket message types used by the harness:
 
@@ -64,6 +71,18 @@ WebSocket message types used by the harness:
 - `config_entries/get`
 - `system_health/info`
 - `subscribe_events`
+- `extract_from_target` / `get_{services,triggers,conditions}_for_target` / `slugify`
+- `labs/list` / `labs/update`
+- `ai_task/preferences/{get,set}` / `http/config`
+- `config/entity_registry/settings/{get,update}` / `.../get_automatic_entity_ids`
+- `recorder/entity_options/get`
+- `config/device_registry/{list_composite_splits,list_linked_devices}`
+- `tts/engine/list` / `media_source/search_media` / `media_player/search_media`
+
+**Enumerating the real surface.** HA's source ships inside the container at
+`/usr/src/homeassistant`. Diffing what it registers against what this harness
+sends is how a refine pass is scoped — see CLAUDE.md for the method and the
+false-positive trap in it.
 - `execute_script` / `validate_config` / `test_condition` / `entity/source`
   (the script-engine primitives behind the `action` group and `entity source`)
 

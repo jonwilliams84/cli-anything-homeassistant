@@ -54,7 +54,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `mqtt` / `mqtt-discovery` | Publish, subscribe, MQTT-discovery list/show/republish |
 | `repairs` | What HA thinks is wrong; list / show / ignore / fix |
 | `notifications` | Persistent notifications create / list / dismiss |
-| `backup` | Snapshot list / create / show / delete / restore (HA 2024.6+) |
+| `backup` | Snapshot list / create / show / delete / restore (HA 2024.6+) + **`download` / `upload`** — the tarball off the box and back, which is the only half that matters for disaster recovery |
 | `statistics` | Long-term recorder stats: list / metadata / **series** (chart data) / update-metadata / clear |
 | `diagnostics` | Per-integration + per-device JSON downloads (same as UI's "Download diagnostics") |
 | `blueprint` | List / import / save / delete / substitute (dry-run render) |
@@ -101,11 +101,28 @@ disable), `HASS_TIMEOUT` (seconds).
 | `image` | `image.*` entity domain — `list`/`show`/`snapshot <entity_id> <path>` (signed via `auth/sign_path` or direct auth) + `proxy-url` (signed URL minted on demand) + `subscribe` for update events |
 | `action` | Script-engine primitives — `run` an ad-hoc action sequence (WS `execute_script`, no `script.*` entity needed), `validate` trigger/condition/action blocks, `validate-automation`/`validate-script` a whole config file (exit non-zero when invalid), `test-condition` against live state (`--exit-code` for shell chaining) |
 | `entity source` | Which integration actually supplies an entity (WS `entity/source`) — provenance, `--by-integration` to group, and a strong orphan signal when a registry entry has no source |
+| `target` | **What a target actually hits** — `extract` (the entities a service call would reach, plus the areas/labels HA cannot resolve and would silently ignore), `services`/`triggers`/`conditions` (what can be done with it), `slugify` |
+| `labs` | HA 2026 preview features — `list` (`--enabled-only` is the one that explains odd behaviour), `show`, `set` with an explicit `--create-backup` because a preview feature can migrate storage |
+| `prefs` | Instance preferences with outsized effects — `ai-task` (which model a job reaches), `http` (stable vs **pending** config; a change that "did not take" is usually unpromoted), `entity-naming` + `auto-entity-id` (what HA WOULD call an entity — run before renaming), `recorded` (`recording_disabled_by` — the reason a history is empty rather than quiet) |
+| `device-links` | Composite splits and linked devices — topology the flat registry cannot show. A device-scoped target applies to ONE registry entry, so a split device is a silent partial hit |
+| `intent` | Fire an intent by name, skipping the sentence parser — what separates a sentence-match failure from a handler failure |
+| `file` | `upload` a file to HA's staging area and get the `file_id` a config flow wants |
 | `profiler` | Pass-through to the `profiler` integration's services: `start` (cProfile), `memory` (memray), `dump-log-objects --type Class`, `log-thread-frames`/`log-current-tasks`/`log-event-loop-scheduled`/`log-events`, `lru-stats`, `set-asyncio-debug`. `status` is a cheap "is the integration even loaded" probe. |
 
 ## Quick examples
 
 ```bash
+# What would "turn off the kitchen" really hit — and what silently resolves to nothing?
+cli-anything-homeassistant --json target extract --area-id kitchen \\
+  | jq '{entity_count, missing_areas, missing_labels}'
+
+# Get a backup OFF the box (the half `create` never did)
+cli-anything-homeassistant backup agents            # which agent holds it
+cli-anything-homeassistant --timeout 600 backup download <id> ./ --agent-id backup.local
+
+# Why is this entity's history empty — quiet, or not recorded at all?
+cli-anything-homeassistant prefs recorded sensor.something
+
 # Live triage: what's broken in the last hour?
 cli-anything-homeassistant system error-log --since 1h --errors-only \
   --top 10 --by component

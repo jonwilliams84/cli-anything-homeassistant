@@ -44,6 +44,12 @@ from cli_anything.homeassistant.core import calendars as calendars_core
 from cli_anything.homeassistant.core import energy as energy_core
 from cli_anything.homeassistant.core import themes as themes_core
 from cli_anything.homeassistant.core import tts as tts_core
+from cli_anything.homeassistant.core import targets as targets_core
+from cli_anything.homeassistant.core import transfer as transfer_core
+from cli_anything.homeassistant.core import labs as labs_core
+from cli_anything.homeassistant.core import preferences as preferences_core
+from cli_anything.homeassistant.core import device_links as device_links_core
+from cli_anything.homeassistant.core import intents as intents_core
 from cli_anything.homeassistant.core import control as control_core
 from cli_anything.homeassistant.core import diagnostics as diagnostics_core
 from cli_anything.homeassistant.core import floors as floors_core
@@ -276,10 +282,33 @@ def _abort(message: str) -> None:
     sys.exit(1)
 
 
+class _HandledGroup(click.Group):
+    """Present HA/validation errors the same way from EVERY entry point.
+
+    The handling used to live only in `main()`, so a `ValueError` raised by a
+    core function became a clean `error: …` line when the console script was
+    used and an uncaught traceback under `python -m`, under an embedding
+    caller, and under Click's own CliRunner — where `result.output` came back
+    EMPTY, which is how a test asserting on the message reads as a bug in the
+    message rather than in where it was caught.
+
+    Catching at the group means the presentation is a property of the CLI
+    rather than of how it was launched. `main()` keeps its own handler for
+    anything raised before the group is entered (config loading, argv
+    hoisting).
+    """
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except (HomeAssistantError, ValueError) as exc:
+            _abort(str(exc))
+
+
 # ──────────────────────────────────────────────────────────────────────── root
 
 
-@click.group(context_settings=CONTEXT_SETTINGS, invoke_without_command=True)
+@click.group(cls=_HandledGroup, context_settings=CONTEXT_SETTINGS, invoke_without_command=True)
 @click.option("--url", default=None, help="Home Assistant base URL (e.g. http://localhost:8123)")
 @click.option("--token", default=None, help="Long-lived access token")
 @click.option("--verify-ssl/--no-verify-ssl", default=None, help="Verify TLS cert (default: on)")
@@ -14246,6 +14275,493 @@ def state_stream_snapshot(ctx, entity_ids, timeout_seconds, ids_only):
         timeout_seconds=timeout_seconds,
     )
     emit(ctx, sorted(snap) if ids_only else snap)
+
+
+def _json_opt(value, what):
+    """Parse a JSON option, or read it from a file with @path.
+
+    Lives here rather than in the `validate` block it was written for: that
+    group was superseded by `action` before this landed, and the surviving
+    commands still need it.
+    """
+    if value is None:
+        return None
+    text = value
+    if value.startswith("@"):
+        path = Path(value[1:]).expanduser()
+        if not path.exists():
+            raise click.ClickException(f"--{what}: no such file: {path}")
+        text = path.read_text(encoding="utf-8")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"--{what} is not valid JSON: {exc}") from exc
+
+
+# ────────────────────────────────────────────────────────────────── target
+
+
+def _target_options(fn):
+    for opt in (
+        click.option("--entity-id", multiple=True, help="Repeatable."),
+        click.option("--device-id", multiple=True, help="Repeatable."),
+        click.option("--area-id", multiple=True, help="Repeatable."),
+        click.option("--floor-id", multiple=True, help="Repeatable."),
+        click.option("--label-id", multiple=True, help="Repeatable."),
+    ):
+        fn = opt(fn)
+    return fn
+
+
+@cli.group()
+def target():
+    """What a target resolves to, and what can be done with it.
+
+    A service call takes an area/device/floor/label and HA expands it. This
+    asks HA the same question its own service layer asks, BEFORE the call —
+    including which parts of the target resolve to nothing.
+    """
+
+
+@target.command("extract")
+@_target_options
+@click.option("--expand-group/--no-expand-group", default=False, show_default=True)
+@click.option("--primary-only/--all-entities", "primary_entities_only", default=True, show_default=True)
+@click.pass_context
+def target_extract(ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group, primary_entities_only):
+    """The entities a service call with this target would really hit.
+
+    Read `missing_*`: an area or label HA cannot resolve contributes nothing to
+    a real service call, silently.
+    """
+    report = targets_core.extract(
+        make_client(ctx),
+        targets_core.build_target(
+            entity_id=entity_id, device_id=device_id, area_id=area_id,
+            floor_id=floor_id, label_id=label_id,
+        ),
+        expand_group=expand_group,
+        primary_entities_only=primary_entities_only,
+    )
+    emit(ctx, report)
+
+
+@target.command("services")
+@_target_options
+@click.option("--expand-group/--no-expand-group", default=True, show_default=True)
+@click.pass_context
+def target_services(ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group):
+    """Which services can be called against this target."""
+    emit(ctx, targets_core.services_for(
+        make_client(ctx),
+        targets_core.build_target(entity_id=entity_id, device_id=device_id,
+                                  area_id=area_id, floor_id=floor_id, label_id=label_id),
+        expand_group=expand_group,
+    ))
+
+
+@target.command("triggers")
+@_target_options
+@click.option("--expand-group/--no-expand-group", default=True, show_default=True)
+@click.pass_context
+def target_triggers(ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group):
+    """Which triggers this target offers. An empty list is a real answer."""
+    emit(ctx, targets_core.triggers_for(
+        make_client(ctx),
+        targets_core.build_target(entity_id=entity_id, device_id=device_id,
+                                  area_id=area_id, floor_id=floor_id, label_id=label_id),
+        expand_group=expand_group,
+    ))
+
+
+@target.command("conditions")
+@_target_options
+@click.option("--expand-group/--no-expand-group", default=True, show_default=True)
+@click.pass_context
+def target_conditions(ctx, entity_id, device_id, area_id, floor_id, label_id, expand_group):
+    """Which conditions this target offers. An empty list is a real answer."""
+    emit(ctx, targets_core.conditions_for(
+        make_client(ctx),
+        targets_core.build_target(entity_id=entity_id, device_id=device_id,
+                                  area_id=area_id, floor_id=floor_id, label_id=label_id),
+        expand_group=expand_group,
+    ))
+
+
+@target.command("slugify")
+@click.argument("text")
+@click.pass_context
+def target_slugify(ctx, text):
+    """Slugify a string the way HA itself would — asked, not reimplemented."""
+    emit(ctx, targets_core.slugify(make_client(ctx), text))
+
+
+# ──────────────────────────────────────────────────────────────────── labs
+
+
+@cli.group()
+def labs():
+    """HA Labs — preview features this instance can opt into.
+
+    A preview feature changes behaviour underneath everything else reported
+    here, and until now there was no way to see one was switched on.
+    """
+
+
+@labs.command("list")
+@click.option("--enabled-only", is_flag=True, default=False, help="Only what is switched ON")
+@click.pass_context
+def labs_list(ctx, enabled_only):
+    """Every preview feature available here, with its state."""
+    client = make_client(ctx)
+    emit(ctx, labs_core.enabled_features(client) if enabled_only else labs_core.list_features(client))
+
+
+@labs.command("show")
+@click.argument("domain")
+@click.argument("preview_feature")
+@click.pass_context
+def labs_show(ctx, domain, preview_feature):
+    """One preview feature, with its learn-more and feedback links."""
+    emit(ctx, labs_core.get_feature(make_client(ctx), domain, preview_feature))
+
+
+@labs.command("set")
+@click.argument("domain")
+@click.argument("preview_feature")
+@click.argument("enabled", type=click.BOOL)
+@click.option(
+    "--create-backup/--no-create-backup",
+    default=False,
+    show_default=True,
+    help="HA's own default is False. A preview feature can migrate storage.",
+)
+@click.confirmation_option(prompt="Change this preview feature?")
+@click.pass_context
+def labs_set(ctx, domain, preview_feature, enabled, create_backup):
+    """Turn a preview feature on or off, reporting was/now."""
+    emit(ctx, labs_core.set_feature(
+        make_client(ctx), domain, preview_feature, enabled, create_backup=create_backup
+    ))
+
+
+# ─────────────────────────────────────────────────────────────── preferences
+
+
+@cli.group()
+def prefs():
+    """Instance preferences that shape everything else: AI Task, HTTP, naming.
+
+    Small stored settings with outsized effects — which AI model a job reaches,
+    whether an HTTP change is live or merely pending, and how HA names an
+    entity it creates.
+    """
+
+
+@prefs.command("ai-task")
+@click.option("--gen-data", default=None, help="Entity for ai_task.generate_data ('' clears)")
+@click.option("--gen-image", default=None, help="Entity for ai_task.generate_image ('' clears)")
+@click.pass_context
+def prefs_ai_task(ctx, gen_data, gen_image):
+    """Read or set the default AI Task entities.
+
+    With no options this reads. A job that reached the wrong model is nearly
+    always this setting.
+    """
+    client = make_client(ctx)
+    if gen_data is None and gen_image is None:
+        emit(ctx, preferences_core.ai_task_get(client))
+        return
+    emit(ctx, preferences_core.ai_task_set(
+        client,
+        gen_data_entity_id=(None if gen_data is None else (gen_data or None)),
+        gen_image_entity_id=(None if gen_image is None else (gen_image or None)),
+    ))
+
+
+@prefs.command("http")
+@click.pass_context
+def prefs_http(ctx):
+    """HA's stored HTTP config — and whether a change is live or pending.
+
+    Read `active_config_type`. A CORS or trusted-proxy edit that "did not take"
+    is usually sitting in `pending`, unpromoted.
+    """
+    emit(ctx, preferences_core.http_config(make_client(ctx)))
+
+
+@prefs.command("entity-naming")
+@click.option("--set-parts", default=None, help='JSON list, e.g. \'["device","entity"]\'; "null" restores the default')
+@click.option("--yes", is_flag=True, default=False, help="Skip the prompt when writing.")
+@click.pass_context
+def prefs_entity_naming(ctx, set_parts, yes):
+    """The rule HA uses to build automatic entity ids. `None` = the default.
+
+    With no --set-parts this READS, so the confirmation is inline rather than a
+    `confirmation_option` — that decorator would prompt on the read too, which
+    is how a read-only command ends up feeling dangerous.
+    """
+    client = make_client(ctx)
+    if set_parts is None:
+        emit(ctx, preferences_core.entity_id_settings(client))
+        return
+    if not yes:
+        click.confirm(
+            "Change instance-wide entity-id naming? This affects every entity_id "
+            "HA generates from now on.",
+            abort=True,
+        )
+    emit(ctx, preferences_core.set_entity_id_settings(client, _json_opt(set_parts, "set-parts")))
+
+
+@prefs.command("auto-entity-id")
+@click.argument("entity_ids", nargs=-1, required=True)
+@click.pass_context
+def prefs_auto_entity_id(ctx, entity_ids):
+    """What HA WOULD call these entities. Run before renaming.
+
+    `None` is an answer, not a lookup failure: it means HA has no automatic id
+    for that entity.
+    """
+    emit(ctx, preferences_core.automatic_entity_ids(make_client(ctx), list(entity_ids)))
+
+
+@prefs.command("recorded")
+@click.argument("entity_id")
+@click.pass_context
+def prefs_recorded(ctx, entity_id):
+    """Is the recorder storing this entity at all?
+
+    `recording_disabled_by` non-null means no history and no statistics — which
+    every history command here would otherwise report as an empty result
+    indistinguishable from a quiet entity.
+    """
+    emit(ctx, preferences_core.recorder_entity_options(make_client(ctx), entity_id))
+
+
+# ───────────────────────────────────────────────────────────── device links
+
+
+@cli.group("device-links")
+def device_links():
+    """Device topology the flat registry cannot show.
+
+    Linked devices (one physical thing via two integrations) and composite
+    splits (one device split into several registry entries). A device-scoped
+    target applies to ONE entry, so a split device is a silent partial hit.
+    """
+
+
+@device_links.command("splits")
+@click.pass_context
+def device_links_splits(ctx):
+    """Every composite split on this instance, plus the reverse lookup."""
+    emit(ctx, device_links_core.composite_splits(make_client(ctx)))
+
+
+@device_links.command("split-for")
+@click.argument("device_id")
+@click.pass_context
+def device_links_split_for(ctx, device_id):
+    """Is this device part of a composite split, and what is the whole set?"""
+    emit(ctx, device_links_core.split_for(make_client(ctx), device_id))
+
+
+@device_links.command("linked")
+@click.argument("device_id")
+@click.pass_context
+def device_links_linked(ctx, device_id):
+    """Other registry entries HA considers the same physical device."""
+    emit(ctx, device_links_core.linked_devices(make_client(ctx), device_id))
+
+
+# ────────────────────────────────────────────────────────────────── intent
+
+
+@cli.group()
+def intent():
+    """Fire an intent directly, skipping the sentence parser.
+
+    `assist ask` sends a SENTENCE and lets the agent decide what it means. When
+    that misbehaves, running the intent here is what separates a sentence-match
+    failure from a handler failure.
+    """
+
+
+@intent.command("handle")
+@click.argument("name")
+@click.option("--slot", multiple=True, help="key=value, repeatable. Values are plain — HA wraps them.")
+@click.option("--language", default=None)
+@click.option("--assistant", default=None)
+@click.option("--device-id", default=None)
+@click.pass_context
+def intent_handle(ctx, name, slot, language, assistant, device_id):
+    """Run one intent by name (e.g. HassTurnOn) with plain-valued slots."""
+    slots = {}
+    for item in slot:
+        if "=" not in item:
+            raise click.ClickException(f"--slot expects key=value, got {item!r}")
+        key, _, value = item.partition("=")
+        slots[key] = value
+    emit(ctx, intents_core.handle(
+        make_client(ctx), name, slots=slots or None,
+        language=language, assistant=assistant, device_id=device_id,
+    ))
+
+
+# ─────────────────────────────────────────────────── transfer: bytes in / out
+
+
+@backup.command("download")
+@click.argument("backup_id")
+@click.argument("dest", type=click.Path())
+@click.option("--agent-id", required=True, help="Which agent holds it — see `backup agents`.")
+@click.option("--password", default=None, help="For an encrypted backup.")
+@click.pass_context
+def backup_download(ctx, backup_id, dest, agent_id, password):
+    """Stream a backup tarball off the box.
+
+    THE HALF THAT WAS MISSING. `create`/`list`/`show`/`restore` all talk to HA
+    about a file that never leaves it — which is the wrong half for disaster
+    recovery, where the point is the tarball on other storage.
+
+    `--agent-id` is required because HA answers a missing one with a bare 400
+    and no body. No checksum is claimed: HA sends neither a digest nor a
+    Content-Length, so the byte count is the only honest report.
+    """
+    emit(ctx, transfer_core.download_backup(
+        make_client(ctx), backup_id, dest, agent_id=agent_id, password=password
+    ))
+
+
+@backup.command("upload")
+@click.argument("file_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--agent-id", multiple=True, required=True, help="Repeatable — HA reads all of them.")
+@click.pass_context
+def backup_upload(ctx, file_path, agent_id):
+    """Push a backup tarball back into HA, to one or more agents.
+
+    A big upload needs a bigger `--timeout`; the failure otherwise looks like a
+    connection problem.
+    """
+    emit(ctx, transfer_core.upload_backup(make_client(ctx), file_path, agent_ids=list(agent_id)))
+
+
+@cli.group("file")
+def file_group():
+    """Upload a file to HA's staging area and get its `file_id`.
+
+    This is what a config flow wants for a certificate, a keyfile or an image.
+    The file is NOT stored permanently — HA reaps unclaimed uploads — so the
+    id is the whole product.
+    """
+
+
+@file_group.command("upload")
+@click.argument("file_path", type=click.Path(exists=True, dir_okay=False))
+@click.pass_context
+def file_upload(ctx, file_path):
+    """Upload and return the file_id to hand to a config flow."""
+    emit(ctx, transfer_core.upload_file(make_client(ctx), file_path))
+
+
+@media.command("upload")
+@click.argument("file_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--target",
+    "media_content_id",
+    required=True,
+    help="Destination FOLDER's media_content_id — run `media browse` for it.",
+)
+@click.pass_context
+def media_upload(ctx, file_path, media_content_id):
+    """Upload a file into the local media library."""
+    emit(ctx, transfer_core.upload_media(
+        make_client(ctx), file_path, media_content_id=media_content_id
+    ))
+
+
+@media.command("search")
+@click.argument("query")
+@click.option("--scope", "media_content_id", default="", help="Restrict to a subtree.")
+@click.option("--class", "filter_classes", multiple=True, help="MediaClass filter, repeatable.")
+@click.pass_context
+def media_search(ctx, query, media_content_id, filter_classes):
+    """Search the media sources instead of walking `browse` by hand.
+
+    A source that does not implement search contributes nothing, so an empty
+    result means "nobody matched", not "search is unsupported".
+    """
+    emit(ctx, media_source_core.search_media(
+        make_client(ctx), query=query, media_content_id=media_content_id,
+        filter_classes=list(filter_classes) or None,
+    ))
+
+
+@image.command("upload")
+@click.argument("file_path", type=click.Path(exists=True, dir_okay=False))
+@click.pass_context
+def image_upload(ctx, file_path):
+    """Upload an image to the image_upload integration.
+
+    Returns the stored image id — what a person avatar or dashboard background
+    refers to, served afterwards from /api/image/serve/<id>/<size>.
+    """
+    emit(ctx, transfer_core.upload_image(make_client(ctx), file_path))
+
+
+@tts.command("get-url")
+@click.argument("message")
+@click.option("--engine-id", required=True, help="e.g. tts.piper")
+@click.option("--language", default=None, help="Must be one the engine declares — see `tts list`.")
+@click.option("--options", default=None, help="Engine options as JSON, or @file.json")
+@click.option("--cache/--no-cache", "cache", default=None)
+@click.option(
+    "--no-language-check",
+    is_flag=True,
+    default=False,
+    help="Send --language through unchecked (HA's failure is a bare 500).",
+)
+@click.pass_context
+def tts_get_url(ctx, message, engine_id, language, options, cache, no_language_check):
+    """Synthesise and return a playable URL — without playing it.
+
+    A 500 from this endpoint means the ENGINE DOES NOT SUPPORT THAT LANGUAGE,
+    and HA's body says nothing. Measured across four engines: omitting
+    --language works everywhere, while the engines disagree on the separator
+    (piper declares en_GB, the Wyoming pair declare en-GB, google_ai_tts
+    declares neither). The language is checked against that engine's own list
+    first unless --no-language-check.
+    """
+    emit(ctx, tts_core.get_url(
+        make_client(ctx),
+        engine_id=engine_id,
+        message=message,
+        language=language,
+        options=_json_opt(options, "options"),
+        cache=cache,
+        check_language=not no_language_check,
+    ))
+
+
+@media_player_grp.command("search")
+@click.argument("entity_id")
+@click.argument("query")
+@click.option("--content-id", "media_content_id", default=None)
+@click.option("--content-type", "media_content_type", default=None)
+@click.pass_context
+def media_player_search(ctx, entity_id, query, media_content_id, media_content_type):
+    """Search inside ONE player's own library.
+
+    Different question from `media search`: this asks the player's integration
+    (Music Assistant, Emby, Spotify) to search its own catalogue, which reaches
+    content not exposed as a media source at all.
+    """
+    emit(ctx, media_source_core.player_search(
+        make_client(ctx), entity_id=entity_id, query=query,
+        media_content_id=media_content_id, media_content_type=media_content_type,
+    ))
+
 
 
 if __name__ == "__main__":

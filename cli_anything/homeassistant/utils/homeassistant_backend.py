@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
+import os
 import threading
 import time
 from itertools import count
@@ -168,6 +170,125 @@ class HomeAssistantClient:
             raise self._connection_error(exc) from exc
         except requests.exceptions.Timeout as exc:
             raise HomeAssistantError(f"Request timed out after {self.timeout}s: {exc}") from exc
+        self._check_auth(resp)
+        if not resp.ok:
+            raise HomeAssistantError(f"POST {path} -> {resp.status_code}: {resp.text[:500]}")
+        return self._decode(resp)
+
+    def download(
+        self,
+        path: str,
+        dest,
+        params: Any = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> dict:
+        """Stream a binary REST response to a file and report what landed.
+
+        Needed because `get()` decodes the body — fine for JSON, useless for a
+        backup tarball, which is measured in gigabytes and must never be held in
+        memory. The response is streamed straight to disk.
+
+        `params` accepts a list of pairs as well as a dict, because HA reads
+        `agent_id` with `query.getall()` — a backup can be downloaded from, and
+        uploaded to, several agents, and a plain dict cannot express a repeated
+        key.
+
+        Nothing is written until the status is known: a 4xx from HA is a small
+        JSON or text body, and truncating the caller's file to hold an error
+        message would be the worst possible outcome for a restore.
+        """
+        try:
+            resp = self.session.get(
+                self._url(path), params=params, timeout=self.timeout, stream=True
+            )
+        except requests.exceptions.ConnectionError as exc:
+            raise self._connection_error(exc) from exc
+        except requests.exceptions.Timeout as exc:
+            raise HomeAssistantError(f"Request timed out after {self.timeout}s: {exc}") from exc
+        with resp:
+            self._check_auth(resp)
+            if not resp.ok:
+                raise HomeAssistantError(
+                    f"GET {path} -> {resp.status_code}: {resp.text[:500]}"
+                )
+            written = 0
+            with open(dest, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        fh.write(chunk)
+                        written += len(chunk)
+        declared = resp.headers.get("Content-Length")
+        return {
+            "path": str(dest),
+            "bytes": written,
+            "content_type": resp.headers.get("Content-Type"),
+            "declared_length": int(declared) if declared and declared.isdigit() else None,
+            # MEASURED on a real 195MB backup: HA DOES send a Content-Length,
+            # and it matched the bytes written exactly. So a truncated transfer
+            # is detectable, and `size_matches` says so. It is None — not
+            # False — when nothing was declared, because "not checked" and
+            # "checked and wrong" must not read the same.
+            "size_matches": (
+                (written == int(declared)) if declared and declared.isdigit() else None
+            ),
+        }
+
+    def upload(
+        self,
+        path: str,
+        file_path,
+        field: str = "file",
+        params: Any = None,
+        extra_fields: dict | None = None,
+        content_type: str | None = None,
+    ) -> Any:
+        """POST a multipart/form-data upload and return the decoded response.
+
+        THE SESSION-HEADER TRAP: this client sets `Content-Type: application/json`
+        on the SESSION, so it is sent on every request. A multipart POST must
+        carry `multipart/form-data; boundary=…` instead, and requests only
+        generates that header when it is not already set. Leaving the session
+        header in place produces a JSON content-type on a multipart body, and
+        HA answers with a 400 that says nothing about the cause. The header is
+        therefore removed for this request only, by passing an explicit
+        `headers` mapping with Content-Type set to None.
+
+        The field name matters and is not cosmetic: `/api/file_upload` rejects
+        anything not called `file`, while `/api/backup/upload` reads the first
+        part regardless of its name.
+
+        SO DOES THE CONTENT TYPE, for one endpoint. `/api/media_source/local_source
+        /upload` checks `content_type.startswith(("image/", "video/", "audio/"))`
+        and returns a bare 400 otherwise — the reason ("Content type not
+        allowed") goes to HA's LOG and not to the caller. A hard-coded
+        `application/octet-stream` therefore fails every media upload. It is
+        guessed from the filename when not given, which is right for media and
+        harmless for the endpoints that do not look.
+        """
+        file_path = str(file_path)
+        try:
+            with open(file_path, "rb") as fh:
+                guessed = content_type or (
+                    mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+                )
+                files = {field: (os.path.basename(file_path), fh, guessed)}
+                resp = self.session.post(
+                    self._url(path),
+                    params=params,
+                    files=files,
+                    data=extra_fields or None,
+                    headers={"Content-Type": None},
+                    timeout=self.timeout,
+                )
+        except FileNotFoundError as exc:
+            raise HomeAssistantError(f"No such file to upload: {file_path}") from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise self._connection_error(exc) from exc
+        except requests.exceptions.Timeout as exc:
+            raise HomeAssistantError(
+                f"Upload timed out after {self.timeout}s — a large backup needs a "
+                f"bigger --timeout: {exc}"
+            ) from exc
         self._check_auth(resp)
         if not resp.ok:
             raise HomeAssistantError(f"POST {path} -> {resp.status_code}: {resp.text[:500]}")
