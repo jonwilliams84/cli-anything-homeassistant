@@ -8,6 +8,7 @@ WS commands wrapped
 -------------------
 * ``subscribe_events``   — subscribe to any HA event bus event type
 * ``subscribe_trigger``  — subscribe to HA trigger evaluations
+* ``subscribe_entities`` — compressed full-state snapshot + per-entity diffs
 
 Public API
 ----------
@@ -15,6 +16,8 @@ Public API
 * :func:`subscribe_state_changed`
 * :func:`subscribe_trigger`
 * :func:`collect_events`
+* :func:`subscribe_entities`
+* :func:`entities_snapshot`
 """
 
 from __future__ import annotations
@@ -283,3 +286,133 @@ def collect_events(
             f"{len(collected)} within {timeout_seconds}s"
         )
     return collected
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Compressed entity subscription (`subscribe_entities`)
+# ────────────────────────────────────────────────────────────────────────────
+#
+# `subscribe_entities` is what the frontend itself uses instead of
+# `subscribe_events`/`state_changed`. Two differences matter:
+#
+#   * the first event is a full **snapshot** of every allowed state, keyed by
+#     entity_id, in HA's compressed form (`s` state, `a` attributes, `lc`/`lu`
+#     timestamps, `c` context) — one message instead of a REST round-trip;
+#   * subsequent events are **diffs** (`{"c": {entity_id: {"+": {...}}}}`),
+#     carrying only what changed rather than full before/after states.
+
+
+def _validate_entity_ids(entity_ids: list[str] | None) -> list[str] | None:
+    if entity_ids is None:
+        return None
+    if not isinstance(entity_ids, (list, tuple, set)):
+        raise ValueError("entity_ids must be a list of entity ids")
+    ids = [str(e) for e in entity_ids]
+    for entity_id in ids:
+        if "." not in entity_id:
+            raise ValueError(f"entity_id must look like 'domain.object_id', got: {entity_id!r}")
+    return ids or None
+
+
+def subscribe_entities(
+    client,
+    *,
+    entity_ids: list[str] | None = None,
+    on_message: Callable,
+    stop_event: threading.Event | None = None,
+    max_events: int | None = None,
+) -> None:
+    """Subscribe to compressed state snapshots + diffs (`subscribe_entities`).
+
+    ``on_message`` receives the raw event dicts: the first has an ``"a"`` key
+    (added/initial states), later ones an ``"a"``, ``"c"`` (changed) or ``"r"``
+    (removed) key.
+
+    Parameters
+    ----------
+    client:
+        Home Assistant client.
+    entity_ids:
+        Restrict the subscription to these entities (server-side filter).
+    on_message:
+        Callable invoked with each event dict.
+    stop_event:
+        See :func:`subscribe_events`.
+    max_events:
+        See :func:`subscribe_events`. The initial snapshot counts as one.
+
+    Raises
+    ------
+    ValueError
+        If ``on_message`` is not callable, an entity id is malformed, or
+        neither ``stop_event`` nor ``max_events`` is supplied.
+    """
+    _validate_callable(on_message, "on_message")
+    ids = _validate_entity_ids(entity_ids)
+    stop, owns_stop = _resolve_stop_event(stop_event, max_events)
+
+    payload: dict = {}
+    if ids:
+        payload["entity_ids"] = ids
+
+    wrapper = _wrap_with_max_events(on_message, stop, owns_stop, max_events)
+    client.ws_subscribe("subscribe_entities", payload or None, wrapper, stop)
+
+
+def entities_snapshot(
+    client,
+    *,
+    entity_ids: list[str] | None = None,
+    timeout_seconds: float = 10.0,
+) -> dict:
+    """Return the initial compressed-state snapshot as ``{entity_id: {...}}``.
+
+    One WebSocket message gives every state the token may read — the cheapest
+    full-state read available, and the only one that returns HA's compressed
+    representation.
+
+    Raises
+    ------
+    TimeoutError
+        If the snapshot did not arrive within ``timeout_seconds``.
+    ValueError
+        If ``timeout_seconds <= 0`` or an entity id is malformed.
+    """
+    _validate_timeout(timeout_seconds)
+    ids = _validate_entity_ids(entity_ids)
+
+    snapshot: dict = {}
+    errors: list[BaseException] = []
+    seen = threading.Event()
+    stop = _make_stop_event()
+
+    def on_message(event: object) -> None:
+        if isinstance(event, dict) and "a" in event:
+            snapshot.update(event.get("a") or {})
+            seen.set()
+            stop.set()
+
+    def _run() -> None:
+        try:
+            subscribe_entities(
+                client,
+                entity_ids=ids,
+                on_message=on_message,
+                stop_event=stop,
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            errors.append(exc)
+            stop.set()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+    stop.set()
+
+    if not seen.is_set():
+        if errors:
+            raise errors[0]
+        raise TimeoutError(
+            f"entities_snapshot: no state snapshot received within {timeout_seconds}s"
+        )
+    return snapshot

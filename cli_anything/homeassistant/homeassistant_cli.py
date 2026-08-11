@@ -125,6 +125,9 @@ from cli_anything.homeassistant.core import lovelace_sections_ext as lovelace_se
 from cli_anything.homeassistant.core import lovelace_views as lovelace_views_core
 from cli_anything.homeassistant.core import script_engine as script_engine_core
 from cli_anything.homeassistant.core import state_stream as state_stream_core
+from cli_anything.homeassistant.core import template_ws as template_ws_core
+from cli_anything.homeassistant.core import frontend_meta as frontend_meta_core
+from cli_anything.homeassistant.core import device_class_units as device_class_units_core
 from cli_anything.homeassistant.core import trace_debug as trace_debug_core
 from cli_anything.homeassistant.core import trace_debugger as trace_debugger_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
@@ -13743,6 +13746,506 @@ def entity_source_cmd(ctx, entity_id, integration, by_integration):
         emit(ctx, script_engine_core.sources_by_integration(client, integration=integration))
         return
     emit(ctx, script_engine_core.entity_source(client))
+
+
+# ───────────────────────────────── template-ws (WS render_template)
+#
+# The REST `template` command returns text and no dependency information.
+# These speak the WebSocket `render_template` API the template editor uses:
+# native-typed results plus the listeners block (which entities/domains the
+# template re-renders on).
+
+
+def _template_source(template_str, template_file):
+    """Resolve a template from an argument, --file <path>, --file -, or stdin."""
+    if template_file == "-":
+        return sys.stdin.read()
+    if template_file:
+        return Path(template_file).read_text()
+    if template_str:
+        return template_str
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    raise click.UsageError("Provide a template argument, --file <path>, or stdin")
+
+
+@cli.group("template-ws")
+def template_ws():
+    """Template rendering over WebSocket — typed results + dependency listeners.
+
+    Sibling of the REST `template` command (and of `calendar` / `calendar-ws`).
+    Use this one when you care about the value's *type*, about which entities a
+    template actually depends on, or about watching it re-render live.
+    """
+
+
+@template_ws.command("render")
+@click.argument("template_str", required=False)
+@click.option(
+    "--file",
+    "-f",
+    "template_file",
+    default=None,
+    help="Read the template from this file (use - for stdin)",
+)
+@click.option("--var", "-V", "variables", multiple=True, help="key=value template variable")
+@click.option("--strict", is_flag=True, default=False, help="Fail on undefined variables")
+@click.option("--timeout", "timeout_seconds", type=float, default=10.0, show_default=True)
+@click.option(
+    "--value-only",
+    is_flag=True,
+    default=False,
+    help="Print only the rendered value (drop the listeners block).",
+)
+@click.pass_context
+def template_ws_render(
+    ctx, template_str, template_file, variables, strict, timeout_seconds, value_only
+):
+    """Render a template and report what it depends on.
+
+    Unlike `template`, the result keeps its JSON type — `{{ 1 + 1 }}` comes
+    back as the number 2, not the string "2".
+
+    \b
+    ha template-ws render '{{ states.light | selectattr("state","eq","on") | list | count }}'
+    """
+    result = template_ws_core.render(
+        make_client(ctx),
+        _template_source(template_str, template_file),
+        variables=parse_kv_pairs(variables) or None,
+        strict=strict,
+        timeout_seconds=timeout_seconds,
+    )
+    emit(ctx, result["result"] if value_only else result)
+
+
+@template_ws.command("listeners")
+@click.argument("template_str", required=False)
+@click.option("--file", "-f", "template_file", default=None, help="Read the template from a file")
+@click.option("--var", "-V", "variables", multiple=True, help="key=value template variable")
+@click.option("--timeout", "timeout_seconds", type=float, default=10.0, show_default=True)
+@click.option("--entities-only", is_flag=True, default=False, help="Print just the entity id list.")
+@click.pass_context
+def template_ws_listeners(
+    ctx, template_str, template_file, variables, timeout_seconds, entities_only
+):
+    """Show the template's dependency graph: entities, domains, time, all.
+
+    `all: true` means the template re-renders on *every* state change in the
+    system — the answer to "why is this template helper so expensive?".
+    """
+    client = make_client(ctx)
+    tpl = _template_source(template_str, template_file)
+    vars_ = parse_kv_pairs(variables) or None
+    if entities_only:
+        emit(
+            ctx,
+            template_ws_core.entities_used(
+                client, tpl, variables=vars_, timeout_seconds=timeout_seconds
+            ),
+        )
+        return
+    emit(
+        ctx,
+        template_ws_core.listeners(client, tpl, variables=vars_, timeout_seconds=timeout_seconds),
+    )
+
+
+@template_ws.command("uses")
+@click.argument("entity_id")
+@click.argument("template_str", required=False)
+@click.option("--file", "-f", "template_file", default=None, help="Read the template from a file")
+@click.option("--var", "-V", "variables", multiple=True, help="key=value template variable")
+@click.option("--timeout", "timeout_seconds", type=float, default=10.0, show_default=True)
+@click.option(
+    "--exit-code",
+    is_flag=True,
+    default=False,
+    help="Exit 1 when the template does not depend on the entity.",
+)
+@click.pass_context
+def template_ws_uses(
+    ctx, entity_id, template_str, template_file, variables, timeout_seconds, exit_code
+):
+    """Does this template re-render when ENTITY_ID changes?
+
+    True for a direct listener, for a whole-domain listener, and for the
+    catch-all `all` listener — i.e. it answers the question the way HA does.
+    """
+    depends = template_ws_core.depends_on(
+        make_client(ctx),
+        _template_source(template_str, template_file),
+        entity_id,
+        variables=parse_kv_pairs(variables) or None,
+        timeout_seconds=timeout_seconds,
+    )
+    emit(ctx, {"entity_id": entity_id, "depends_on": depends})
+    if exit_code and not depends:
+        sys.exit(1)
+
+
+@template_ws.command("validate")
+@click.argument("template_str", required=False)
+@click.option("--file", "-f", "template_file", default=None, help="Read the template from a file")
+@click.option("--var", "-V", "variables", multiple=True, help="key=value template variable")
+@click.option("--strict", is_flag=True, default=False, help="Fail on undefined variables")
+@click.option("--timeout", "timeout_seconds", type=float, default=10.0, show_default=True)
+@click.pass_context
+def template_ws_validate(ctx, template_str, template_file, variables, strict, timeout_seconds):
+    """Pre-flight a template before `template-helper create`.
+
+    Never raises on a bad template: reports {valid, error, result, listeners}
+    and exits non-zero so it chains with &&.
+    """
+    result = template_ws_core.validate(
+        make_client(ctx),
+        _template_source(template_str, template_file),
+        variables=parse_kv_pairs(variables) or None,
+        strict=strict,
+        timeout_seconds=timeout_seconds,
+    )
+    emit(ctx, result)
+    if not result.get("valid"):
+        raise click.ClickException(f"invalid template: {result.get('error')}")
+
+
+@template_ws.command("watch")
+@click.argument("template_str", required=False)
+@click.option("--file", "-f", "template_file", default=None, help="Read the template from a file")
+@click.option("--var", "-V", "variables", multiple=True, help="key=value template variable")
+@click.option("--strict", is_flag=True, default=False, help="Fail on undefined variables")
+@click.option("--max-events", type=int, default=10, show_default=True)
+@click.pass_context
+def template_ws_watch(ctx, template_str, template_file, variables, strict, max_events):
+    """Stream re-renders of a template as the state it depends on changes."""
+    template_ws_core.watch(
+        make_client(ctx),
+        _template_source(template_str, template_file),
+        _print_event,
+        variables=parse_kv_pairs(variables) or None,
+        strict=strict,
+        max_events=max_events,
+    )
+    emit(ctx, {"stopped": True, "max_events": max_events})
+
+
+# ───────────────────────────────── panel (sidebar / dashboard routing)
+
+
+@cli.group()
+def panel():
+    """Sidebar panels (WS `get_panels`) — what every dashboard URL resolves to.
+
+    Broader than `lovelace dashboards`: includes the default dashboard, the
+    built-in panels (config, history, developer-tools), custom panels and
+    iframe panels.
+    """
+
+
+@panel.command("list")
+@click.option(
+    "--component-name",
+    "-c",
+    default=None,
+    help="Filter by panel implementation (lovelace, custom, iframe, config, …)",
+)
+@click.option("--url-paths-only", is_flag=True, default=False, help="Print only the url paths.")
+@click.pass_context
+def panel_list(ctx, component_name, url_paths_only):
+    """List the sidebar panels visible to this token."""
+    rows = frontend_meta_core.list_panels(make_client(ctx), component_name=component_name)
+    emit(ctx, [r["url_path"] for r in rows] if url_paths_only else rows)
+
+
+@panel.command("get")
+@click.argument("url_path")
+@click.pass_context
+def panel_get(ctx, url_path):
+    """Show one panel by its url path (e.g. lovelace, energy, config)."""
+    emit(ctx, frontend_meta_core.get_panel(make_client(ctx), url_path))
+
+
+@panel.command("dashboards")
+@click.pass_context
+def panel_dashboards(ctx):
+    """List only the Lovelace panels — every dashboard in the sidebar."""
+    emit(ctx, frontend_meta_core.dashboards(make_client(ctx)))
+
+
+# ───────────────────────────────── frontend metadata (version/translations/icons)
+
+
+@frontend.command("version")
+@click.pass_context
+def frontend_version_cmd(ctx):
+    """Show the home-assistant-frontend build this server serves."""
+    emit(ctx, frontend_meta_core.frontend_version(make_client(ctx)))
+
+
+@frontend.command("translations")
+@click.option("--language", "-l", default="en", show_default=True)
+@click.option(
+    "--category",
+    "-c",
+    default="entity_component",
+    show_default=True,
+    help="entity_component, entity, state, services, title, config, options, …",
+)
+@click.option(
+    "--integration",
+    "-i",
+    multiple=True,
+    help="Restrict to these integrations (repeatable) instead of the whole catalog",
+)
+@click.option("--config-flow/--no-config-flow", "config_flow", default=None)
+@click.pass_context
+def frontend_translations(ctx, language, category, integration, config_flow):
+    """Fetch translation resources — how the UI labels states and services.
+
+    \b
+    ha frontend translations -c state -i person   # not_home -> "Away"
+    """
+    emit(
+        ctx,
+        frontend_meta_core.translations(
+            make_client(ctx),
+            language=language,
+            category=category,
+            integration=list(integration) or None,
+            config_flow=config_flow,
+        ),
+    )
+
+
+@frontend.command("icons")
+@click.option(
+    "--category",
+    "-c",
+    default="entity_component",
+    show_default=True,
+    type=click.Choice(list(frontend_meta_core.ICON_CATEGORIES)),
+)
+@click.option("--integration", "-i", multiple=True, help="Restrict to these integrations")
+@click.pass_context
+def frontend_icons(ctx, category, integration):
+    """Fetch the mdi icon resources HA uses for a category."""
+    emit(
+        ctx,
+        frontend_meta_core.icons(
+            make_client(ctx),
+            category=category,
+            integration=list(integration) or None,
+        ),
+    )
+
+
+# ───────────────────────────────── system integrations catalog
+
+
+@system.command("integrations")
+@click.option("--kind", type=click.Choice(["integration", "helper"]), default=None)
+@click.option(
+    "--source",
+    type=click.Choice(["core", "custom"]),
+    default=None,
+    help="custom = HACS / manually installed components",
+)
+@click.option(
+    "--config-flow-only",
+    is_flag=True,
+    default=False,
+    help="Only integrations that can be added from the UI / `config-flow start`",
+)
+@click.option("--iot-class", default=None, help="e.g. local_push, cloud_polling")
+@click.option("--domain", default=None, help="Look up a single integration by domain")
+@click.option("--domains-only", is_flag=True, default=False, help="Print only the domain names.")
+@click.pass_context
+def system_integrations(ctx, kind, source, config_flow_only, iot_class, domain, domains_only):
+    """The "Add integration" catalog (WS `integration/descriptions`).
+
+    Every integration this build knows about — not just the loaded ones that
+    `system components` reports. `--source custom` is a supply-chain inventory
+    of everything HACS put on the box.
+    """
+    client = make_client(ctx)
+    if domain:
+        found = frontend_meta_core.find_integration(client, domain)
+        if found is None:
+            raise click.ClickException(f"unknown integration domain: {domain}")
+        emit(ctx, found)
+        return
+    rows = frontend_meta_core.list_integrations(
+        client,
+        kind=kind,
+        source=source,
+        config_flow_only=config_flow_only,
+        iot_class=iot_class,
+    )
+    emit(ctx, [r["domain"] for r in rows] if domains_only else rows)
+
+
+# ───────────────────────────────── entity display-unit conversion
+
+
+@entity.command("convertible-units")
+@click.option("--device-class", default=None, help="e.g. temperature, pressure, speed")
+@click.option(
+    "--entity",
+    "entity_id",
+    default=None,
+    help="Resolve the device class from this entity instead of naming it",
+)
+@click.option(
+    "--domain",
+    type=click.Choice(list(device_class_units_core.SUPPORTED_DOMAINS)),
+    default="sensor",
+    show_default=True,
+)
+@click.option("--unit", default=None, help="Check one unit instead of listing them all")
+@click.option(
+    "--exit-code", is_flag=True, default=False, help="With --unit, exit 1 when not convertible."
+)
+@click.pass_context
+def entity_convertible_units(ctx, device_class, entity_id, domain, unit, exit_code):
+    """Legal display units for a device class — pre-flight for `entity set-display`.
+
+    HA rejects a display unit that is not convertible from the entity's native
+    one, and only the device class decides which are. Name the device class, or
+    point at an entity and let it be resolved.
+
+    Needs the sensor (or number) integration loaded — HA registers these WS
+    commands with the domain, so a server with no sensors answers
+    `unknown_command`.
+
+    \b
+    ha entity convertible-units --device-class temperature
+    ha entity convertible-units --entity sensor.outside_temp
+    ha entity convertible-units --device-class temperature --unit °F --exit-code
+    """
+    if bool(device_class) == bool(entity_id):
+        raise click.UsageError("pass exactly one of --device-class / --entity")
+    client = make_client(ctx)
+    if entity_id:
+        info = device_class_units_core.entity_convertible_units(client, entity_id)
+        if unit:
+            ok = unit in info["units"]
+            emit(ctx, {**info, "unit": unit, "convertible": ok})
+            if exit_code and not ok:
+                sys.exit(1)
+            return
+        emit(ctx, info)
+        return
+    if unit:
+        ok = device_class_units_core.can_convert_to(client, device_class, unit, domain=domain)
+        emit(ctx, {"device_class": device_class, "domain": domain, "unit": unit, "convertible": ok})
+        if exit_code and not ok:
+            sys.exit(1)
+        return
+    emit(ctx, device_class_units_core.convertible_units(client, device_class, domain=domain))
+
+
+@entity.command("display-options")
+@click.argument("entity_id")
+@click.pass_context
+def entity_display_options(ctx, entity_id):
+    """Show the display unit / precision overrides set on a sensor or number."""
+    emit(ctx, device_class_units_core.display_options(make_client(ctx), entity_id))
+
+
+@entity.command("set-display")
+@click.argument("entity_id")
+@click.option("--unit", "unit_of_measurement", default=None, help="Display unit (e.g. °F)")
+@click.option(
+    "--precision", "display_precision", type=int, default=None, help="Displayed decimal places"
+)
+@click.option(
+    "--no-validate",
+    "validate_unit",
+    is_flag=True,
+    default=True,
+    flag_value=False,
+    help="Skip the local convertibility check and let HA reject it.",
+)
+@click.option(
+    "--replace",
+    "merge",
+    is_flag=True,
+    default=True,
+    flag_value=False,
+    help="Replace the whole option dict instead of merging (HA's raw behaviour).",
+)
+@click.pass_context
+def entity_set_display(
+    ctx, entity_id, unit_of_measurement, display_precision, validate_unit, merge
+):
+    """Set the display unit / precision of a sensor or number entity.
+
+    Merges with the existing options by default: HA *replaces* the per-domain
+    option dict on write, so a raw unit change would silently drop a precision
+    override. Use --replace for the unwrapped behaviour.
+
+    \b
+    ha entity set-display sensor.outside_temp --unit °F --precision 1
+    """
+    emit(
+        ctx,
+        device_class_units_core.set_display_options(
+            make_client(ctx),
+            entity_id,
+            unit_of_measurement=unit_of_measurement,
+            display_precision=display_precision,
+            validate_unit=validate_unit,
+            merge=merge,
+        ),
+    )
+
+
+@entity.command("numeric-device-classes")
+@click.pass_context
+def entity_numeric_device_classes(ctx):
+    """Sensor device classes HA treats as numeric (unit + precision overrides).
+
+    Registered by the sensor integration: a server with no sensors loaded
+    answers `unknown_command`.
+    """
+    emit(ctx, device_class_units_core.numeric_device_classes(make_client(ctx)))
+
+
+# ───────────────────────────────── state-stream: compressed entity subscription
+
+
+@state_stream.command("entities")
+@click.option("--entity", "entity_ids", multiple=True, help="Restrict to these entity ids")
+@click.option("--max-events", type=int, default=5, show_default=True)
+@click.pass_context
+def state_stream_entities(ctx, entity_ids, max_events):
+    """Stream compressed state (WS `subscribe_entities`): snapshot then diffs.
+
+    The first message is the full state keyed by entity_id; later ones carry
+    only what changed — the feed the frontend itself runs on.
+    """
+    state_stream_core.subscribe_entities(
+        make_client(ctx),
+        entity_ids=list(entity_ids) or None,
+        on_message=_print_event,
+        max_events=max_events,
+    )
+    emit(ctx, {"stopped": True, "max_events": max_events})
+
+
+@state_stream.command("snapshot")
+@click.option("--entity", "entity_ids", multiple=True, help="Restrict to these entity ids")
+@click.option("--timeout-seconds", type=float, default=10.0, show_default=True)
+@click.option("--ids-only", is_flag=True, default=False, help="Print only the entity ids.")
+@click.pass_context
+def state_stream_snapshot(ctx, entity_ids, timeout_seconds, ids_only):
+    """One-shot compressed snapshot of every readable state, keyed by entity id."""
+    snap = state_stream_core.entities_snapshot(
+        make_client(ctx),
+        entity_ids=list(entity_ids) or None,
+        timeout_seconds=timeout_seconds,
+    )
+    emit(ctx, sorted(snap) if ids_only else snap)
 
 
 if __name__ == "__main__":

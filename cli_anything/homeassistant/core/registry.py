@@ -73,6 +73,7 @@ def update_entity(
     disabled_by: Any = _SENTINEL,
     hidden_by: Any = _SENTINEL,
     options: dict | None = None,
+    options_domain: str | None = None,
 ) -> dict:
     """Mutate one entity's registry record.
 
@@ -82,6 +83,14 @@ def update_entity(
       - "user"   — disable/hide-by-user
       - None     — clear (enable/un-hide)
       - the default sentinel means "don't touch"
+
+    `options` are the per-integration entity options (e.g. the sensor display
+    unit / precision). HA's schema declares `options` and `options_domain` as
+    an *inclusive* pair — sending one without the other is rejected outright —
+    so `options_domain` is required whenever `options` is given. HA also
+    **replaces** the whole option dict for that domain, so read the current
+    entry first if you mean to merge (see
+    `core.device_class_units.set_display_options`).
     """
     if not entity_id:
         raise ValueError("entity_id is required")
@@ -103,7 +112,15 @@ def update_entity(
     if hidden_by is not _SENTINEL:
         payload["hidden_by"] = hidden_by
     if options is not None:
+        if not options_domain:
+            raise ValueError(
+                "options_domain is required when passing options "
+                "(HA rejects `options` without `options_domain`)"
+            )
+        payload["options_domain"] = options_domain
         payload["options"] = options
+    elif options_domain:
+        raise ValueError("options_domain requires options")
     return client.ws_call("config/entity_registry/update", payload) or {}
 
 
