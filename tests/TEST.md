@@ -916,3 +916,109 @@ New commands appended to `homeassistant_cli.py` after the
 body. All 8 new subprocess e2e tests failed with `No such command 'action'`
 until the block was moved above the guard. Unit tests alone would not have
 caught it — the CliRunner imports the module, so the guard never fires.
+
+---
+
+## Refine pass (v1.49.0) — target / transfer / prefs
+
+### How the pass was scoped
+
+Not from the docs: HA's own source ships inside the running container at
+`/usr/src/homeassistant`, so the surface this instance ACTUALLY serves was
+enumerated from it and diffed against every string this harness sends.
+
+```
+HA 2026.8.1 registers          304 websocket commands
+  harness already sent         183
+  not sent, integration loaded  86
+  not sent, not loaded here     35   (knx, lcn, dynalite, hassio, history_stats)
+
+113 REST views; 52 not referenced (loaded integrations only)
+```
+
+**The count needed a correction before it meant anything.** Matching
+`vol.Required("type"): "..."` finds 309 — five of which are the energy
+integration's SOURCE kinds (`solar`, `gas`, `battery`, `water`, `grid`) sitting
+inside a schema, not commands. Requiring the `websocket_command(` decorator in
+scope drops exactly those five.
+
+### New unit tests
+
+- `tests/test_targets.py` (12) — target building from repeatable options; the `expand_group` asymmetry
+  (FALSE for `extract`, TRUE for the `*_for_target` trio — HA's own defaults);
+  and `missing_*` surfacing.
+- `tests/test_transfer.py` (16) — `agent_id` as repeated PAIRS rather than a
+  dict (HA reads it with `getall()`); the directory-destination filename rule;
+  the `file` field name `/api/file_upload` demands; the media content-type
+  refusal; and that the download result does NOT claim the content was
+  verified, only the size.
+- `tests/test_prefs_labs.py` (28) — labs list/enabled-only/update with
+  `create_backup` sent explicitly; AI Task partial updates (omitting a key
+  leaves it alone, sending None clears it); the HTTP stable/pending split;
+  automatic entity ids where `None` is an ANSWER; recorder `disabled_by`;
+  the composite-split reverse index; intent slot shape;
+  and both TTS corrections.
+- `tests/test_cli_refine_wiring_v4.py` (38) — every new command through
+  CliRunner, including that `prefs entity-naming` READS without prompting, and a registration check that
+  every new group is actually attached to `cli` (a group defined and never
+  attached looks fine in the source and does not exist).
+
+### What testing changed
+
+- **The CLI's error handling only worked from one entry point.** Three wiring
+  tests failed with an EMPTY `result.output` while the message was plainly
+  correct — because `HomeAssistantError`/`ValueError` were caught in `main()`
+  alone, so the same failure was a clean `error: …` under the console script
+  and an uncaught exception under `python -m`, under an embedding caller, and
+  under CliRunner. Fixed by catching on the root group instead. Found by a
+  test, not by review.
+- **`split_for` could never find a device.** The composite-split map is keyed
+  by a COMPOSITE id: measured on a live instance, 0 of 51 keys were also a
+  `primary_id` and none of the 102 split ids was a key. The first version
+  looked devices up as keys and returned an empty `split_ids` for a device
+  that was genuinely split.
+- **The download claimed too little.** The docstring said HA sends no
+  `Content-Length`. It does — a real 195MB backup declared 204523520 and wrote
+  exactly that — so a truncated transfer IS detectable and `size_matches`
+  now reports it. The same result also had `encrypted` inferred from whether a
+  password was passed, which is not the same thing and was simply wrong; the
+  guess was removed rather than corrected.
+- **`media search` on the root RAISES.** The first version's docstring said an
+  unsupported source contributes nothing to an empty result. Measured: the root
+  and `media-source://frigate` answer `search_not_supported`,
+  `media-source://music_assistant` answers `search_media_failed`, and only
+  `media-source://media_source` returns a list.
+- **The media upload endpoint filters by content type** and the client was
+  hard-coding `application/octet-stream`. HA answers a bare 400 and logs
+  "Content type not allowed" server-side only — found by reading
+  `kubectl logs`, not from the response.
+
+
+### The pass was built on a stale base, and three finished groups were binned
+
+`origin/main` moved 15 commits while this was being written, one of them a
+**v1.48.0 that covered `validate_config` / `test_condition` / `execute_script` /
+`entity/source` as the `action` group and device-class units as `entity
+convertible-units`**. A `validate` group, a `units` group and `target source`
+were written, tested, exercised against the live instance — and then deleted
+rather than shipped as a second command for the same websocket call. Two
+commands for one job is worse than either.
+
+`git fetch && git log origin/main` before starting costs seconds. The gotcha is
+recorded in CLAUDE.md so the next pass checks first.
+
+### Results
+
+```
+tests/ (unit lane) .................. 3238 passed in 5.2s   (was 3193)
+tests/test_full_e2e.py .............. 160 collected, 13 new
+live 2026.8.1 instance .............. 29 commands, 29 passed, 0 failed
+```
+
+**The e2e lane skips without the `homeassistant` package**, which boots a
+throwaway HA in a temp config dir — it is not installed in this environment
+and all 160 skip here. That is why every command was additionally run against
+the production 2026.8.1 instance, including a real 195MB backup download
+(opened with `tarfile`: `backup.json` + `homeassistant.tar.gz`), a real
+multipart file upload, and a real media upload that was removed again
+afterwards. A test that only skips is not evidence.

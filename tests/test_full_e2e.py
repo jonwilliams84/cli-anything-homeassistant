@@ -1205,3 +1205,162 @@ class TestCLIFrontendTemplateWsSubprocess(TestCLISubprocess):
             self._run(["--json", "state-stream", "snapshot", "--ids-only"], hass_instance).stdout
         )
         assert ids == sorted(ids) and ids
+
+
+# ─────────────────────────────────────── fourth refine pass: live coverage
+
+class TestRefineV4Live:
+    """The three clusters added in the fourth refine pass, against a real HA.
+
+    These boot the same throwaway instance every other live test uses. Each was
+    ALSO exercised against a production 2026.8.1 instance while being written —
+    which is where the measured findings in the module docstrings come from —
+    but a finding that only exists in a transcript is not a test, so it is
+    reproduced here.
+
+    `_skip_if_unknown_command` covers HA builds older than a command: the
+    target surface is 2022+, `labs` and the composite-split registry are 2026,
+    and a skip is the honest answer on an older build.
+
+    `validate_config`, `test_condition`, `execute_script`, `entity/source` and
+    device-class units are NOT here — they landed on main as the `action`
+    group, `entity source` and `entity convertible-units` while this was being
+    written, and their own tests own them.
+    """
+
+    def _env(self, hass_instance):
+        env = dict(os.environ)
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        return env
+
+    def _run(self, args, hass_instance, check=True):
+        return subprocess.run(
+            CLI_BASE + args,
+            capture_output=True, text=True,
+            env=self._env(hass_instance),
+            check=check,
+            timeout=60,
+        )
+
+    def _skip_if_unknown_command(self, result, cmd_name):
+        if result.returncode != 0 and "unknown_command" in (result.stderr or ""):
+            pytest.skip(f"{cmd_name} not registered in this HA build")
+
+    # ──────────────────────────────────────────────── A: target resolution
+
+    def test_extract_from_target_reports_a_missing_label(self, hass_instance):
+        """The half that matters: a label HA cannot resolve does NOTHING."""
+        r = self._run(
+            ["--json", "target", "extract", "--label-id", "definitely_not_a_label"],
+            hass_instance, check=False,
+        )
+        self._skip_if_unknown_command(r, "extract_from_target")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["missing_labels"] == ["definitely_not_a_label"]
+        assert data["resolves_to_nothing"] is True
+
+    def test_services_for_target(self, hass_instance):
+        r = self._run(
+            ["--json", "target", "services", "--entity-id", "sun.sun"],
+            hass_instance, check=False,
+        )
+        self._skip_if_unknown_command(r, "get_services_for_target")
+        assert r.returncode == 0, r.stderr
+        assert isinstance(json.loads(r.stdout)["services"], list)
+
+    def test_slugify_is_has_own(self, hass_instance):
+        r = self._run(["--json", "target", "slugify", "Living Room — Lamp #2"],
+                      hass_instance, check=False)
+        self._skip_if_unknown_command(r, "slugify")
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["slug"] == "living_room_lamp_2"
+
+    # ────────────────────────────────────────────────── B: bytes in / out
+
+    def test_file_upload_returns_a_file_id(self, hass_instance, tmp_path):
+        """Proves the multipart path — the session sets Content-Type: json,
+        and leaving that in place makes every upload a 400."""
+        f = tmp_path / "probe.txt"
+        f.write_text("cli-anything probe")
+        r = self._run(["--json", "file", "upload", str(f)], hass_instance, check=False)
+        if r.returncode != 0 and "404" in (r.stderr or ""):
+            pytest.skip("file_upload not loaded in this HA build")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["file_id"]
+        print(f"\n  file_id: {data['file_id']}")
+
+    def test_backup_download_requires_an_agent_id(self, hass_instance):
+        """HA answers a missing agent_id with an EMPTY 400 — refuse first."""
+        r = self._run(["--json", "backup", "download", "nope", "/tmp/x.tar"],
+                      hass_instance, check=False)
+        assert r.returncode != 0
+        assert "--agent-id" in (r.stdout + r.stderr)
+
+    def test_media_upload_refuses_a_non_media_content_type(self, hass_instance, tmp_path):
+        """HA checks image/ video/ audio/ and logs the reason server-side only."""
+        f = tmp_path / "notes.txt"
+        f.write_text("x")
+        r = self._run(
+            ["--json", "media", "upload", str(f), "--target", "media-source://media_source/."],
+            hass_instance, check=False,
+        )
+        assert r.returncode != 0
+        assert "image/*" in (r.stdout + r.stderr)
+
+    def test_tts_engine_languages_come_from_the_ws_command(self, hass_instance):
+        """The entity attributes report [] while HA has the real list."""
+        r = self._run(["--json", "tts", "list"], hass_instance, check=False)
+        self._skip_if_unknown_command(r, "tts/engine/list")
+        assert r.returncode == 0, r.stderr
+        rows = json.loads(r.stdout)
+        if not rows:
+            pytest.skip("no tts.* entities on this instance")
+        assert all("languages_from" in row for row in rows)
+
+    def test_intent_handle_runs_an_intent_without_the_sentence_parser(self, hass_instance):
+        r = self._run(["--json", "intent", "handle", "HassGetState", "--slot", "name=sun"],
+                      hass_instance, check=False)
+        if r.returncode != 0 and "404" in (r.stderr or ""):
+            pytest.skip("intent component not loaded in this HA build")
+        assert r.returncode == 0, r.stderr
+        assert "response_type" in json.loads(r.stdout)
+
+    # ───────────────────────────────────────────────── D: preferences
+
+    def test_labs_list(self, hass_instance):
+        r = self._run(["--json", "labs", "list"], hass_instance, check=False)
+        self._skip_if_unknown_command(r, "labs/list")
+        assert r.returncode == 0, r.stderr
+        assert isinstance(json.loads(r.stdout), list)
+
+    def test_recorder_entity_options_explains_an_empty_history(self, hass_instance):
+        r = self._run(["--json", "prefs", "recorded", "sun.sun"], hass_instance, check=False)
+        self._skip_if_unknown_command(r, "recorder/entity_options/get")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "is_recorded" in data
+        assert data["explains_empty_history"] is (data["is_recorded"] is False)
+
+    def test_prefs_entity_naming_reads_without_prompting(self, hass_instance):
+        """A read that prompts is how a command gets a reputation for being
+        dangerous; there is no --yes on this path and it must still succeed."""
+        r = self._run(["--json", "prefs", "entity-naming"], hass_instance, check=False)
+        self._skip_if_unknown_command(r, "config/entity_registry/settings/get")
+        assert r.returncode == 0, r.stderr
+        assert "is_default" in json.loads(r.stdout)
+
+    def test_device_links_splits(self, hass_instance):
+        r = self._run(["--json", "device-links", "splits"], hass_instance, check=False)
+        self._skip_if_unknown_command(r, "config/device_registry/list_composite_splits")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "member_of" in data
+        # Every split id must be reachable from the reverse index — looking a
+        # device up by its own id in `splits` can NEVER match, which is the bug
+        # the first version of this had.
+        for composite_id, info in (data["splits"] or {}).items():
+            for split_id in info.get("split_ids") or []:
+                assert data["member_of"].get(split_id) == composite_id

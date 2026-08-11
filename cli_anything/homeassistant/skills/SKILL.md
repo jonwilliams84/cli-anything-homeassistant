@@ -9,8 +9,16 @@ description: >-
   live events, fire webhooks, snapshot image entities, and drive the profiler
   integration for live perf triage. 17 typed shortcut groups (light, media-player, climate,
   cover, fan, vacuum, …) so agents never hand-craft JSON for routine entity
-  control. Every command has --json for machine output. Use this when an agent
-  needs to do anything to a smart home without the browser UI.
+  control. RESOLVE A TARGET to the entities a service call would really hit,
+  including the areas and labels HA cannot resolve and would silently ignore.
+  GET A BACKUP OFF THE BOX and push one back, upload files/media/images, search
+  the media sources, and mint a TTS URL without playing it. READ THE
+  PREFERENCES THAT SHAPE EVERYTHING ELSE: which AI Task model a job reaches,
+  whether an HTTP change is live or merely pending, which HA Labs preview
+  features are on, and whether an entity is recorded at all — the reason a
+  history is empty rather than quiet. Every command has --json for machine
+  output. Use this when an agent needs to do anything to a smart home without
+  the browser UI.
 ---
 
 # cli-anything-homeassistant — agent skill
@@ -435,10 +443,83 @@ cli-anything-homeassistant profiler log-current-tasks
 ]
 ```
 
+
+## What a target actually hits (v1.49.0+)
+
+```bash
+# What would this target really reach — and what resolves to nothing?
+cli-anything-homeassistant --json target extract --area-id kitchen \\
+  | jq '{entity_count, missing_areas, missing_labels}'
+cli-anything-homeassistant target services --entity-id media_player.lounge
+cli-anything-homeassistant target slugify 'Living Room — Lamp #2'
+```
+
+`target extract` defaults `--no-expand-group`; the three `*_for_target`
+commands default to `--expand-group`. That asymmetry is HA's own.
+
+For "is this config valid" and "which integration supplies this entity", use
+the `action` group and `entity source` — same authoring loop, already there.
+
+## Bytes in and out (v1.49.0+)
+
+```bash
+cli-anything-homeassistant backup agents                     # which agent holds it
+cli-anything-homeassistant --timeout 600 backup download <id> ./ --agent-id backup.local
+cli-anything-homeassistant --timeout 600 backup upload ./backup.tar --agent-id backup.local
+
+cli-anything-homeassistant file upload ./client.pem          # -> file_id for a config flow
+cli-anything-homeassistant media upload ./clip.mp4 --target 'media-source://media_source/.'
+cli-anything-homeassistant image upload ./avatar.png
+cli-anything-homeassistant tts get-url "the back door is open" --engine-id tts.piper
+cli-anything-homeassistant intent handle HassTurnOn --slot name=desk --slot domain=light
+```
+
+- `--agent-id` is REQUIRED on both backup commands and repeatable on upload.
+  HA answers a missing one with a **bare 400 and no body**.
+- A big transfer needs a bigger `--timeout`; otherwise the failure looks like a
+  connection problem.
+- `media upload` only accepts **image/ video/ audio/**. HA answers a bare 400
+  for anything else and logs the reason server-side only, so the CLI refuses
+  locally and names the cause.
+- `media search` on the ROOT is an error (`search_not_supported`), not an empty
+  result. Scope it: `--scope media-source://media_source`.
+
+## Preferences that explain odd behaviour (v1.49.0+)
+
+```bash
+cli-anything-homeassistant labs list --enabled-only   # a preview feature changes behaviour
+cli-anything-homeassistant prefs ai-task              # which model an ai_task job reaches
+cli-anything-homeassistant prefs http                 # stable vs PENDING (unpromoted) config
+cli-anything-homeassistant prefs recorded sensor.x    # is there any history to look for?
+cli-anything-homeassistant prefs auto-entity-id light.a   # what HA WOULD call it
+cli-anything-homeassistant entity convertible-units --device-class temperature
+cli-anything-homeassistant device-links split-for <device_id>
+```
+
+**`prefs recorded` first when a history looks empty.** `recording_disabled_by`
+non-null means there is no history and no long-term statistics — which every
+history command here reports as an empty result indistinguishable from a quiet
+entity.
+
+**`device-links split-for` before a device-scoped call.** A device-scoped
+target applies to ONE registry entry; where HA has split a device, the
+`siblings` field lists the ones your call would miss.
+
 ## Pitfalls
 
 These are paid in lost time. Read them before mutating anything.
 
+- **A 500 from `tts get-url` means the ENGINE DOES NOT SUPPORT THAT LANGUAGE**,
+  and HA's body says nothing at all. Measured across four engines: omitting
+  `--language` works on every one, while the engines disagree on the string —
+  `tts.piper` declares `en_GB`, the Wyoming engines declare `en-GB`, and
+  `tts.google_ai_tts` declares neither. `tts get-url` checks the engine's own
+  list first; `tts list` shows it (it comes from `tts/engine/list`, NOT the
+  entity attributes, which report an empty list).
+- **`media search` on the ROOT is an error** (`search_not_supported`), not an
+  empty result. Scope it: `--scope media-source://media_source`.
+- **`media upload` only accepts image/ video/ audio/.** HA answers a bare 400
+  for anything else and logs the reason server-side only.
 - **Token = full admin.** Treat `~/.config/cli-anything-homeassistant.json`
   as a secret.
 - **`state set` is a manual override**, not a service call. It writes a state

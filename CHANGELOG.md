@@ -4,6 +4,146 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.49.0] — 2026-08-11
+
+Refine pass scoped by enumerating the WebSocket + REST surface of the RUNNING
+2026.8.1 instance (`/usr/src/homeassistant` inside the pod) and diffing it
+against every string this harness sends. HA registers **304** websocket
+commands and serves **113** REST views; this closes three clusters of the
+remainder. Every command below was exercised against that live instance.
+
+*(Method note: matching `vol.Required("type")` finds 309 commands. Requiring
+the `websocket_command(` decorator in scope drops five false positives —
+`solar`, `gas`, `battery`, `water`, `grid` are energy SOURCE kinds inside a
+schema, not commands.)*
+
+*(Overlap note: `validate_config`, `test_condition`, `execute_script`,
+`entity/source` and device-class units landed in 1.48.0 as the `action` group,
+`entity source` and `entity convertible-units` while this was being written.
+They are NOT duplicated here — `target source` and a `validate`/`units` group
+were written, measured, and then dropped in favour of what 1.48.0 shipped.)*
+
+### Added — what a target actually hits (`target`)
+
+A service call takes an area/device/floor/label and HA expands it. The harness
+could send that target and could not ask what it would resolve to.
+
+- **`target extract`** — `extract_from_target`, through HA's own
+  `async_extract_referenced_entity_ids`. Returns the referenced entities,
+  devices and areas plus **`missing_areas` / `missing_labels` /
+  `missing_devices`** — the parts a real service call ignores in silence.
+- **`target services` / `triggers` / `conditions`** — the three `*_for_target`
+  commands: what can be done with this target. An empty list is a real answer.
+- **`target slugify`** — HA's own slugify, asked rather than reimplemented
+  (`Living Room — Lamp #2` -> `living_room_lamp_2`).
+
+`expand_group` defaults FALSE on `extract` and TRUE on the other three. That
+asymmetry is HA's and is preserved rather than smoothed over.
+
+### Added — getting bytes in and out
+
+The harness could `backup create|list|show|restore` and could not get a backup
+**off the box** — the wrong half for the only reason a backup exists.
+
+- **`backup download` / `backup upload`** — the real tarball, streamed to disk
+  and pushed back. Verified against a live 195MB backup: 204523520 bytes
+  matching HA's `Content-Length`, opening cleanly with `tarfile` and containing
+  `backup.json` + `homeassistant.tar.gz`.
+- **`file upload`** — `/api/file_upload`, returning the `file_id` a config flow
+  wants for a certificate or a keyfile.
+- **`media upload` / `image upload`** — into the media library and the
+  image_upload integration.
+- **`media search` / `media-player search`** — HA's own search instead of
+  recursing `browse` client-side.
+- **`tts get-url`** — synthesise and return a playable URL without playing it.
+- **`intent handle`** — fire an intent by name, skipping the sentence parser,
+  which is what separates a sentence-match failure from a handler failure.
+
+New on the client: `download()` (streamed, so a multi-GB backup never lands in
+memory) and `upload()` (multipart). Three things had to be read out of HA's
+source, each producing an unhelpful failure otherwise:
+
+1. **`agent_id` is required and REPEATABLE** (`query.getone()`/`getall()`), so
+   it is passed as a list of PAIRS — a dict cannot express it. A missing one is
+   a **bare 400 with no body**, so it is refused client-side with the remedy.
+2. **The multipart field name matters for one endpoint and not the other.**
+   `/api/file_upload` rejects any part not called `file`; `/api/backup/upload`
+   reads the first part whatever it is called.
+3. **The media endpoint filters by CONTENT TYPE and logs the reason
+   server-side only.** It checks `content_type.startswith(("image/","video/",
+   "audio/"))` and answers a bare 400; "Content type not allowed" appears in
+   HA's log and never in the response. The client now guesses the type from the
+   filename and `media upload` refuses a non-media file locally.
+
+### Added — preferences that explain odd behaviour
+
+- **`labs list|show|set`** — HA 2026 preview features. One of these changes
+  behaviour underneath everything else this harness reports and there was no
+  way to see it was on. `--create-backup` is explicit because a preview feature
+  can migrate storage.
+- **`prefs ai-task`** — which AI Task entity serves `generate_data` /
+  `generate_image`. A job that reached the wrong model is nearly always this.
+- **`prefs http`** — the stored HTTP config and its STABLE/PENDING split. A
+  CORS or trusted-proxy change that "did not take" is usually sitting in
+  `pending`, unpromoted.
+- **`prefs entity-naming` / `prefs auto-entity-id`** — the automatic entity-id
+  rule, and what HA WOULD call an entity. Run before renaming.
+- **`prefs recorded`** — `recording_disabled_by`. An entity excluded from the
+  recorder has no history and no statistics, which every history command here
+  would otherwise report as an empty result indistinguishable from a quiet
+  entity. Measured: `sun.sun` is disabled by `user` on a real instance.
+- **`device-links splits|split-for|linked`** — composite splits and linked
+  devices, topology the flat registry cannot show. A device-scoped target
+  applies to ONE registry entry, so a split device is a silent partial hit;
+  `split-for` names the `siblings` a call would miss.
+
+### Fixed
+
+- **`tts list` reported `supported_languages: []` for every engine.** It read
+  the entity attributes, which do not carry the list; HA keeps it on
+  `tts/engine/list`. On a real instance that meant printing an empty list next
+  to an engine supporting 81 languages. Now merged from the WS command with
+  `languages_from` naming the source, falling back to the old behaviour rather
+  than raising if that command is absent.
+- **A 500 from `/api/tts_get_url` is now caught before it happens.** HA answers
+  a bare `500: Internal Server Error` with no body when the engine does not
+  declare the language. Measured across four engines:
+
+  | engine | (no language) | `en_GB` | `en-GB` |
+  |---|---|---|---|
+  | tts.piper | 200 | 200 | 500 |
+  | tts.omnivoice | 200 | 500 | 200 |
+  | tts.chatterbox_wyoming | 200 | 500 | 200 |
+  | tts.google_ai_tts | 200 | 500 | 500 |
+
+  **Omitting `language` works everywhere** — which corrects the belief that a
+  missing `language` field causes the 500. What causes it is a string the
+  engine does not declare, and there is no rule to infer: piper's 50 languages
+  include both `en_GB` and `en-us`, the Wyoming pair declare only `en-GB`, and
+  google_ai_tts declares 81 with no British English at all. `tts get-url`
+  checks the engine's own list first and names the near matches.
+- **Error presentation depended on the entry point.** `HomeAssistantError` and
+  `ValueError` were caught in `main()` only, so a core function's validation
+  message was a clean `error: …` under the console script and an uncaught
+  traceback under `python -m`, under an embedding caller, and under Click's
+  CliRunner — where `result.output` came back EMPTY. Handling moved onto the
+  root group (`_HandledGroup`), so presentation is a property of the CLI rather
+  than of how it was launched. `main()` keeps its own handler for anything
+  raised before the group is entered.
+- **`media search` on the root is an ERROR, not an empty result.** Measured:
+  the root and `media-source://frigate` answer `search_not_supported`,
+  `media-source://music_assistant` answers `search_media_failed`, and only
+  `media-source://media_source` returns a list. The first is re-raised with the
+  scope named and a working one suggested, because HA's own message is two
+  words.
+
+### Tests
+
+3193 -> **3238** unit tests across `test_targets.py`, `test_transfer.py`,
+`test_prefs_labs.py` and `test_cli_refine_wiring_v4.py`, plus 13 live-instance
+tests in `test_full_e2e.py`. All 29 commands were additionally run against the
+production 2026.8.1 instance: **29 passed, 0 failed**.
+
 ## [1.48.0] — 2026-08-11
 
 ### Added — script-engine primitives (`action` group + `entity source`)
