@@ -136,6 +136,8 @@ from cli_anything.homeassistant.core import frontend_meta as frontend_meta_core
 from cli_anything.homeassistant.core import device_class_units as device_class_units_core
 from cli_anything.homeassistant.core import trace_debug as trace_debug_core
 from cli_anything.homeassistant.core import trace_debugger as trace_debugger_core
+from cli_anything.homeassistant.core import core_config as core_config_core
+from cli_anything.homeassistant.core import voice as voice_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
     HomeAssistantError,
@@ -549,6 +551,95 @@ def system_config(ctx):
 def system_core_state(ctx):
     """Return /api/core/state — running/stopped/etc."""
     emit(ctx, system_core.core_state(make_client(ctx)))
+
+
+@system.command("core-config")
+@click.pass_context
+def system_core_config(ctx):
+    """The SETTABLE half of /api/config — what `system set-config` can change.
+
+    `system config` prints everything including the component list; this is
+    the twelve keys that can actually be written, which is what a before/after
+    comparison wants.
+    """
+    emit(ctx, core_config_core.show(make_client(ctx)))
+
+
+@system.command("detect-location")
+@click.option(
+    "--drift",
+    "show_drift",
+    is_flag=True,
+    default=False,
+    help="Compare the detection against the configured values and name the "
+    "mismatches (coordinates get a 0.5 degree tolerance).",
+)
+@click.pass_context
+def system_detect_location(ctx, show_drift):
+    """Ask HA's own geo-IP where it thinks this server is.
+
+    The lookup runs from the Home Assistant HOST, so it describes the server,
+    not you. An empty result means the lookup failed (usually no outbound
+    internet) — reported as `detected: false` rather than as an error, because
+    HA returns `{}` for both.
+    """
+    client = make_client(ctx)
+    emit(ctx, core_config_core.drift(client) if show_drift else core_config_core.detect(client))
+
+
+@system.command("set-config")
+@click.option("--latitude", default=None, type=float, help="-90..90")
+@click.option("--longitude", default=None, type=float, help="-180..180")
+@click.option("--elevation", default=None, type=int, help="Metres above sea level")
+@click.option("--location-name", default=None, help="What HA calls this home")
+@click.option("--time-zone", default=None, help="IANA name, e.g. Europe/London")
+@click.option(
+    "--unit-system",
+    default=None,
+    type=click.Choice([*core_config_core.UNIT_SYSTEMS, "imperial"], case_sensitive=False),
+    help="metric | us_customary ('imperial' is rewritten by HA)",
+)
+@click.option("--currency", default=None, help="ISO 4217, e.g. GBP")
+@click.option("--country", default=None, help="ISO 3166 alpha-2, e.g. GB")
+@click.option("--language", default=None, help="e.g. en-GB")
+@click.option("--radius", default=None, type=int, help="Home-zone radius in metres")
+@click.option("--external-url", default=None, help="'' clears it")
+@click.option("--internal-url", default=None, help="'' clears it")
+@click.option(
+    "--update-units",
+    is_flag=True,
+    default=False,
+    help="Also re-derive every sensor's DISPLAY unit from the unit system. "
+    "Without this, existing sensors keep their old units after a switch.",
+)
+@click.option(
+    "--check-first",
+    is_flag=True,
+    default=False,
+    help="Refuse to write if configuration.yaml does not validate.",
+)
+@click.option(
+    "--apply",
+    is_flag=True,
+    default=False,
+    help="Actually write. Without it this is a dry run that validates and prints the diff.",
+)
+@click.pass_context
+def system_set_config(ctx, apply, update_units, check_first, **fields):
+    """Change the instance's core config — location, units, time zone, URLs.
+
+    DRY RUN BY DEFAULT. This is instance-wide and silent: nothing announces
+    that the time zone moved, and every sun-triggered automation changes
+    behaviour at once. The dry run runs the same validation and prints the same
+    diff; only the write is withheld.
+
+    It is a PARTIAL update — HA keeps every key you do not pass — so a
+    one-field change is safe to send alone. Keys that `configuration.yaml`
+    ALSO sets revert on the next restart; the result says so.
+    """
+    client = make_client(ctx)
+    runner = core_config_core.safe_set if check_first else core_config_core.update
+    emit(ctx, runner(client, apply=apply, update_units=update_units, **fields))
 
 
 @system.command("error-log")
@@ -2722,6 +2813,37 @@ def lovelace_config_save(ctx, url_path, config_file, dry_run, yes):
     emit(ctx, {"saved": url_path, "result": result})
 
 
+@lovelace_config.command("delete")
+@click.argument("url_path", required=False)
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation")
+@click.option("--snapshot-dir", default=None, type=click.Path(), help="Where to write the snapshot")
+@click.pass_context
+def lovelace_config_delete(ctx, url_path, yes, snapshot_dir):
+    """Drop a dashboard's stored config and go back to AUTO-GENERATED.
+
+    Not `lovelace dashboards delete`, which removes the dashboard from the
+    sidebar entirely. This empties one in place: with no stored config HA
+    generates the view from the entity registry again, which is the only way
+    back after a dashboard has been "taken control of".
+
+    Irreversible at the API and unprompted there, so a snapshot of the current
+    config is written first and named in the result — restore it with
+    `lovelace config save`. Omit url_path for the main dashboard.
+    """
+    target = url_path or "lovelace"
+    if not yes and not click.confirm(
+        f"Delete the STORED config of {target!r}? It reverts to auto-generated.",
+        default=False,
+    ):
+        raise click.ClickException("aborted")
+    emit(
+        ctx,
+        lovelace_core.delete_dashboard_config(
+            make_client(ctx), url_path, snapshot_dir=snapshot_dir
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────── lovelace surgical edits
 
 
@@ -3490,14 +3612,50 @@ def config_entry_list(ctx, domain):
 
 @config_entry.command("get")
 @click.argument("entry_id")
+@click.option(
+    "--direct",
+    is_flag=True,
+    default=False,
+    help="Ask HA for this one entry (config_entries/get_single) instead of "
+    "listing every entry and filtering here. Admin token required.",
+)
 @click.pass_context
-def config_entry_get(ctx, entry_id):
-    """Show a single config entry by ID."""
-    entry = config_entries_core.get_entry(make_client(ctx), entry_id)
+def config_entry_get(ctx, entry_id, direct):
+    """Show a single config entry by ID.
+
+    The default lists every entry and filters client-side, which works on a
+    non-admin token. `--direct` asks HA for the one row — cheaper, admin-only,
+    and a missing entry is an error rather than an empty result.
+    """
+    client = make_client(ctx)
+    if direct:
+        emit(ctx, config_entries_core.get_entry_single(client, entry_id))
+        return
+    entry = config_entries_core.get_entry(client, entry_id)
     if entry is None:
         click.echo(f"error: no config entry found with id {entry_id!r}", err=True)
         sys.exit(1)
     emit(ctx, entry)
+
+
+@config_entry.command("remove-device")
+@click.argument("entry_id")
+@click.argument("device_id")
+@click.option("--yes", is_flag=True, default=False, help="Skip confirmation")
+@click.pass_context
+def config_entry_remove_device(ctx, entry_id, device_id, yes):
+    """Detach ONE device from a config entry, leaving the entry alone.
+
+    The narrow alternative to `config-entry delete`, which removes every device
+    the entry owns. Many integrations never implemented device removal and HA
+    then refuses with "Config entry does not support device removal" — that is
+    final, not a retry.
+    """
+    if not yes:
+        if not click.confirm(f"Remove device {device_id} from entry {entry_id}?", default=False):
+            click.echo("aborted")
+            return
+    emit(ctx, config_entries_core.remove_device(make_client(ctx), entry_id, device_id))
 
 
 @config_entry.command("delete")
@@ -4946,10 +5104,28 @@ def system_stop(ctx):
 
 @system.command("check-config")
 @click.option("--wait", "wait_secs", default=8.0, type=float)
+@click.option(
+    "--direct",
+    is_flag=True,
+    default=False,
+    help="POST /api/config/core/check_config instead: synchronous, returns the "
+    "error TEXT and the warnings. Admin token required.",
+)
 @click.pass_context
-def system_check_config(ctx, wait_secs):
-    """Validate configuration.yaml. Returns {valid, message?}."""
-    emit(ctx, control_core.check_config(make_client(ctx), wait_secs=wait_secs))
+def system_check_config(ctx, wait_secs, direct):
+    """Validate configuration.yaml. Returns {valid, message?}.
+
+    The default route calls the `homeassistant.check_config` service and then
+    polls for the notification HA writes on failure — which works on a
+    non-admin token but waits, and never reports WARNINGS because the
+    notification is only written for errors. `--direct` asks the endpoint that
+    returns both immediately.
+    """
+    client = make_client(ctx)
+    if direct:
+        emit(ctx, core_config_core.check_config(client))
+        return
+    emit(ctx, control_core.check_config(client, wait_secs=wait_secs))
 
 
 @system.command("reload-core-config")
@@ -5443,6 +5619,47 @@ def assist_pipeline_get(ctx, pipeline_id):
     emit(ctx, assist_core.pipeline_get(make_client(ctx), pipeline_id))
 
 
+@assist.command("prepare")
+@click.option("--agent", "agent_id", default=None, help="Default agent when omitted")
+@click.option("--language", default=None, help="Instance language when omitted")
+@click.pass_context
+def assist_prepare(ctx, agent_id, language):
+    """Warm a conversation agent up so the first utterance is not the slow one.
+
+    Loads the agent's sentence/intent data for a language ahead of time — worth
+    running after editing custom sentences or after a restart. HA returns no
+    payload, so success is the absence of an error.
+    """
+    emit(ctx, voice_core.prepare(make_client(ctx), agent_id=agent_id, language=language))
+
+
+@assist.command("stt-engines")
+@click.option("--language", default=None, help="Filter each engine's languages to the matches")
+@click.option("--country", default=None, help="Refine a language match, e.g. GB")
+@click.pass_context
+def assist_stt_engines(ctx, language, country):
+    """Speech-to-text engines — the INPUT half of a pipeline.
+
+    With --language HA filters each engine's `supported_languages` rather than
+    dropping the engine, so an empty list next to an installed engine is the
+    real signal: installed, and cannot do that language.
+    """
+    emit(ctx, voice_core.stt_engines(make_client(ctx), language=language, country=country))
+
+
+@assist.command("wake-words")
+@click.argument("entity_id")
+@click.pass_context
+def assist_wake_words(ctx, entity_id):
+    """Every wake word a `wake_word.*` engine can detect.
+
+    Not the satellite — `assist-satellite config` reports which wake words a
+    satellite has ACTIVE and how many it may run at once. This is the catalogue
+    those are chosen from.
+    """
+    emit(ctx, voice_core.wake_words(make_client(ctx), entity_id))
+
+
 # 4. UPDATES
 @cli.group("updates")
 def updates_grp():
@@ -5594,6 +5811,69 @@ def config_flow_configure(ctx, flow_id, data, data_file):
 @click.pass_context
 def config_flow_abort(ctx, flow_id):
     emit(ctx, config_entries_core.flow_abort(make_client(ctx), flow_id))
+
+
+@config_flow.command("progress")
+@click.option(
+    "--raw",
+    is_flag=True,
+    default=False,
+    help="HA's own list, ungrouped.",
+)
+@click.pass_context
+def config_flow_progress(ctx, raw):
+    """Flows HA started BY ITSELF and is waiting on a human for.
+
+    The command-line answer to the frontend's "N discovered" badge. HA filters
+    out user-initiated flows server-side, so this is the discovery / re-auth /
+    reconfigure set by construction. `reauth` is the one that matters: an
+    integration that has ALREADY stopped working and is asking for credentials
+    — an instance can sit like that for months with nothing else reporting it.
+    """
+    client = make_client(ctx)
+    if raw:
+        emit(ctx, config_entries_core.flows_in_progress(client))
+        return
+    emit(ctx, config_entries_core.flows_needing_attention(client))
+
+
+@config_flow.command("ignore")
+@click.argument("flow_id")
+@click.option("--title", required=True, help="Names the ignored entry — the only record left")
+@click.option("--yes", is_flag=True, default=False, help="Skip confirmation")
+@click.pass_context
+def config_flow_ignore(ctx, flow_id, title, yes):
+    """Dismiss a discovered flow permanently.
+
+    Not `abort` — aborting closes the flow and HA re-discovers the same device
+    on the next scan. Ignoring writes an `ignore`-source config entry holding
+    the flow's unique_id, which suppresses it until that entry is deleted. A
+    flow with no unique_id cannot be ignored and HA says `no_unique_id`.
+    """
+    if not yes:
+        if not click.confirm(f"Permanently ignore flow {flow_id} as {title!r}?", default=False):
+            click.echo("aborted")
+            return
+    emit(ctx, config_entries_core.ignore_flow(make_client(ctx), flow_id, title))
+
+
+@config_flow.command("handlers")
+@click.option(
+    "--type",
+    "type_filter",
+    default=None,
+    type=click.Choice(["integration", "helper", "device", "hub", "service"]),
+    help="HA's own filter. `helper` is the set behind the `helpers` group.",
+)
+@click.pass_context
+def config_flow_handlers(ctx, type_filter):
+    """Every integration domain that CAN be set up through a flow.
+
+    The catalogue `config-flow init` draws from: a domain missing here has no
+    config flow at all and can only be configured in YAML — which is the real
+    answer to "why does `config-flow init` say it does not exist".
+    """
+    emit(ctx, config_entries_core.flow_handlers(make_client(ctx), type_filter))
 
 
 @config_flow.command("get")
@@ -5993,10 +6273,68 @@ def tts():
 
 
 @tts.command("list")
+@click.option(
+    "--raw",
+    is_flag=True,
+    default=False,
+    help="Ask tts/engine/list directly: includes legacy providers that have no "
+    "entity, and HA's own `deprecated` flag.",
+)
+@click.option("--language", default=None, help="With --raw: filter each engine's languages")
+@click.option("--country", default=None, help="With --raw: refine a language match (e.g. GB)")
 @click.pass_context
-def tts_list(ctx):
-    """List every tts.* engine + its languages."""
-    emit(ctx, tts_core.list_engines(make_client(ctx)))
+def tts_list(ctx, raw, language, country):
+    """List every tts.* engine + its languages.
+
+    The default walks the entity states. `--raw` asks HA's own engine list,
+    which also carries the legacy platform providers — those have no entity
+    and so never appear in a state list at all.
+    """
+    client = make_client(ctx)
+    if raw or language or country:
+        emit(ctx, voice_core.tts_engines(client, language=language, country=country))
+        return
+    emit(ctx, tts_core.list_engines(client))
+
+
+@tts.command("engine")
+@click.argument("engine_id")
+@click.pass_context
+def tts_engine(ctx, engine_id):
+    """One engine's declared capabilities, by id.
+
+    Works for the legacy platform providers too (named by integration domain,
+    e.g. `google_translate`), which have no entity and so cannot be looked up
+    with `state get`.
+    """
+    emit(ctx, voice_core.engine(make_client(ctx), engine_id))
+
+
+@tts.command("voices")
+@click.argument("engine_id")
+@click.option("--language", required=True, help="Required by HA — e.g. en-GB")
+@click.option(
+    "--no-check-language",
+    is_flag=True,
+    default=False,
+    help="Send the language through untouched instead of validating it "
+    "against the engine's declared list first.",
+)
+@click.pass_context
+def tts_voices(ctx, engine_id, language, no_check_language):
+    """The legal values for `voice` — the option every real TTS call wants.
+
+    Feed one back in as `tts speak --option voice=<id>`. HA answers an unknown
+    LANGUAGE with an empty list rather than an error, so the language is
+    checked against the engine's own declared set first; `--no-check-language`
+    skips that when the engine's declaration is wrong.
+    """
+    emit(
+        ctx,
+        voice_core.voices(
+            make_client(ctx), engine_id, language, check_language=not no_check_language
+        ),
+    )
 
 
 @tts.command("speak")
