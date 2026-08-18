@@ -36,6 +36,7 @@ from cli_anything.homeassistant.core import (
     services as services_core,
     states as states_core,
     system as system_core,
+    core_config as core_config_core,
     template as template_core,
 )
 from cli_anything.homeassistant.utils.homeassistant_backend import (
@@ -1364,3 +1365,222 @@ class TestRefineV4Live:
         for composite_id, info in (data["splits"] or {}).items():
             for split_id in info.get("split_ids") or []:
                 assert data["member_of"].get(split_id) == composite_id
+
+
+class TestRefineV5Live:
+    """The v1.50.0 clusters against a real HA: core config, voice, discovery.
+
+    The throwaway instance these boot on is DELIBERATELY minimal — its
+    `configuration.yaml` loads `api`, `auth`, `history`, `logbook`,
+    `conversation`, `media_source`, `automation`, `script` and nothing else. It
+    therefore does NOT load the `config` integration, and `config` is what
+    registers `config/core/update`, `config/core/detect`,
+    `config_entries/*` and `POST /api/config/core/check_config`. Nor does it
+    load `tts`, `stt`, `wake_word` or `lovelace`.
+
+    That is not a gap in these tests, it is the condition every one of these
+    commands meets on a stripped-down instance, so each is written to prove one
+    of two things: that it works, or that it degrades to a named skip instead
+    of a traceback. The commands that need no integration at all — the
+    `/api/config` read, the whole of dry-run validation, the client-side
+    guards, and `conversation/prepare` — are asserted properly.
+    """
+
+    def _env(self, hass_instance):
+        env = dict(os.environ)
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        return env
+
+    def _run(self, args, hass_instance, check=True):
+        return subprocess.run(
+            CLI_BASE + args,
+            capture_output=True,
+            text=True,
+            env=self._env(hass_instance),
+            check=check,
+            timeout=60,
+        )
+
+    def _skip_if_absent(self, result, what):
+        """Skip when the integration behind a command is not loaded here.
+
+        A missing WS command answers `unknown_command`; a missing REST view is
+        a 404. Both mean "this integration is not set up", which is a real
+        state on a real instance and must not look like a crash.
+        """
+        blob = (result.stderr or "") + (result.stdout or "")
+        if result.returncode != 0 and ("unknown_command" in blob or "-> 404" in blob):
+            pytest.skip(f"{what} is not available on this HA (integration not loaded)")
+
+    # ────────────────────────────────────────────── A: the instance's own config
+
+    def test_core_config_returns_the_settable_keys_only(self, hass_instance):
+        """These are the twelve keys `set-config` can write, and no others."""
+        r = self._run(["--json", "system", "core-config"], hass_instance)
+        data = json.loads(r.stdout)
+        assert set(data) == set(core_config_core.UPDATABLE)
+        assert "components" not in data
+
+    def test_core_config_agrees_with_the_yaml_the_instance_booted_with(self, hass_instance):
+        """conftest writes latitude 52.3676 / Etc/UTC into configuration.yaml."""
+        data = json.loads(self._run(["--json", "system", "core-config"], hass_instance).stdout)
+        assert round(float(data["latitude"]), 3) == 52.368
+        assert data["time_zone"] == "Etc/UTC"
+
+    def test_set_config_dry_run_writes_nothing_and_reports_the_change(self, hass_instance):
+        """The dry run needs no `config` integration — it only reads and diffs."""
+        r = self._run(
+            ["--json", "system", "set-config", "--time-zone", "Europe/London"], hass_instance
+        )
+        data = json.loads(r.stdout)
+        assert data["applied"] is False
+        assert data["changes"] == [
+            {"key": "time_zone", "from": "Etc/UTC", "to": "Europe/London"}
+        ]
+        # And the instance really did not move.
+        after = json.loads(self._run(["--json", "system", "core-config"], hass_instance).stdout)
+        assert after["time_zone"] == "Etc/UTC"
+
+    def test_set_config_dry_run_detects_a_no_op(self, hass_instance):
+        r = self._run(["--json", "system", "set-config", "--time-zone", "Etc/UTC"], hass_instance)
+        data = json.loads(r.stdout)
+        assert data["no_op"] is True and data["changes"] == []
+
+    def test_set_config_refuses_an_impossible_coordinate_before_any_call(self, hass_instance):
+        r = self._run(
+            ["--json", "system", "set-config", "--latitude", "200", "--apply"],
+            hass_instance,
+            check=False,
+        )
+        assert r.returncode == 1
+        assert "must be between" in r.stderr
+
+    def test_set_config_apply_round_trip(self, hass_instance):
+        """A real write, then put it back. Needs the `config` integration.
+
+        Elevation is chosen deliberately: it is an integer with no dependent
+        entity in this instance, so a failure to restore cannot silently break
+        another test the way a time-zone change would.
+        """
+        before = json.loads(self._run(["--json", "system", "core-config"], hass_instance).stdout)
+        r = self._run(
+            ["--json", "system", "set-config", "--elevation", "123", "--apply"],
+            hass_instance,
+            check=False,
+        )
+        self._skip_if_absent(r, "config/core/update")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["applied"] is True
+        assert data["effective"] == [
+            {"key": "elevation", "requested": 123, "actual": 123, "took": True}
+        ]
+        restore = self._run(
+            ["--json", "system", "set-config", "--elevation", str(before["elevation"] or 0),
+             "--apply"],
+            hass_instance,
+            check=False,
+        )
+        assert restore.returncode == 0, restore.stderr
+
+    def test_detect_location_degrades_to_a_named_answer(self, hass_instance):
+        """Geo-IP from a CI runner may fail; `{}` is a result, not an error."""
+        r = self._run(["--json", "system", "detect-location"], hass_instance, check=False)
+        self._skip_if_absent(r, "config/core/detect")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["detected"] in (True, False)
+
+    def test_check_config_direct(self, hass_instance):
+        r = self._run(["--json", "system", "check-config", "--direct"], hass_instance, check=False)
+        self._skip_if_absent(r, "POST /api/config/core/check_config")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["valid"] is True  # the instance booted, so its YAML is fine
+        assert data["source"].endswith("/api/config/core/check_config")
+
+    # ─────────────────────────────────────────────────────────── B: voice stack
+
+    def test_assist_prepare_against_the_real_conversation_agent(self, hass_instance):
+        """`conversation` IS loaded here, so this is a real warm-up, not a skip."""
+        r = self._run(["--json", "assist", "prepare", "--language", "en"], hass_instance,
+                      check=False)
+        self._skip_if_absent(r, "conversation/prepare")
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["prepared"] is True
+
+    def test_wake_words_refuses_a_satellite_entity_without_touching_the_wire(
+        self, hass_instance
+    ):
+        """The mistake this guard exists for — wake words are CONFIGURED on the
+        satellite and OFFERED by the detection engine, and HA's own answer is a
+        voluptuous error about a schema."""
+        r = self._run(
+            ["--json", "assist", "wake-words", "assist_satellite.kitchen"],
+            hass_instance,
+            check=False,
+        )
+        assert r.returncode == 1
+        assert "assist-satellite config" in r.stderr
+
+    def test_tts_voices_needs_a_language_and_says_so(self, hass_instance):
+        r = self._run(["--json", "tts", "voices", "tts.piper"], hass_instance, check=False)
+        assert r.returncode != 0
+        assert "--language" in (r.stderr + r.stdout)
+
+    def test_stt_engines_is_empty_or_absent_but_never_a_traceback(self, hass_instance):
+        r = self._run(["--json", "assist", "stt-engines"], hass_instance, check=False)
+        self._skip_if_absent(r, "stt/engine/list")
+        assert r.returncode == 0, r.stderr
+        assert isinstance(json.loads(r.stdout), list)
+
+    # ──────────────────────────────────────────── C: flows HA starts by itself
+
+    def test_config_flow_progress_is_grouped_by_what_it_means(self, hass_instance):
+        r = self._run(["--json", "config-flow", "progress"], hass_instance, check=False)
+        self._skip_if_absent(r, "config_entries/flow/progress")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["broken"] == len(data["reauth"])
+        assert data["total"] == len(data["reauth"]) + len(data["reconfigure"]) + len(
+            data["discovered"]
+        )
+
+    def test_config_flow_handlers_lists_setup_capable_domains(self, hass_instance):
+        r = self._run(["--json", "config-flow", "handlers"], hass_instance, check=False)
+        self._skip_if_absent(r, "config/config_entries/flow_handlers")
+        assert r.returncode == 0, r.stderr
+        handlers = json.loads(r.stdout)
+        assert isinstance(handlers, list) and handlers
+        # The catalogue is what `config-flow init` draws from.
+        assert "mqtt" in handlers
+
+    def test_config_flow_handlers_helper_filter_is_a_subset(self, hass_instance):
+        every = self._run(["--json", "config-flow", "handlers"], hass_instance, check=False)
+        self._skip_if_absent(every, "config/config_entries/flow_handlers")
+        helpers = self._run(
+            ["--json", "config-flow", "handlers", "--type", "helper"], hass_instance, check=False
+        )
+        assert helpers.returncode == 0, helpers.stderr
+        assert set(json.loads(helpers.stdout)) <= set(json.loads(every.stdout))
+
+    def test_ignore_refuses_a_flow_id_that_is_not_in_progress(self, hass_instance):
+        r = self._run(
+            ["--json", "config-flow", "ignore", "not-a-flow", "--title", "x", "--yes"],
+            hass_instance,
+            check=False,
+        )
+        self._skip_if_absent(r, "config_entries/ignore_flow")
+        assert r.returncode == 1
+        assert r.stderr.strip()
+
+    def test_config_entry_get_direct_on_a_missing_entry_is_an_error_not_empty(
+        self, hass_instance
+    ):
+        r = self._run(
+            ["--json", "config-entry", "get", "nope", "--direct"], hass_instance, check=False
+        )
+        self._skip_if_absent(r, "config_entries/get_single")
+        assert r.returncode == 1
+        assert r.stderr.strip()

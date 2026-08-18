@@ -123,6 +123,51 @@ def save_dashboard_config(
     )
 
 
+def delete_dashboard_config(
+    client, url_path: str | None = None, *, snapshot_dir: str | None = None
+) -> dict:
+    """Delete a dashboard's STORED config and fall back to auto-generation.
+
+    Not `delete_dashboard`. That removes the dashboard itself from the sidebar;
+    this empties one, leaving the dashboard in place with no stored config —
+    at which point HA generates the "auto" view from the entity registry, the
+    same one a fresh install shows. It is the only way back to auto-generated
+    once a dashboard has been "taken control of" in the UI.
+
+    `url_path=None` targets the main `lovelace` dashboard, matching
+    `get_dashboard_config`.
+
+    IRREVERSIBLE AND UNPROMPTED AT THE API. HA's `async_delete` raises
+    `ERR_NOT_FOUND` ("Config not found") when there is nothing stored — which
+    means "already auto-generated", not a failure of the call. A snapshot of
+    the current config is taken first (and reported) precisely because there is
+    no undo.
+    """
+    before = None
+    snapshot = None
+    try:
+        before = get_dashboard_config(client, url_path)
+    except Exception as e:  # noqa: BLE001 - nothing stored is a normal state here
+        before = None
+        snapshot = {"_error": f"could not read current config: {e}"}
+    if before is not None:
+        snapshot = _write_snapshot(url_path or "lovelace", before, snapshot_dir)
+    payload: dict[str, Any] = {}
+    if url_path:
+        payload["url_path"] = url_path
+    client.ws_call("lovelace/config/delete", payload)
+    return {
+        "deleted": True,
+        "url_path": url_path or "lovelace",
+        "snapshot": snapshot,
+        "note": (
+            "The dashboard still exists; it now has no stored config, so HA "
+            "auto-generates its view from the entity registry. Restore the "
+            "snapshot above with `lovelace config save` to undo."
+        ),
+    }
+
+
 # ---------------------------------------------------------------- snapshots
 
 
