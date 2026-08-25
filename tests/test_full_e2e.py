@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1584,3 +1585,240 @@ class TestRefineV5Live:
         self._skip_if_absent(r, "config_entries/get_single")
         assert r.returncode == 1
         assert r.stderr.strip()
+
+
+class TestRefineV6Live:
+    """v1.50.0's own clusters against a real HA: ping, cloud, credential admin.
+
+    THE CLOUD COMMANDS CANNOT BE PROVEN HERE, AND SAY SO
+        `cloud` needs the `cloud` integration, which depends on
+        `assist_pipeline`, which needs a `pyspeex-noise` wheel that does not
+        build in this environment — so the throwaway instance cannot load it
+        even if `cloud:` is added to its `configuration.yaml`. Every cloud
+        command below therefore asserts the SKIP path: it must degrade to a
+        named `unknown_command` rather than a traceback, which is also exactly
+        what an instance without a Nabu Casa account does. The payloads
+        themselves are pinned in `tests/test_cloud.py` against `FakeClient`.
+
+    The rest is proven properly: `system ping` needs no integration at all
+    (`ping` is a core websocket command), and the credential admin commands
+    need only `auth`, which every instance loads.
+    """
+
+    def _env(self, hass_instance):
+        env = dict(os.environ)
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        return env
+
+    def _run(self, args, hass_instance, check=True):
+        return subprocess.run(
+            CLI_BASE + args,
+            capture_output=True,
+            text=True,
+            env=self._env(hass_instance),
+            check=check,
+            timeout=60,
+        )
+
+    def _skip_if_absent(self, result, what):
+        blob = (result.stderr or "") + (result.stdout or "")
+        if result.returncode != 0 and ("unknown_command" in blob or "-> 404" in blob):
+            pytest.skip(f"{what} is not available on this HA (integration not loaded)")
+
+    # ────────────────────────────────────────────────────────── websocket ping
+
+    def test_ping_round_trips_the_websocket(self, hass_instance):
+        r = self._run(["--json", "system", "ping"], hass_instance)
+        data = json.loads(r.stdout)
+        assert data["ok"] is True
+        assert data["count"] == 1
+        assert data["latency_ms"] > 0
+        # A local round trip is milliseconds; anything near the 30s client
+        # timeout would mean `pong` was being matched by falling back to a
+        # timeout rather than by being received.
+        assert data["latency_ms"] < 5000
+
+    def test_ping_does_not_hang_waiting_for_a_result_message(self, hass_instance):
+        """`ping` answers `pong`, never `result`.
+
+        Routed through `ws_call` this command would match nothing and fail
+        only after the FULL client timeout. Pinning the wall-clock is the only
+        way to catch a regression back to `ws_call("ping")`, because that path
+        eventually raises rather than returning a wrong answer.
+        """
+        started = time.monotonic()
+        self._run(["--json", "system", "ping"], hass_instance)
+        assert time.monotonic() - started < 20
+
+    def test_ping_count_reports_the_spread(self, hass_instance):
+        r = self._run(["--json", "system", "ping", "--count", "3"], hass_instance)
+        data = json.loads(r.stdout)
+        assert len(data["samples_ms"]) == 3
+        assert data["min_ms"] <= data["avg_ms"] <= data["max_ms"]
+        assert data["latency_ms"] is None
+
+    def test_ping_count_zero_is_refused_client_side(self, hass_instance):
+        r = self._run(["--json", "system", "ping", "--count", "0"], hass_instance, check=False)
+        assert r.returncode == 1
+        assert "at least 1" in r.stderr
+
+    def test_ping_and_rest_status_agree_on_a_healthy_instance(self, hass_instance):
+        """Both transports up is the state that makes every command usable."""
+        rest = self._run(["--json", "system", "info"], hass_instance)
+        ws = self._run(["--json", "system", "ping"], hass_instance)
+        assert "message" in json.loads(rest.stdout)
+        assert json.loads(ws.stdout)["ok"] is True
+
+    def test_ping_against_a_dead_port_is_a_named_error(self, hass_instance):
+        env = self._env(hass_instance)
+        env["HASS_URL"] = "http://127.0.0.1:1"
+        r = subprocess.run(
+            CLI_BASE + ["--json", "system", "ping"],
+            capture_output=True, text=True, env=env, check=False, timeout=60,
+        )
+        assert r.returncode == 1
+        assert r.stderr.strip()
+        assert "Traceback" not in r.stderr
+
+    # ─────────────────────────────────────────────── detect-location degrading
+
+    def test_detect_location_never_raises_on_a_failed_lookup(self, hass_instance):
+        """The lookup may return `{}` OR blow up server-side; both are
+        'not detected', and neither is a crash."""
+        r = self._run(["--json", "system", "detect-location"], hass_instance, check=False)
+        self._skip_if_absent(r, "config/core/detect")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["detected"] in (True, False)
+        assert data["lookup_failed"] in (True, False)
+        if data["lookup_failed"]:
+            assert data["detected"] is False
+            assert data["error"]
+
+    # ───────────────────────────────────────────── owner-only credential admin
+
+    def _make_user(self, hass_instance, name, username):
+        created = self._run(["--json", "auth", "user", "create", name], hass_instance)
+        user_id = json.loads(created.stdout)["user"]["id"]
+        self._run(
+            ["--json", "auth", "user", "credential-create", user_id, username,
+             "--password", "initial-password-1"],
+            hass_instance,
+        )
+        return user_id
+
+    def test_reset_password_on_a_real_user(self, hass_instance):
+        user_id = self._make_user(hass_instance, "CLI Reset Target", "cli_reset_target")
+        r = self._run(
+            ["--json", "auth", "user", "reset-password", user_id,
+             "--password", "a-different-password-2"],
+            hass_instance,
+            check=False,
+        )
+        self._skip_if_absent(r, "config/auth_provider/homeassistant/admin_change_password")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["applied"] is True
+        assert data["user_id"] == user_id
+
+    def test_reset_password_needs_no_current_password(self, hass_instance):
+        """The whole point: this works for a user who has forgotten theirs."""
+        user_id = self._make_user(hass_instance, "CLI Forgot", "cli_forgot")
+        r = self._run(
+            ["--json", "auth", "user", "reset-password", user_id, "--password", "brand-new-3"],
+            hass_instance,
+            check=False,
+        )
+        self._skip_if_absent(r, "config/auth_provider/homeassistant/admin_change_password")
+        assert r.returncode == 0, r.stderr
+
+    def test_rename_login_on_a_real_user(self, hass_instance):
+        user_id = self._make_user(hass_instance, "CLI Rename Target", "cli_rename_before")
+        r = self._run(
+            ["--json", "auth", "user", "rename-login", user_id, "cli_rename_after", "--yes"],
+            hass_instance,
+            check=False,
+        )
+        self._skip_if_absent(r, "config/auth_provider/homeassistant/admin_change_username")
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["username"] == "cli_rename_after"
+
+    def test_reset_password_on_a_user_without_credentials_is_named(self, hass_instance):
+        """A user created with no login has nothing to change — say which."""
+        created = self._run(
+            ["--json", "auth", "user", "create", "CLI No Credential"], hass_instance
+        )
+        user_id = json.loads(created.stdout)["user"]["id"]
+        r = self._run(
+            ["--json", "auth", "user", "reset-password", user_id, "--password", "x"],
+            hass_instance,
+            check=False,
+        )
+        self._skip_if_absent(r, "config/auth_provider/homeassistant/admin_change_password")
+        assert r.returncode == 1
+        assert "credential" in r.stderr.lower()
+        assert "Traceback" not in r.stderr
+
+    def test_reset_password_on_a_missing_user_names_the_lookup(self, hass_instance):
+        r = self._run(
+            ["--json", "auth", "user", "reset-password", "not-a-real-user-id",
+             "--password", "x"],
+            hass_instance,
+            check=False,
+        )
+        self._skip_if_absent(r, "config/auth_provider/homeassistant/admin_change_password")
+        assert r.returncode == 1
+        assert "user list" in r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_empty_password_is_refused_before_the_wire(self, hass_instance):
+        r = self._run(
+            ["--json", "auth", "user", "reset-password", "someone", "--password", ""],
+            hass_instance,
+            check=False,
+        )
+        assert r.returncode == 1
+        assert "non-empty" in r.stderr
+
+    # ───────────────────────────────────────────────────────────────── cloud
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["cloud", "status"],
+            ["cloud", "subscription"],
+            ["cloud", "tts-voices"],
+            ["cloud", "alexa", "entities"],
+            ["cloud", "google", "entities"],
+        ],
+    )
+    def test_cloud_reads_degrade_to_a_named_skip(self, hass_instance, args):
+        r = self._run(["--json"] + args, hass_instance, check=False)
+        self._skip_if_absent(r, " ".join(args))
+        # If the integration IS loaded, the answer must still be well-formed.
+        assert r.returncode == 0, r.stderr
+        assert isinstance(json.loads(r.stdout), dict)
+
+    def test_cloud_write_without_the_integration_is_not_a_traceback(self, hass_instance):
+        r = self._run(["--json", "cloud", "alexa", "sync"], hass_instance, check=False)
+        assert "Traceback" not in r.stderr
+        self._skip_if_absent(r, "cloud/alexa/sync")
+
+    def test_cloud_set_prefs_with_no_flags_never_reaches_the_wire(self, hass_instance):
+        """Refused client-side, so it fails the same way with or without cloud."""
+        r = self._run(["--json", "cloud", "set-prefs"], hass_instance, check=False)
+        assert r.returncode == 1
+        assert "Nothing to update" in r.stderr
+
+    def test_cloud_remove_data_dry_run_is_offline(self, hass_instance):
+        """The dry run must not send anything — it answers without the integration."""
+        r = self._run(["--json", "cloud", "remove-data"], hass_instance, check=False)
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["applied"] is False
+
+    def test_cloud_entity_id_guard_is_client_side(self, hass_instance):
+        r = self._run(["--json", "cloud", "alexa", "entity", "notanentity"],
+                      hass_instance, check=False)
+        assert r.returncode == 1
+        assert "Not an entity_id" in r.stderr

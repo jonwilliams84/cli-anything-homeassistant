@@ -50,6 +50,7 @@ from cli_anything.homeassistant.core import labs as labs_core
 from cli_anything.homeassistant.core import preferences as preferences_core
 from cli_anything.homeassistant.core import device_links as device_links_core
 from cli_anything.homeassistant.core import intents as intents_core
+from cli_anything.homeassistant.core import cloud as cloud_core
 from cli_anything.homeassistant.core import control as control_core
 from cli_anything.homeassistant.core import diagnostics as diagnostics_core
 from cli_anything.homeassistant.core import floors as floors_core
@@ -537,6 +538,27 @@ def system():
 def system_info(ctx):
     """Return /api/ status (auth check)."""
     emit(ctx, system_core.status(make_client(ctx)))
+
+
+@system.command("ping")
+@click.option(
+    "--count",
+    default=1,
+    show_default=True,
+    type=int,
+    help="Samples to take. Above 1 reports min/avg/max — one sample cannot "
+    "tell a slow link from a single slow handshake.",
+)
+@click.pass_context
+def system_ping(ctx, count):
+    """Round-trip the WEBSOCKET and report latency.
+
+    `system info` proves REST works; this proves the websocket does. They fail
+    independently — a proxy that forwards `/api/` without upgrading
+    `/api/websocket` leaves `system info` green while every registry command
+    hangs. Run this first when some commands work and others do not.
+    """
+    emit(ctx, system_core.ping(make_client(ctx), count=count))
 
 
 @system.command("config")
@@ -8824,6 +8846,58 @@ def auth_user_change_password(ctx, current_password, new_password):
     )
 
 
+@auth_user.command("reset-password")
+@click.argument("user_id")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="The new password. Prompted for (hidden) when not given, so it stays "
+    "out of shell history and `ps`.",
+)
+@click.pass_context
+def auth_user_reset_password(ctx, user_id, password):
+    """Reset ANOTHER user's password by user_id. OWNER-only.
+
+    Unlike `change-password` this needs no current password — it is the
+    locked-out-user remedy. Existing sessions and long-lived tokens survive
+    it; revoke those with `auth token delete`.
+    """
+    emit(
+        ctx,
+        user_admin_core.admin_change_password(
+            make_client(ctx),
+            user_id=user_id,
+            password=password,
+        ),
+    )
+
+
+@auth_user.command("rename-login")
+@click.argument("user_id")
+@click.argument("username")
+@click.confirmation_option(
+    prompt="Change this user's sign-in username? They must use the new one to log in."
+)
+@click.pass_context
+def auth_user_rename_login(ctx, user_id, username):
+    """Change ANOTHER user's sign-in username. OWNER-only.
+
+    This is the LOGIN, not the display name — `user update --name` is that.
+    The password is unaffected.
+    """
+    emit(
+        ctx,
+        user_admin_core.admin_change_username(
+            make_client(ctx),
+            user_id=user_id,
+            username=username,
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────── category
 
 
@@ -15167,6 +15241,270 @@ def media_player_search(ctx, entity_id, query, media_content_id, media_content_t
             query=query,
             media_content_id=media_content_id,
             media_content_type=media_content_type,
+        ),
+    )
+
+
+# ──────────────────────────────────────────────────────── cloud (Nabu Casa)
+
+
+@cli.group()
+def cloud():
+    """Home Assistant Cloud — account, subscription, remote UI, Alexa, Google.
+
+    The harness could already see the RESULTS of the cloud (`network urls`
+    shows the cloud URL, `webhook cloudhooks` lists its hooks, `expose`
+    targets `cloud.alexa`) and could not ask the cloud anything. This group
+    asks.
+
+    Read commands answer `logged_in: false` on a signed-out instance instead
+    of failing — that is a true answer to "what is my subscription". Write
+    commands refuse loudly, because there it is the reason nothing happened.
+
+    Signing IN is deliberately absent: those endpoints take an account
+    password, and a password in argv is a password in your shell history.
+    """
+
+
+@cloud.command("status")
+@click.pass_context
+def cloud_status(ctx):
+    """Account, connection, subscription and remote URL in one answer.
+
+    The only command here that is not login-guarded. Read `connection`
+    alongside `logged_in`: a signed-in instance that has lost the socket is
+    `logged_in: true, connected: false`, which is exactly the "Alexa stopped
+    responding" symptom.
+    """
+    emit(ctx, cloud_core.status(make_client(ctx)))
+
+
+@cloud.command("subscription")
+@click.pass_context
+def cloud_subscription(ctx):
+    """The Nabu Casa subscription behind this instance."""
+    emit(ctx, cloud_core.subscription(make_client(ctx)))
+
+
+@cloud.command("set-prefs")
+@click.option("--alexa/--no-alexa", "alexa_enabled", default=None, help="Enable the Alexa integration.")
+@click.option(
+    "--alexa-report-state/--no-alexa-report-state",
+    "alexa_report_state",
+    default=None,
+    help="Proactively push state changes to Alexa.",
+)
+@click.option("--google/--no-google", "google_enabled", default=None, help="Enable Google Assistant.")
+@click.option(
+    "--google-report-state/--no-google-report-state",
+    "google_report_state",
+    default=None,
+    help="Proactively push state changes to Google.",
+)
+@click.option(
+    "--google-pin",
+    "google_secure_devices_pin",
+    default=None,
+    help="Secure-devices PIN for locks/garage doors. Pass '' to clear it.",
+)
+@click.option(
+    "--allow-remote-enable/--no-allow-remote-enable",
+    "remote_allow_remote_enable",
+    default=None,
+    help="Let remote access be turned on from outside the local network.",
+)
+@click.option(
+    "--ice-servers/--no-ice-servers",
+    "cloud_ice_servers_enabled",
+    default=None,
+    help="Use the cloud TURN/STUN servers for WebRTC camera streams.",
+)
+@click.option(
+    "--tts-voice",
+    "tts_default_voice",
+    nargs=2,
+    default=None,
+    metavar="LANGUAGE VOICE",
+    help="Default cloud TTS voice, as a pair. List valid pairs with `cloud tts-voices`.",
+)
+@click.pass_context
+def cloud_set_prefs(
+    ctx,
+    alexa_enabled,
+    alexa_report_state,
+    google_enabled,
+    google_report_state,
+    google_secure_devices_pin,
+    remote_allow_remote_enable,
+    cloud_ice_servers_enabled,
+    tts_default_voice,
+):
+    """Update cloud preferences. Only the flags you pass are sent.
+
+    A genuine partial update — unlike the powercalc options flow, HA leaves
+    every key you omit alone, so there is no read-modify-write hazard.
+
+    Remote access is NOT here: it is `cloud remote connect` / `disconnect`.
+    """
+    emit(
+        ctx,
+        cloud_core.set_prefs(
+            make_client(ctx),
+            alexa_enabled=alexa_enabled,
+            alexa_report_state=alexa_report_state,
+            google_enabled=google_enabled,
+            google_report_state=google_report_state,
+            google_secure_devices_pin=google_secure_devices_pin,
+            remote_allow_remote_enable=remote_allow_remote_enable,
+            cloud_ice_servers_enabled=cloud_ice_servers_enabled,
+            tts_default_voice=tts_default_voice or None,
+        ),
+    )
+
+
+@cloud.command("tts-voices")
+@click.option("--language", default=None, help="Only this language, e.g. en-GB.")
+@click.pass_context
+def cloud_tts_voices(ctx, language):
+    """Cloud TTS voices, grouped by language.
+
+    A (language, voice) pair from here is what `cloud set-prefs --tts-voice`
+    accepts. Not login-guarded — the table is static.
+    """
+    emit(ctx, cloud_core.tts_info(make_client(ctx), language=language))
+
+
+@cloud.command("remove-data")
+@click.option(
+    "--apply",
+    "apply_changes",
+    is_flag=True,
+    default=False,
+    help="Actually erase it. Without this the command only reports what would go.",
+)
+@click.pass_context
+def cloud_remove_data(ctx, apply_changes):
+    """Erase the stored cloud config. Dry-run unless --apply.
+
+    Takes the Alexa/Google exposure settings, the secure-devices PIN and the
+    cloudhook list with it, and there is no undo. HA refuses this while you
+    are logged IN — sign out first.
+    """
+    emit(ctx, cloud_core.remove_data(make_client(ctx), apply=apply_changes))
+
+
+@cloud.group("remote")
+def cloud_remote():
+    """Remote access — the Nabu Casa public URL."""
+
+
+@cloud_remote.command("connect")
+@click.pass_context
+def cloud_remote_connect(ctx):
+    """Enable remote access and connect it.
+
+    The resulting public URL shows up as `remote.domain` in `cloud status`
+    and as `cloud_url` in `network urls`.
+    """
+    emit(ctx, cloud_core.remote_connect(make_client(ctx)))
+
+
+@cloud_remote.command("disconnect")
+@click.confirmation_option(
+    prompt="Disconnect remote access? The public URL, cloudhooks and away-from-home "
+    "app access stop working."
+)
+@click.pass_context
+def cloud_remote_disconnect(ctx):
+    """Disable remote access. The public URL stops answering."""
+    emit(ctx, cloud_core.remote_disconnect(make_client(ctx)))
+
+
+@cloud.group("alexa")
+def cloud_alexa():
+    """What Alexa can see, and pushing changes to it."""
+
+
+@cloud_alexa.command("entities")
+@click.pass_context
+def cloud_alexa_entities(ctx):
+    """Every entity Alexa is capable of representing.
+
+    Not the same list as `expose list --assistant cloud.alexa`: that is what
+    you chose to expose, this is what CAN be. An entity missing here cannot
+    be exposed at all.
+    """
+    emit(ctx, cloud_core.alexa_entities(make_client(ctx)))
+
+
+@cloud_alexa.command("entity")
+@click.argument("entity_id")
+@click.pass_context
+def cloud_alexa_entity(ctx, entity_id):
+    """Whether ONE entity is supported by Alexa.
+
+    HA answers this with an empty result or a bare `not_supported`; both are
+    normalised to `supported: true|false`.
+    """
+    emit(ctx, cloud_core.alexa_entity(make_client(ctx), entity_id))
+
+
+@cloud_alexa.command("sync")
+@click.pass_context
+def cloud_alexa_sync(ctx):
+    """Push the current entity list to Alexa.
+
+    Needed after changing what is exposed — Alexa caches the device list and
+    will not notice on its own.
+    """
+    emit(ctx, cloud_core.alexa_sync(make_client(ctx)))
+
+
+@cloud.group("google")
+def cloud_google():
+    """What Google Assistant can see, and its per-entity PIN setting."""
+
+
+@cloud_google.command("entities")
+@click.pass_context
+def cloud_google_entities(ctx):
+    """Every entity Google Assistant can see, with its traits.
+
+    Read `might_2fa`: those entities want the secure-devices PIN before they
+    act, and a Google command against them fails quietly when none is set.
+    """
+    emit(ctx, cloud_core.google_entities(make_client(ctx)))
+
+
+@cloud_google.command("entity")
+@click.argument("entity_id")
+@click.pass_context
+def cloud_google_entity(ctx, entity_id):
+    """One entity's Google traits and its 2FA setting."""
+    emit(ctx, cloud_core.google_entity(make_client(ctx), entity_id))
+
+
+@cloud_google.command("set-2fa")
+@click.argument("entity_id")
+@click.option(
+    "--require/--skip",
+    "require_pin",
+    default=True,
+    show_default=True,
+    help="--skip lets Google act WITHOUT the secure-devices PIN.",
+)
+@click.pass_context
+def cloud_google_set_2fa(ctx, entity_id, require_pin):
+    """Require or skip the Google PIN prompt for one entity.
+
+    `--skip` on a lock or a garage door means anyone who can talk to the
+    speaker can open it. HA returns nothing when the value is already what
+    you asked for, so read it back with `cloud google entity`.
+    """
+    emit(
+        ctx,
+        cloud_core.google_set_2fa(
+            make_client(ctx), entity_id, disable_2fa=not require_pin
         ),
     )
 

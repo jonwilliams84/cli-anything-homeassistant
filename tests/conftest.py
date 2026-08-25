@@ -32,6 +32,29 @@ class FakeClient:
         # `service_calls` so tests can assert on the payload.
         self.service_responses: dict[str, Any] = {}
         self.service_calls: list[dict] = []
+        # WS failure recorder. `set_ws_error(type, code)` makes `ws_call` raise
+        # the same `HomeAssistantError` the real client raises for a
+        # `success: false` result — including HA's machine-readable `code`,
+        # which core modules branch on (cloud's `not_logged_in`, detect's
+        # `unknown_error`).
+        self.ws_errors: dict[str, tuple[str, str]] = {}
+        # `ws_ping` samples, in ms, popped in order; the last one repeats.
+        self.ping_samples: list[float] = [1.0]
+        self.ping_calls: int = 0
+        self.ping_error: Exception | None = None
+
+    def set_ws_error(self, msg_type: str, code: str, message: str = "") -> None:
+        self.ws_errors[msg_type] = (code, message)
+
+    def set_ping(self, *samples: float) -> None:
+        self.ping_samples = list(samples) or [1.0]
+
+    def ws_ping(self) -> float:
+        self.ping_calls += 1
+        if self.ping_error is not None:
+            raise self.ping_error
+        idx = min(self.ping_calls - 1, len(self.ping_samples) - 1)
+        return self.ping_samples[idx]
 
     def set_service(self, domain: str, service: str, response: Any) -> None:
         self.service_responses[f"{domain}.{service}"] = response
@@ -84,6 +107,15 @@ class FakeClient:
 
     def ws_call(self, msg_type: str, payload: dict | None = None) -> Any:
         self.ws_calls.append({"type": msg_type, "payload": payload})
+        if msg_type in self.ws_errors:
+            from cli_anything.homeassistant.utils.homeassistant_backend import (
+                HomeAssistantError,
+            )
+
+            code, message = self.ws_errors[msg_type]
+            raise HomeAssistantError(
+                f"WS command {msg_type} failed: {code} {message}", code=code
+            )
         return self.ws_responses.get(msg_type, [])
 
 
@@ -223,10 +255,24 @@ def _create_long_lived_token(config_dir: Path, owner_username: str = "agent") ->
         )
         user = await manager.async_get_or_create_user(credentials)
         await manager.async_activate_user(user)
-        try:
-            await manager.async_update_user(user, is_owner=True)
-        except Exception:
-            pass
+        # OWNERSHIP IS SET ON THE MODEL, NOT THROUGH `async_update_user`.
+        #
+        # This used to be `await manager.async_update_user(user, is_owner=True)`
+        # inside a bare `except Exception: pass`. That method has no `is_owner`
+        # parameter — only name/is_active/group_ids/local_only — so every call
+        # raised `TypeError` and was swallowed, and the "owner user" this
+        # helper documents was a plain admin on every run since. Nothing
+        # noticed until a command that checks `user.is_owner` (the owner-only
+        # credential admin pair) was tested against it and came back
+        # `unauthorized`.
+        #
+        # `is_owner` is an attrs field on `auth.models.User` whose setter
+        # refreshes the permission policy, and `_data_to_save()` reads it back
+        # off the model, so assigning it directly both takes effect and
+        # persists. Asserted rather than tried, so a future HA that moves it
+        # fails loudly here instead of silently downgrading every e2e run.
+        user.is_owner = True
+        assert user.is_owner, "could not make the test user an owner"
         from datetime import timedelta
         refresh = await manager.async_create_refresh_token(
             user,

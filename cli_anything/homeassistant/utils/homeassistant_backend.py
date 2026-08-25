@@ -55,7 +55,26 @@ def _ws_url_from_http(http_url: str) -> str:
 
 
 class HomeAssistantError(RuntimeError):
-    """Raised for any Home Assistant API failure."""
+    """Raised for any Home Assistant API failure.
+
+    `code` carries Home Assistant's own MACHINE-READABLE error code when the
+    failure came back as a websocket `result` with `success: false` — e.g.
+    `unknown_command`, `not_logged_in`, `unauthorized`, `unknown_error`. It is
+    `None` for transport, auth-handshake and REST failures, which have no such
+    code.
+
+    It exists so a core module can branch on the code rather than by matching
+    substrings of the message. `cloud.py` uses it to turn `not_logged_in` into
+    a named answer, and `core_config.detect()` uses it to tell "the geo-IP
+    lookup blew up on the HA host" apart from "you may not call this".
+
+    The `str()` of the exception is UNCHANGED by this — the code is additive,
+    so anything already asserting on the message text keeps working.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 class HomeAssistantClient:
@@ -332,8 +351,66 @@ class HomeAssistantClient:
             except Exception:  # pragma: no cover
                 _logger.debug("error closing websocket", exc_info=True)
 
-    def _ws_run(self, ws, msg_type: str, payload: dict | None) -> Any:
-        """Auth + single command exchange on an open WebSocket."""
+    def ws_ping(self) -> float:
+        """Round-trip the websocket `ping` command; return the latency in ms.
+
+        WHY THIS IS NOT `ws_call("ping")`
+            Every other websocket command answers with a `result` message, and
+            `_ws_run` returns as soon as it sees one. `ping` does not: HA's
+            handler replies `{"id": N, "type": "pong"}` and never sends a
+            `result`. Routed through `ws_call` it therefore matches nothing and
+            fails with a `timed out` after the FULL client timeout — reporting
+            a healthy instance as unreachable after 30 idle seconds.
+
+        The measurement covers connect + auth + one command, because that is
+        the sequence every other websocket command in this harness pays. A
+        `ping` that succeeds while REST also works is the evidence that a
+        reverse proxy is forwarding `/api/` but not upgrading
+        `/api/websocket` — the failure mode that breaks roughly half of these
+        commands while `system status` stays green.
+        """
+        if websocket is None:
+            raise HomeAssistantError(
+                "The `websocket-client` package is required for registry commands. "
+                "Install with: pip install websocket-client"
+            )
+        url = _ws_url_from_http(self.base_url)
+        ssl_opts = None if self.verify_ssl else {"cert_reqs": 0}
+        started = time.monotonic()
+        try:
+            ws = websocket.create_connection(url, timeout=self.timeout, sslopt=ssl_opts)
+        except (OSError, websocket.WebSocketException) as exc:  # type: ignore[attr-defined]
+            raise self._connection_error(exc) from exc
+        try:
+            self._ws_authenticate(ws)
+            ws.send(json.dumps({"id": 1, "type": "ping"}))
+            deadline = time.monotonic() + self.timeout
+            while time.monotonic() < deadline:
+                raw = ws.recv()
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                if data.get("id") != 1:
+                    continue
+                if data.get("type") == "pong":
+                    return (time.monotonic() - started) * 1000.0
+                if data.get("type") == "result" and not data.get("success", False):
+                    # Older/stripped builds may not register `ping` at all.
+                    err = data.get("error", {})
+                    raise HomeAssistantError(
+                        f"WS command ping failed: "
+                        f"{err.get('code', 'unknown')} {err.get('message', '')}",
+                        code=err.get("code"),
+                    )
+            raise HomeAssistantError(f"WS command ping timed out after {self.timeout}s")
+        finally:
+            try:
+                ws.close()
+            except Exception:  # pragma: no cover
+                _logger.debug("error closing websocket", exc_info=True)
+
+    def _ws_authenticate(self, ws) -> None:
+        """Consume `auth_required`, send the token, require `auth_ok`."""
         auth_required = json.loads(ws.recv())
         if auth_required.get("type") != "auth_required":
             raise HomeAssistantError(f"Unexpected WS handshake: {auth_required!r}")
@@ -345,6 +422,10 @@ class HomeAssistantClient:
             )
         if auth_result.get("type") != "auth_ok":
             raise HomeAssistantError(f"WebSocket auth failed: {auth_result!r}")
+
+    def _ws_run(self, ws, msg_type: str, payload: dict | None) -> Any:
+        """Auth + single command exchange on an open WebSocket."""
+        self._ws_authenticate(ws)
 
         message = {"id": 1, "type": msg_type}
         if payload:
@@ -364,7 +445,8 @@ class HomeAssistantClient:
                     err = data.get("error", {})
                     raise HomeAssistantError(
                         f"WS command {msg_type} failed: "
-                        f"{err.get('code', 'unknown')} {err.get('message', '')}"
+                        f"{err.get('code', 'unknown')} {err.get('message', '')}",
+                        code=err.get("code"),
                     )
                 return data.get("result")
         raise HomeAssistantError(f"WS command {msg_type} timed out after {self.timeout}s")

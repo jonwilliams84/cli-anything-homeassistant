@@ -162,6 +162,45 @@ def status(client) -> dict:
     return {"message": str(data)}
 
 
+def ping(client, *, count: int = 1) -> dict:
+    """Round-trip the WEBSOCKET and report the latency, in ms.
+
+    WHY THIS IS NOT THE SAME CHECK AS `status`
+        `status` is a REST GET. Roughly half the commands in this harness —
+        every registry, every `config/*` write, every subscription — go over
+        the websocket instead, and the two paths fail independently. A reverse
+        proxy that forwards `/api/` without upgrading `/api/websocket` leaves
+        `system status` green while `area list` hangs until it times out. This
+        is the command that tells those apart, and it is the first thing to
+        run when some commands work and others do not.
+
+    Each iteration is a FRESH connect + auth + ping, because that is what
+    every `ws_call` in this harness does — a persistent-socket figure would
+    flatter the number and describe a path this client never takes.
+
+    `count` above 1 reports min/avg/max: one sample cannot distinguish a slow
+    link from a single slow handshake.
+    """
+    if count < 1:
+        raise ValueError("count must be at least 1")
+    samples = [client.ws_ping() for _ in range(count)]
+    return {
+        "ok": True,
+        "count": count,
+        "latency_ms": round(samples[0], 2) if count == 1 else None,
+        "min_ms": round(min(samples), 2),
+        "avg_ms": round(sum(samples) / len(samples), 2),
+        "max_ms": round(max(samples), 2),
+        "samples_ms": [round(s, 2) for s in samples],
+        "note": (
+            "Each sample is a full connect + auth + ping, the same sequence "
+            "every websocket command in this harness pays — not a reused "
+            "socket. A success here plus a working `system status` means both "
+            "transports are up."
+        ),
+    }
+
+
 def config(client) -> dict:
     """Return the server configuration."""
     return client.get("config")

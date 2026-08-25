@@ -62,6 +62,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from cli_anything.homeassistant.utils.homeassistant_backend import HomeAssistantError
+
 _LOGGER = logging.getLogger(__name__)
 
 #: The only two values `homeassistant.util.unit_system.validate_unit_system`
@@ -115,17 +117,47 @@ def detect(client) -> dict:
     (no internet, or the service refused), and that is not distinguishable
     from "no data" at the protocol level. Reported as `detected: false` rather
     than as an error.
+
+    A FAILED LOOKUP IS NOT ALWAYS `{}` — SOMETIMES IT IS `unknown_error`
+        HA only converts the lookup into `{}` for the failures it anticipated:
+        `_get_whoami` catches `aiohttp.ClientError` and `TimeoutError`. Any
+        OTHER exception escapes the handler and comes back as the websocket
+        error `unknown_error`, with the reason visible only in HA's own log.
+        Measured: on a host whose DNS resolver is incompatible with its
+        aiohttp, the lookup raises `TypeError` and this command failed with an
+        opaque `unknown_error` — the SAME condition as the `{}` case (geo-IP
+        did not work) presented as a crash.
+
+        So `unknown_error` is folded into the same named answer, with
+        `lookup_failed: true` distinguishing it from a clean empty. Every
+        other code — `unauthorized`, `unknown_command` — still raises, because
+        those mean the command is unusable rather than the lookup unlucky.
     """
-    info = client.ws_call("config/core/detect") or {}
+    lookup_error = None
+    try:
+        info = client.ws_call("config/core/detect") or {}
+    except HomeAssistantError as exc:
+        if getattr(exc, "code", None) != "unknown_error":
+            raise
+        info, lookup_error = {}, str(exc)
     if not isinstance(info, dict):
         info = {}
     return {
         "detected": bool(info),
+        "lookup_failed": lookup_error is not None,
+        "error": lookup_error,
         "info": info,
         "note": (
             "Geo-IP from the Home Assistant host. An empty result means the "
             "lookup failed (usually no outbound internet), not that the "
             "location is unknown."
+            if lookup_error is None
+            else (
+                "The geo-IP lookup raised on the Home Assistant host rather "
+                "than returning empty — HA reports that as `unknown_error` and "
+                "logs the reason server-side only. Check HA's log "
+                "(`system error-log`). Treated as 'not detected'."
+            )
         ),
     }
 
