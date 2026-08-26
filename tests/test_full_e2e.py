@@ -1822,3 +1822,131 @@ class TestRefineV6Live:
                       hass_instance, check=False)
         assert r.returncode == 1
         assert "Not an entity_id" in r.stderr
+
+
+class TestThreadLive:
+    """The `thread` group against a live boot (v1.50.0).
+
+    The e2e instance does NOT load the `thread` integration: it needs
+    `zeroconf`, `python-otbr-api` and `pyroute2`, none of which are harness
+    dependencies. That is exactly the state most of these tests are for — a
+    real instance where the integration is absent, where a READ must still be
+    a well-formed answer and a WRITE must be a sentence rather than a
+    traceback. Where the integration IS loaded (a real installation with a
+    border router), `_skip_if_absent` steps aside and the success shape is
+    asserted instead.
+
+    The wire behaviours these commands wrap were measured on a 2025.1.4 booted
+    WITH `thread:` and the three requirements installed; those measurements
+    are pinned by `tests/test_thread_network.py` against `FakeClient`.
+    """
+
+    def _env(self, hass_instance):
+        env = dict(os.environ)
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        return env
+
+    def _run(self, args, hass_instance, check=False):
+        return subprocess.run(
+            CLI_BASE + args,
+            capture_output=True, text=True,
+            env=self._env(hass_instance),
+            check=check,
+            timeout=60,
+        )
+
+    def _thread_loaded(self, hass_instance) -> bool:
+        r = self._run(["--json", "thread", "datasets"], hass_instance)
+        return r.returncode == 0 and json.loads(r.stdout).get("available") is True
+
+    def test_the_group_is_registered_on_a_live_boot(self, hass_instance):
+        """Commands defined after the `__main__` guard never register."""
+        r = self._run(["--help"], hass_instance)
+        assert r.returncode == 0
+        assert "thread" in r.stdout
+        sub = self._run(["thread", "--help"], hass_instance)
+        assert sub.returncode == 0
+        for name in ("datasets", "dataset", "decode", "add-dataset", "audit", "otbr"):
+            assert name in sub.stdout, f"missing {name!r}"
+
+    def test_datasets_is_an_answer_with_or_without_the_integration(self, hass_instance):
+        r = self._run(["--json", "thread", "datasets"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert set(data) >= {"available", "datasets", "count", "preferred", "note"}
+        if not data["available"]:
+            assert data["datasets"] == []
+            assert "not set up" in data["note"]
+
+    def test_otbr_info_is_an_answer_without_a_border_router(self, hass_instance):
+        r = self._run(["--json", "thread", "otbr", "info"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data["routers"], list)
+
+    def test_audit_is_read_only_and_never_crashes(self, hass_instance):
+        r = self._run(["--json", "thread", "audit"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        assert "Traceback" not in r.stderr
+        assert "available" in json.loads(r.stdout)
+
+    def test_decode_needs_no_integration_at_all(self, hass_instance):
+        """A local decode of a credential: it must not touch the network."""
+        tlv = (
+            "0e080000000000010000000300000f35060004001fffe002081111111122222222"
+            "0708fd33333333444444051000112233445566778899aabbccddeeff030a4861726e6573734e6574"
+            "010212340410445f2b5ca6f2a93a55ce570a70efeecb0c0402a0f7f8"
+        )
+        r = self._run(["--json", "thread", "decode", tlv], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["network_name"] == "HarnessNet"
+        assert data["channel"] == 15
+        assert data["insecure_default_network_key"] is True
+        assert "00112233445566778899aabbccddeeff" not in r.stdout
+
+    def test_decode_reveal_prints_the_key_when_asked(self, hass_instance):
+        r = self._run(
+            ["--json", "thread", "decode", "0e080000000000010000051000112233445566778899aabbccddeeff", "--reveal"],
+            hass_instance,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "00112233445566778899aabbccddeeff" in r.stdout
+
+    def test_a_malformed_tlv_is_a_sentence_not_a_traceback(self, hass_instance):
+        r = self._run(["--json", "thread", "decode", "zzzz"], hass_instance)
+        assert r.returncode == 1
+        assert "not valid hex" in r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_a_write_without_the_integration_names_the_remedy(self, hass_instance):
+        r = self._run(["--json", "thread", "set-preferred", "01ABC", "--apply"], hass_instance)
+        assert "Traceback" not in r.stderr
+        if self._thread_loaded(hass_instance):
+            assert "No Thread dataset with id" in r.stderr
+        else:
+            assert r.returncode == 1
+            assert "not set up" in r.stderr
+
+    def test_an_out_of_band_channel_never_reaches_the_wire(self, hass_instance):
+        r = self._run(["--json", "thread", "otbr", "set-channel", "aabb", "30"], hass_instance)
+        assert r.returncode == 1
+        assert "between 11 and 26" in r.stderr
+
+    def test_create_network_dry_run_does_not_prompt_or_send(self, hass_instance):
+        """A dry run has to be safe to run blind, including with no tty."""
+        r = self._run(["--json", "thread", "otbr", "create-network", "aabb"], hass_instance)
+        assert "Traceback" not in r.stderr
+        # Without an OTBR the address cannot resolve; with one, it is a dry run.
+        if r.returncode == 0:
+            assert json.loads(r.stdout)["applied"] is False
+        else:
+            assert "border router" in r.stderr
+
+    def test_a_subcommand_timeout_is_not_eaten_by_the_root_option(self, hass_instance):
+        """Regression: the argv hoister used to hand `--timeout` to the root."""
+        r = self._run(["--json", "thread", "routers", "--timeout", "1.5"], hass_instance)
+        assert "not a valid integer" not in (r.stderr or "")
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["timeout"] == 1.5

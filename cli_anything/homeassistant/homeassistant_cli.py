@@ -138,6 +138,8 @@ from cli_anything.homeassistant.core import device_class_units as device_class_u
 from cli_anything.homeassistant.core import trace_debug as trace_debug_core
 from cli_anything.homeassistant.core import trace_debugger as trace_debugger_core
 from cli_anything.homeassistant.core import core_config as core_config_core
+from cli_anything.homeassistant.core import thread_network as thread_network_core
+from cli_anything.homeassistant.core import otbr as otbr_core
 from cli_anything.homeassistant.core import voice as voice_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
@@ -343,35 +345,100 @@ def cli(ctx, url, token, verify_ssl, timeout, config_path, as_json):
         ctx.invoke(repl)
 
 
+#: Root options that consume the next argv token. Their VALUES must not be
+#: mistaken for subcommand names while resolving what the user asked for.
+_ROOT_VALUE_FLAGS = frozenset({"--url", "--token", "--timeout", "--config"})
+
+
+def _subcommand_option_names(argv: list[str]) -> set[str]:
+    """Every option spelling declared by the subcommand `argv` selects.
+
+    Used by :func:`main` to decide what NOT to hoist. Resolution stops at the
+    first token that is not a command name, so arguments and option values
+    never steer it.
+    """
+    if not isinstance(cli, click.Group):  # pragma: no cover — defensive
+        return set()
+    cmd: click.Command = cli
+    names: set[str] = set()
+    ctx = click.Context(cli)
+    started = False
+    skip_next = False
+    for tok in argv[1:]:
+        if skip_next:
+            # The value of a root option that takes one — `--url http://x`.
+            # Without this, the URL is tried as a command name and resolution
+            # gives up before it ever reaches the real subcommand.
+            skip_next = False
+            continue
+        if tok.startswith("-"):
+            skip_next = tok in _ROOT_VALUE_FLAGS
+            continue
+        if not isinstance(cmd, click.Group):
+            break
+        try:
+            nxt = cmd.get_command(ctx, tok)
+        except Exception:  # pragma: no cover — a broken lazy group
+            break
+        if nxt is None:
+            # Before the subcommand this is some other option's value; after
+            # it, it is an argument and there is nothing deeper to resolve.
+            if started:
+                break
+            continue
+        started = True
+        cmd = nxt
+        names = {
+            opt
+            for param in cmd.params
+            for opt in list(getattr(param, "opts", ())) + list(getattr(param, "secondary_opts", ()))
+        }
+    return names
+
+
+def hoist_global_flags(argv: list[str]) -> list[str]:
+    """Move global flags to the front of `argv` so they work in any position.
+
+    Click parses options strictly before subcommands; shifting these means
+    `cmd subcmd --json` and `cmd --json subcmd` both work.
+
+    A FLAG THE SUBCOMMAND ALSO DECLARES IS NOT GLOBAL.
+        Hoisting used to be unconditional, so `mqtt discover --timeout 5.0`,
+        `template-ws render --timeout 2.5` and anything else carrying its own
+        `--timeout` had the value stolen by the ROOT `--timeout` (the HTTP
+        timeout, an int): a float died with "'2.5' is not a valid integer" and
+        an int silently shortened the HTTP timeout while the subcommand kept
+        its default, with nothing said. The subcommand's own option list
+        decides now — only flags it does NOT declare are hoisted, which keeps
+        `cmd subcmd --json` working and ends the collision.
+    """
+    if len(argv) <= 1:
+        return list(argv)
+    owned = _subcommand_option_names(argv)
+    flags = {"--json"} - owned
+    value_flags = {"--url", "--token", "--timeout", "--config"} - owned
+    bool_flags = {"--verify-ssl", "--no-verify-ssl"} - owned
+    rest, hoist = [argv[0]], []
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in flags or tok in bool_flags:
+            hoist.append(tok)
+            i += 1
+        elif tok in value_flags and i + 1 < len(argv):
+            hoist.extend([tok, argv[i + 1]])
+            i += 2
+        elif any(tok.startswith(f"{flag}=") for flag in value_flags):
+            hoist.append(tok)
+            i += 1
+        else:
+            rest.append(tok)
+            i += 1
+    return [rest[0], *hoist, *rest[1:]]
+
+
 def main():
-    # Move global flags to the front of argv so they work in any position.
-    # Click parses options strictly before subcommands; shifting these here
-    # means `cmd subcmd --json` and `cmd --json subcmd` both work.
-    GLOBAL_FLAGS = {"--json"}
-    GLOBAL_FLAGS_WITH_VALUE = {"--url", "--token", "--timeout", "--config"}
-    if len(sys.argv) > 1:
-        rest, hoist = [sys.argv[0]], []
-        i = 1
-        argv = sys.argv
-        while i < len(argv):
-            tok = argv[i]
-            if tok in GLOBAL_FLAGS:
-                hoist.append(tok)
-                i += 1
-            elif tok in GLOBAL_FLAGS_WITH_VALUE and i + 1 < len(argv):
-                hoist.extend([tok, argv[i + 1]])
-                i += 2
-            elif any(tok.startswith(f"{f}=") for f in GLOBAL_FLAGS_WITH_VALUE):
-                hoist.append(tok)
-                i += 1
-            elif tok in {"--verify-ssl", "--no-verify-ssl"}:
-                hoist.append(tok)
-                i += 1
-            else:
-                rest.append(tok)
-                i += 1
-        # Inject hoisted flags after argv[0]
-        sys.argv = [rest[0], *hoist, *rest[1:]]
+    sys.argv = hoist_global_flags(sys.argv)
     try:
         cli(obj={})
     except (HomeAssistantError, ValueError) as exc:
@@ -15506,6 +15573,293 @@ def cloud_google_set_2fa(ctx, entity_id, require_pin):
         cloud_core.google_set_2fa(
             make_client(ctx), entity_id, disable_2fa=not require_pin
         ),
+    )
+
+
+# ───────────────────────────────────────────────── thread / border routers
+
+
+@cli.group()
+def thread():
+    """Thread networks: the dataset store, border routers, and what they imply.
+
+    Every Matter-over-Thread device sits on a Thread network defined by an
+    operational DATASET. Home Assistant stores those datasets and hands the
+    preferred one to anything it commissions; the border router runs the
+    radio. Both were invisible to this harness — you could see the devices
+    and the repair issues, never the network they are about.
+
+    A dataset TLV is a CREDENTIAL: it carries the network key. `thread
+    dataset` redacts it unless you pass --reveal, and no other command in
+    this group prints one.
+
+    Reads answer `available: false` when the Thread integration is not set
+    up. Writes are dry-run until --apply, because the failure modes here
+    (orphaning every device on the mesh) have no undo.
+    """
+
+
+@thread.command("datasets")
+@click.pass_context
+def thread_datasets(ctx):
+    """Every stored Thread network, with the preferred one marked.
+
+    The preferred dataset is what new Matter-over-Thread devices are
+    commissioned onto. Several stored networks is normal — each border-router
+    vendor adds its own — but only one of them gets new devices.
+    """
+    emit(ctx, thread_network_core.list_datasets(make_client(ctx)))
+
+
+@thread.command("dataset")
+@click.argument("dataset_id")
+@click.option(
+    "--reveal",
+    is_flag=True,
+    default=False,
+    help="Print the network key, the PSKc and the raw TLV. This is the whole "
+    "credential for the mesh.",
+)
+@click.pass_context
+def thread_dataset(ctx, dataset_id, reveal):
+    """Decode one dataset. Credentials are redacted unless --reveal.
+
+    `--reveal` is how you back a network up before `thread otbr create-network`
+    or before deleting a dataset: the TLV it prints is the only way back.
+    """
+    emit(ctx, thread_network_core.dataset(make_client(ctx), dataset_id, reveal=reveal))
+
+
+@thread.command("decode")
+@click.argument("tlv")
+@click.option("--reveal", is_flag=True, default=False, help="Do not redact the credentials.")
+@click.pass_context
+def thread_decode(ctx, tlv, reveal):
+    """Decode a dataset TLV that you already have. Talks to nothing.
+
+    Useful before `thread add-dataset`: it reports the channel, the extended
+    PAN ID and whether Home Assistant will accept the TLV at all (it refuses
+    any dataset without EXTPANID and ACTIVETIMESTAMP, saying only 'Invalid
+    dataset').
+    """
+    emit(ctx, thread_network_core.describe_dataset(tlv, reveal=reveal))
+
+
+@thread.command("add-dataset")
+@click.option("--tlv", default=None, help="The operational dataset as a hex string.")
+@click.option(
+    "--tlv-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the TLV from a file instead — keeps the credential out of your shell history.",
+)
+@click.option("--source", default="cli-anything", show_default=True, help="Free-text label for who added it.")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually store it.")
+@click.pass_context
+def thread_add_dataset(ctx, tlv, tlv_file, source, apply_changes):
+    """Store an operational dataset. Dry-run unless --apply.
+
+    `thread/add_dataset_tlv` is an upsert keyed on extended PAN ID and returns
+    `null` whether it created, replaced, ignored or did nothing. This predicts
+    which, then reads the store back to report what actually happened.
+    """
+    if bool(tlv) == bool(tlv_file):
+        _abort("Pass exactly one of --tlv or --tlv-file.")
+    text = tlv if tlv else Path(tlv_file).read_text().strip()
+    emit(
+        ctx,
+        thread_network_core.add_dataset(
+            make_client(ctx), text, source=source, apply=apply_changes
+        ),
+    )
+
+
+@thread.command("delete-dataset")
+@click.argument("dataset_id")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually delete it.")
+@click.pass_context
+def thread_delete_dataset(ctx, dataset_id, apply_changes):
+    """Forget a stored network. Dry-run unless --apply.
+
+    Home Assistant refuses to delete the preferred dataset. Nothing tells the
+    devices — they stay on the network, you just lose the credential, so read
+    it out with `thread dataset <id> --reveal` first if it is not saved
+    anywhere else.
+    """
+    emit(
+        ctx,
+        thread_network_core.delete_dataset(make_client(ctx), dataset_id, apply=apply_changes),
+    )
+
+
+@thread.command("set-preferred")
+@click.argument("dataset_id")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually change it.")
+@click.pass_context
+def thread_set_preferred(ctx, dataset_id, apply_changes):
+    """Choose the network new Thread devices join. Dry-run unless --apply.
+
+    Devices that already joined another network stay where they are; this
+    only decides where the NEXT commissioning goes.
+    """
+    emit(
+        ctx,
+        thread_network_core.set_preferred(make_client(ctx), dataset_id, apply=apply_changes),
+    )
+
+
+@thread.command("set-border-agent")
+@click.argument("dataset_id")
+@click.option("--extended-address", required=True, help="Extended address of the border router.")
+@click.option(
+    "--border-agent-id",
+    default=None,
+    help="Border agent id to pin. Omit to clear it (the extended address is still required).",
+)
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually change it.")
+@click.pass_context
+def thread_set_border_agent(ctx, dataset_id, extended_address, border_agent_id, apply_changes):
+    """Record which border router owns a dataset. Dry-run unless --apply.
+
+    Bookkeeping only — no radio is reconfigured. An unknown dataset id makes
+    Home Assistant answer with the opaque `unknown_error`, so it is checked
+    here first.
+    """
+    emit(
+        ctx,
+        thread_network_core.set_border_agent(
+            make_client(ctx),
+            dataset_id,
+            extended_address=extended_address,
+            border_agent_id=border_agent_id,
+            apply=apply_changes,
+        ),
+    )
+
+
+@thread.command("routers")
+@click.option("--timeout", default=10.0, show_default=True, type=float, help="Seconds to listen.")
+@click.option("--max-routers", default=None, type=int, help="Stop early once this many are found.")
+@click.pass_context
+def thread_routers(ctx, timeout, max_routers):
+    """Discover border routers over mDNS for a bounded window.
+
+    Finds routers Home Assistant does NOT manage too — an Apple TV or a Nest
+    hub shows up here and never in `thread otbr info`. An empty result usually
+    means multicast does not reach Home Assistant, not that there are none.
+    """
+    emit(
+        ctx,
+        thread_network_core.discover_routers(
+            make_client(ctx), timeout=timeout, max_routers=max_routers
+        ),
+    )
+
+
+@thread.command("audit")
+@click.option(
+    "--discover-timeout",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="Also listen for mDNS routers for this many seconds and compare (0 = skip).",
+)
+@click.pass_context
+def thread_audit(ctx, discover_timeout):
+    """Cross-reference datasets, border routers and discovery. Read-only.
+
+    The command to run when Thread devices misbehave: it names the stored
+    network nobody is running, the border router on a network that is not the
+    preferred one, and the Thread web UI's default network key — the same
+    condition Home Assistant raises the `insecure_thread_network` repair for.
+    """
+    emit(ctx, thread_network_core.audit(make_client(ctx), discover_timeout=discover_timeout))
+
+
+@thread.group("otbr")
+def thread_otbr():
+    """The OpenThread Border Router radio Home Assistant runs.
+
+    `thread datasets` is what Home Assistant KNOWS; this is what the radio is
+    DOING. Every write here is dry-run by default and at least one of them
+    (create-network) orphans every device on the mesh.
+    """
+
+
+@thread_otbr.command("info")
+@click.pass_context
+def thread_otbr_info(ctx):
+    """Border routers Home Assistant manages: channel, network, URL.
+
+    The active dataset TLV Home Assistant returns here is dropped — it is the
+    network key. `has_active_dataset` says whether there is one.
+    """
+    emit(ctx, otbr_core.info(make_client(ctx)))
+
+
+@thread_otbr.command("set-channel")
+@click.argument("extended_address")
+@click.argument("channel", type=int)
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually move it.")
+@click.pass_context
+def thread_otbr_set_channel(ctx, extended_address, channel, apply_changes):
+    """Move the radio to another 802.15.4 channel (11-26). Dry-run unless --apply.
+
+    Not immediate: the move goes out as a PENDING dataset with a delay (~300s)
+    so joined devices can follow. Anything asleep for the whole window misses
+    it. `thread otbr info` reports the OLD channel until the timer fires.
+    """
+    emit(
+        ctx,
+        otbr_core.set_channel(
+            make_client(ctx), extended_address, channel, apply=apply_changes
+        ),
+    )
+
+
+@thread_otbr.command("set-network")
+@click.argument("extended_address")
+@click.argument("dataset_id")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually move it.")
+@click.pass_context
+def thread_otbr_set_network(ctx, extended_address, dataset_id, apply_changes):
+    """Point a border router at a stored dataset. Dry-run unless --apply.
+
+    Applying disables the radio, writes the dataset and re-enables it. Devices
+    on the router's previous network lose it. Refused with `channel_conflict`
+    if ZHA holds the shared radio on another channel.
+    """
+    emit(
+        ctx,
+        otbr_core.set_network(
+            make_client(ctx), extended_address, dataset_id, apply=apply_changes
+        ),
+    )
+
+
+@thread_otbr.command("create-network")
+@click.argument("extended_address")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually do it.")
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@click.pass_context
+def thread_otbr_create_network(ctx, extended_address, apply_changes, yes):
+    """Factory-reset the border router and form a NEW network. Dry-run unless --apply.
+
+    The most destructive command in this harness. Every Thread device joined
+    to the old network is orphaned and must be re-commissioned by hand; there
+    is no undo. Save the current credential first with `thread dataset <id>
+    --reveal`. Without --apply it only reports what it would do; the
+    confirmation prompt is on the apply, never on the dry run.
+    """
+    if apply_changes and not yes and not click.confirm(
+        f"Factory-reset border router {extended_address} and form a NEW Thread "
+        "network? Every device on the current network is orphaned.",
+        default=False,
+    ):
+        _abort("Aborted.")
+    emit(
+        ctx,
+        otbr_core.create_network(make_client(ctx), extended_address, apply=apply_changes),
     )
 
 
