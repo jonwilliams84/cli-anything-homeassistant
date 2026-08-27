@@ -8,10 +8,10 @@ logic or renders templates locally. Every command supports `--json`.
 
 ## Layout
 - `cli_anything/homeassistant/homeassistant_cli.py` — the Click CLI + REPL (~10k lines, single file; all commands wired here). Entry point: `main`.
-- `cli_anything/homeassistant/core/` — ~101 modules, one HA API surface each (states, registry, lovelace*, automation, backup, statistics, powercalc*, …). Each is pure function-per-operation, callable from Python directly or via the Click wrapper.
-- `cli_anything/homeassistant/utils/homeassistant_backend.py` — the wire client: `requests.Session` (REST) + websocket-client subscriber (WS) + `download()` (streamed binary, for a multi-GB backup) and `upload()` (multipart). All core modules call through this.
+- `cli_anything/homeassistant/core/` — ~102 modules, one HA API surface each (states, registry, lovelace*, automation, backup, statistics, powercalc*, …). Each is pure function-per-operation, callable from Python directly or via the Click wrapper.
+- `cli_anything/homeassistant/utils/homeassistant_backend.py` — the wire client: `requests.Session` (REST) + websocket-client (WS) + `download()` (streamed binary, for a multi-GB backup) and `upload()` (multipart). All core modules call through this. Three WS shapes, three methods: `ws_call` (request/response), `ws_subscribe` (open-ended, caller stops it), `ws_run_events` (run-to-completion — empty ack, then events, terminal condition read from the data; `on_ack` pushes binary audio on a daemon thread).
 - `cli_anything/homeassistant/skills/SKILL.md` — packaged self-contained skill manifest (full command docs); packaged via `package_data`.
-- `tests/` — 84 files, 3,000+ tests. `tests/conftest.py` defines `FakeClient` (records every REST/WS call, returns prepared responses). E2e tests boot a real HA in a temp config dir.
+- `tests/` — 87 files, 3,800+ tests. `tests/conftest.py` defines `FakeClient` (records every REST/WS call, returns prepared responses). E2e tests boot a real HA in a temp config dir.
 - `HOMEASSISTANT.md` — SOP / agent operating guide. `CHANGELOG.md` — per-version detail.
 
 ## Commands
@@ -24,6 +24,35 @@ logic or renders templates locally. Every command supports `--json`.
 - New API surface = new module under `core/` (pure functions) + a Click wrapper in `homeassistant_cli.py` + a unit test using `FakeClient`. Keep `--json` output on every new command.
 - Versioning: bump `version` in `setup.py`, add a `CHANGELOG.md` entry. Work happens on `feat/*` branches → PR → merge to `main` (see git history). Tags like `v1.42.0` per release.
 - Powercalc commands are safety wrappers over HA footguns (REPLACE-on-write options flow, binary_sensor no-op); preserve the backup-first / dry-run-by-default / `--apply`-to-commit pattern when extending them (mirrored in `entity prune`).
+
+## Gotchas from the v1.50.0 refine pass (`assist run`)
+- **HA has THREE websocket shapes and two of them look identical at the ack.**
+  A run-to-completion command (`assist_pipeline/run`) acks with an empty
+  `result` exactly like a subscription does. Through `ws_call` it returns
+  `None` and CLOSES THE SOCKET, which cancels the run server-side
+  (`connection.subscriptions[msg["id"]] = run_task.cancel`) — a command that
+  reports success and produces nothing. Through `ws_subscribe` it never
+  returns. Use `ws_run_events` and give it a terminal predicate.
+- **The ack is not the start.** `run-start` — which carries
+  `stt_binary_handler_id` — arrives AFTER the ack. Anything reading the event
+  list inside `on_ack` sees an empty list; wait for `run-start`.
+- **Binary frames are `handler_id` byte + payload, and the id is 1-based**
+  (`index = handler_id - 1`). A wrong first byte is logged server-side and
+  answered with nothing at all. The terminating frame is the handler byte
+  ALONE — HA reads `while chunk := await audio_queue.get()`, so without it the
+  run hangs to timeout.
+- **`end` is a valid `PipelineStage` and an invalid argument.** The enum has 5
+  members, `PIPELINE_STAGE_ORDER` has 4; `end_stage="end"` clears voluptuous
+  then dies on a bare `list.index` ValueError inside `__post_init__`. Restrict
+  stage arguments client-side.
+- **Do not give the client the same deadline as the server.** HA answers its
+  own pipeline timeout with an `error` event then `run-end`. Matching deadlines
+  replaces that diagnosis with a local "did not finish"; add a grace margin.
+- **`assist_pipeline` cannot load in this environment** — `pyspeex-noise` will
+  not build (`pymicro-vad` will). e2e skips on `unknown_command`; the transport
+  is instead proven against an aiohttp server that speaks HA's framing
+  (`tests/test_ws_run_events.py`). A fake built from the same misunderstanding
+  as the client agrees with it — a real second implementation does not.
 
 ## Gotchas from the v1.49.0 refine pass
 - **Scope a refine by diffing the RUNNING instance, not the docs.** HA's source

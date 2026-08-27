@@ -4,6 +4,98 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.50.0] — 2026-08-27
+
+Refine pass scoped by re-enumerating HA's websocket + REST surface and diffing
+it against every string this harness sends. Of the commands still missing,
+almost all belong to integrations this harness cannot reach (KNX, LCN, iOS,
+Nest, UniFi Protect, Plex, Reolink, hassio/supervisor). **One core command was
+missing, and it was the one that makes a voice assistant do anything:**
+`assist_pipeline/run`.
+
+### Added — run an Assist pipeline end to end (`assist run`)
+
+The harness could describe a voice assistant in complete detail and could not
+make one speak. `assist pipelines` / `pipeline-get` read the wiring, `assist
+stt-engines` / `tts-engines` / `wake-words` enumerate the parts, `assist ask`
+reaches the conversation agent — but `conversation/process` is ONE stage of
+four. It never runs speech-to-text and never invokes the pipeline's own TTS
+engine, so the question you actually have after wiring a pipeline together —
+*does this pipeline work?* — had no command.
+
+- `assist run [TEXT]` — runs `start_stage` through `end_stage` of a pipeline
+  and reports what each stage produced: `stt_text`, `speech`,
+  `conversation_id`, `tts_url`, `error`, `completed`.
+  - `--start-stage / --end-stage` from `wake_word | stt | intent | tts`
+    (default `intent` → `tts`).
+  - `--audio FILE` — a 16-bit mono PCM WAV, required by the `stt` and
+    `wake_word` start stages, streamed to HA as binary websocket frames.
+  - `--save-tts FILE` — download the audio the run produced.
+  - `--stream` — print each event as it arrives, on **stderr**, so `--json`
+    stdout stays parseable.
+  - `--events`, `--pipeline`, `--conversation-id`, `--device-id`,
+    `--wake-word-phrase`, `--sample-rate`, `--timeout`.
+
+### Added — a third websocket shape: `ws_run_events`
+
+HA has three shapes of websocket command and this harness only had clients for
+two. Request/response (`ws_call`) and open-ended subscription (`ws_subscribe`)
+were covered; **run-to-completion** — an empty ack, then events, then the run
+ends *on its own* — was not, and neither existing client can fake it:
+
+- through `ws_call` the run returns `None` at the empty ack and **closes the
+  socket, which cancels the run server-side** before it produces anything (HA
+  registers `connection.subscriptions[msg["id"]] = run_task.cancel`);
+- through `ws_subscribe` it never returns, because nothing outside the stream
+  knows the run ended.
+
+`HomeAssistantClient.ws_run_events(...)` takes the missing piece — a terminal
+condition read from the DATA (`is_terminal`) — and adds an `on_ack(send_binary)`
+hook that runs on a daemon thread, which is how audio is pushed into a pipeline
+*while* its events arrive. Sending it inline would deadlock the moment HA's
+send buffer filled, because nothing would be draining the socket.
+
+### Gotchas measured this pass
+
+- **The ack is not the start.** HA sends the empty `result` and only *then*
+  emits `run-start`, which is where `stt_binary_handler_id` lives. A sender
+  that reads the collected events straight after the ack finds an empty list
+  every time; it has to wait for `run-start`.
+- **The binary handler id is 1-based and framed as the first byte.** HA does
+  `index = handler_id - 1` against `connection.binary_handlers`, and a wrong
+  first byte is answered with a server-side log line and *nothing at all* on
+  the wire. The id is never guessed — a `run-start` without one is refused.
+- **The empty frame is not optional.** HA's reader is `while chunk := await
+  audio_queue.get()`, so a frame carrying the handler byte *alone* is what ends
+  the audio stream. Omit it and the run hangs until its timeout.
+- **`end` is a valid `PipelineStage` and an invalid argument.** The enum has
+  five members; the ordering table `PIPELINE_STAGE_ORDER` has four. Passing
+  `end_stage="end"` clears voluptuous and then dies on a bare `list.index`
+  ValueError inside `PipelineRun.__post_init__`. Both stage arguments are
+  restricted to the four ordered stages client-side.
+- **Don't race HA's own timeout.** `--timeout` is the *pipeline's* timeout, and
+  HA answers it with an `error` event (code `timeout`) followed by `run-end` —
+  an actual diagnosis. The collector therefore gets a 5s grace margin, or a
+  local "did not finish" would replace the server's answer.
+
+### Testing
+
+- `tests/test_ws_run_events.py` (12 tests) runs the new transport against a
+  **real websocket server** that implements HA's protocol from the other side:
+  the `auth_required` handshake, an empty ack, and binary frames decoded as
+  `handler = data[0]; payload = data[1:]`. A WAV goes in and the server
+  reassembles it byte for byte. Wrong framing hangs or fails there, which is
+  precisely what a FakeClient cannot tell you.
+- `tests/test_assist_pipeline_run.py` (50) pins payloads, framing, WAV
+  validation and the event summary; `tests/test_cli_assist_run_wiring.py` (18)
+  pins the CLI options and the clean-error contract; 6 e2e tests.
+- **The live e2e test SKIPS here, and that is the honest outcome.**
+  `assist_pipeline` requires `pyspeex-noise`, whose wheel does not build in
+  this environment, so the test instance never loads the integration and the
+  command answers `unknown_command`. The event payload *shapes* were read off
+  `components/assist_pipeline/websocket_api.py` and `pipeline.py` and should be
+  treated as version-sensitive; the framing was measured and is not.
+
 ## [1.49.0] — 2026-08-11
 
 Refine pass scoped by enumerating the WebSocket + REST surface of the RUNNING

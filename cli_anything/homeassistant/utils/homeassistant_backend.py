@@ -451,6 +451,156 @@ class HomeAssistantClient:
                 return data.get("result")
         raise HomeAssistantError(f"WS command {msg_type} timed out after {self.timeout}s")
 
+    def ws_run_events(
+        self,
+        msg_type: str,
+        payload: dict | None = None,
+        *,
+        is_terminal=None,
+        timeout: float | None = None,
+        on_ack=None,
+        on_event=None,
+    ) -> list[dict]:
+        """Send one command that ACKS FIRST and then STREAMS to completion.
+
+        WHY NEITHER `ws_call` NOR `ws_subscribe` CAN DO THIS
+            HA has three shapes of websocket command, and this harness only had
+            clients for two of them.
+
+              * request/response — one `result` carrying the answer. `ws_call`
+                returns at the first `result`, which is correct here.
+              * open-ended subscription — an empty `result` ack, then events
+                forever. `ws_subscribe` streams until the CALLER stops it.
+              * run-to-completion — an empty `result` ack, then events, then
+                the run finishes ON ITS OWN. `assist_pipeline/run` is this one.
+
+            Routed through `ws_call`, a run-to-completion command returns
+            `None` at the ack and CLOSES THE SOCKET, which cancels the run
+            server-side before it produces anything (HA registers
+            `connection.subscriptions[msg["id"]] = run_task.cancel`). Routed
+            through `ws_subscribe` it never returns, because nothing outside
+            knows the run ended. The missing piece is a terminal condition
+            that comes from the DATA, which is what `is_terminal` supplies.
+
+        ``is_terminal(event) -> bool`` is called for each streamed event; the
+        first True ends the collection and its event is included in the return.
+        With no predicate this behaves like a bounded subscription and runs
+        until ``timeout``, which is a legitimate way to sample a stream.
+
+        ``on_ack(send_binary)`` runs on a DAEMON THREAD once the server has
+        acked, and receives a callable that frames a binary websocket message.
+        That is how audio is pushed into a pipeline while its events are
+        arriving — sending it inline would deadlock the moment HA's send buffer
+        filled, because nothing would be draining the socket. Anything the
+        thread raises is captured and re-raised on the caller's thread once
+        collection ends, so a failed upload is never reported as a quiet
+        no-audio run.
+
+        Returns the list of collected event payloads.
+        """
+        if websocket is None:
+            raise HomeAssistantError(
+                "The `websocket-client` package is required. "
+                "Install with: pip install websocket-client"
+            )
+
+        limit = float(timeout) if timeout else float(self.timeout)
+        url = _ws_url_from_http(self.base_url)
+        ssl_opts = None if self.verify_ssl else {"cert_reqs": 0}
+        try:
+            ws = websocket.create_connection(url, timeout=self.timeout, sslopt=ssl_opts)
+        except (OSError, websocket.WebSocketException) as exc:  # type: ignore[attr-defined]
+            raise self._connection_error(exc) from exc
+
+        events: list[dict] = []
+        sender_error: list[BaseException] = []
+        sender: threading.Thread | None = None
+        try:
+            self._ws_authenticate(ws)
+            message = {"id": 1, "type": msg_type}
+            if payload:
+                message.update(payload)
+            ws.send(json.dumps(message))
+
+            deadline = time.monotonic() + limit
+            acked = False
+            finished = is_terminal is None
+            closed = False
+            ws.settimeout(1.0)
+            while time.monotonic() < deadline:
+                try:
+                    raw = ws.recv()
+                except websocket.WebSocketTimeoutException:  # type: ignore[attr-defined]
+                    continue
+                except (OSError, websocket.WebSocketException):  # type: ignore[attr-defined]
+                    closed = True
+                    break
+                if not raw:
+                    continue
+                if isinstance(raw, bytes):
+                    # HA only sends binary for audio-output byte streams, which
+                    # no command here subscribes to. Ignore rather than crash
+                    # the JSON decoder.
+                    continue
+                data = json.loads(raw)
+                if data.get("id") != 1:
+                    continue
+                kind = data.get("type")
+                if kind == "result":
+                    if not data.get("success", False):
+                        err = data.get("error", {})
+                        raise HomeAssistantError(
+                            f"WS command {msg_type} failed: "
+                            f"{err.get('code', 'unknown')} {err.get('message', '')}",
+                            code=err.get("code"),
+                        )
+                    acked = True
+                    if on_ack is not None:
+
+                        def _pump() -> None:
+                            try:
+                                on_ack(lambda blob: ws.send_binary(blob))
+                            except BaseException as exc:  # noqa: BLE001
+                                sender_error.append(exc)
+
+                        sender = threading.Thread(target=_pump, daemon=True)
+                        sender.start()
+                    continue
+                if kind == "event":
+                    event = data.get("event")
+                    events.append(event)
+                    if on_event is not None:
+                        on_event(event)
+                    if is_terminal is not None and is_terminal(event):
+                        finished = True
+                        break
+
+            if not finished:
+                # The sender is joined FIRST so its own failure — a WAV that
+                # vanished mid-read, a socket that went away — is reported
+                # instead of the timeout it caused.
+                if sender is not None:
+                    sender.join(timeout=1.0)
+                if sender_error:
+                    raise sender_error[0]
+                reason = "the connection closed" if closed else f"it did not finish within {limit}s"
+                raise HomeAssistantError(
+                    f"WS command {msg_type} ended early: {reason} "
+                    f"({'acked' if acked else 'never acked'}, "
+                    f"{len(events)} event(s) received)"
+                )
+        finally:
+            try:
+                ws.close()
+            except Exception:  # pragma: no cover
+                _logger.debug("error closing websocket", exc_info=True)
+
+        if sender is not None:
+            sender.join(timeout=1.0)
+        if sender_error:
+            raise sender_error[0]
+        return events
+
     def ws_subscribe(
         self, msg_type: str, payload: dict | None, on_message, stop_event: threading.Event
     ) -> None:

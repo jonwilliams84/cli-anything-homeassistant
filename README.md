@@ -58,7 +58,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `statistics` | Long-term recorder stats: list / metadata / **series** (chart data) / update-metadata / clear |
 | `diagnostics` | Per-integration + per-device JSON downloads (same as UI's "Download diagnostics") |
 | `blueprint` | List / import / save / delete / substitute (dry-run render) |
-| `assist` | Send text to HA's conversation pipeline; list Assist pipelines |
+| `assist` | Send text to HA's conversation pipeline; list Assist pipelines; **run one end to end** (`assist run`) |
 | `updates` | List, install, skip, clear-skipped on `update.*` entities |
 | `logger` | Runtime log-level control without restart |
 | `group` | List members of light/switch/sensor groups |
@@ -76,6 +76,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `camera` | `camera.*` capabilities, HLS stream URL, prefs, WebRTC client config |
 | `device-automation` | List a device's available triggers, conditions, actions — what the HA UI's automation editor shows |
 | `assist agents` / `sentences` / `debug` / `satellites` / `languages` | Conversation pipeline introspection + sentence-matching debugger |
+| `assist run` | **Run a pipeline end to end** (WS `assist_pipeline/run`) — the pipeline's own STT → agent → TTS, not just the conversation agent. `--start-stage stt --audio cmd.wav` transcribes a 16-bit mono WAV (streamed as binary frames) and acts on it; `--save-tts` writes the spoken reply to a file; `--stream` tails events live |
 | `assist-satellite` | `assist_satellite.*` — current config, set wake words, test connection |
 | `mobile-app` | Companion app push delivery receipts |
 | `media` | media_source browse / resolve to URL / local file remove |
@@ -139,6 +140,15 @@ cli-anything-homeassistant state watch person.jon \
   --until-state home --duration 1800
 && cli-anything-homeassistant service call notify.mobile_app_jon \
    --data 'title=Welcome' --data 'message=Coffee on?'
+
+# Does the voice pipeline I just wired up actually work, end to end?
+cli-anything-homeassistant --json assist run "turn on the kitchen light" \
+  | jq '{completed, speech, error}'
+
+# Transcribe a recording and let the pipeline act on it, then keep the reply
+cli-anything-homeassistant --json assist run \
+  --start-stage stt --audio command.wav --save-tts reply.mp3 \
+  | jq '{stt_text, speech, saved_tts}'
 
 # Find dead entity references after renaming a sensor
 cli-anything-homeassistant entity-references sensor.old_name

@@ -484,6 +484,52 @@ class TestCLISubprocess:
         data = json.loads(r.stdout)
         assert isinstance(data, (dict, list))
 
+    # ───────────────────────────────── assist pipeline run (live where possible)
+
+    def test_assist_run_live(self, hass_instance):
+        """assist_pipeline/run against the real instance.
+
+        This SKIPS here rather than passing, and that is the honest outcome:
+        `assist_pipeline` requires `pyspeex-noise`, whose wheel does not build
+        in this environment, so the e2e instance never loads the integration
+        and the command comes back `unknown_command`. The transport is proven
+        for real in `tests/test_ws_run_events.py` against a server that speaks
+        HA's own framing; this test is what turns green on an instance that
+        does have a pipeline.
+        """
+        r = self._run(["--json", "assist", "run", "hello",
+                       "--end-stage", "intent", "--timeout", "30"],
+                      hass_instance, check=False)
+        self._skip_if_unknown_command(r, "assist_pipeline/run")
+        if r.returncode != 0 and "pipeline-not-found" in (r.stderr or ""):
+            pytest.skip("no Assist pipeline is configured on this instance")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["start_stage"] == "intent"
+        assert data["end_stage"] == "intent"
+        assert "completed" in data
+
+    def test_assist_run_refuses_a_reversed_stage_pair_without_a_server(
+        self, hass_instance
+    ):
+        """The stage-order check is local, so it answers on ANY build."""
+        r = self._run(["--json", "assist", "run", "hi",
+                       "--start-stage", "tts", "--end-stage", "intent"],
+                      hass_instance, check=False)
+        assert r.returncode != 0
+        assert "comes before" in (r.stderr or "") + (r.stdout or "")
+
+    def test_assist_run_refuses_stt_without_audio(self, hass_instance):
+        r = self._run(["--json", "assist", "run", "--start-stage", "stt"],
+                      hass_instance, check=False)
+        assert r.returncode != 0
+        assert "reads its input from audio" in (r.stderr or "") + (r.stdout or "")
+
+    def test_assist_run_is_in_help(self, hass_instance):
+        r = self._run(["assist", "--help"], hass_instance)
+        assert r.returncode == 0
+        assert "run" in r.stdout
+
     # ─────────────────────── refine pass v3: sysadmin & auth (live)
 
     def test_help_lists_v3_groups(self, hass_instance):

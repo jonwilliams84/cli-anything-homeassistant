@@ -42,6 +42,91 @@ class FakeClient:
         self.ping_samples: list[float] = [1.0]
         self.ping_calls: int = 0
         self.ping_error: Exception | None = None
+        # `ws_run_events` recorder — the ack-then-stream-to-completion shape.
+        # `set_run_events(*events)` queues what the next run streams back;
+        # every call is recorded in `run_event_calls`, and any binary frames
+        # the caller pushed through `on_ack` land in `binary_frames`.
+        self.run_event_calls: list[dict] = []
+        self.queued_run_events: list[Any] = []
+        self.binary_frames: list[bytes] = []
+        # Downloads: `download()` writes this payload and reports its size.
+        self.download_calls: list[dict] = []
+        self.download_payload: bytes = b"fake-audio"
+
+    def set_run_events(self, *events: Any) -> None:
+        """Queue the events the next `ws_run_events` call streams back."""
+        self.queued_run_events.extend(events)
+
+    def ws_run_events(
+        self,
+        msg_type: str,
+        payload: dict | None = None,
+        *,
+        is_terminal=None,
+        timeout: float | None = None,
+        on_ack=None,
+        on_event=None,
+    ) -> list[Any]:
+        """Shim for the run-to-completion websocket shape.
+
+        Reproduces the ORDERING the real client has, because that ordering is
+        what the audio path depends on: the ack lands first and starts
+        `on_ack` on its own thread, the events follow, and only a delivered
+        `run-start` can release a sender waiting for its handler id. A fake
+        that called `on_ack` after the events would make a deadlock look fine.
+        """
+        self.run_event_calls.append(
+            {"type": msg_type, "payload": payload, "timeout": timeout}
+        )
+        if msg_type in self.ws_errors:
+            from cli_anything.homeassistant.utils.homeassistant_backend import (
+                HomeAssistantError,
+            )
+
+            code, message = self.ws_errors[msg_type]
+            raise HomeAssistantError(
+                f"WS command {msg_type} failed: {code} {message}", code=code
+            )
+
+        sender_error: list[BaseException] = []
+        sender: threading.Thread | None = None
+        if on_ack is not None:
+
+            def _pump() -> None:
+                try:
+                    on_ack(self.binary_frames.append)
+                except BaseException as exc:  # noqa: BLE001
+                    sender_error.append(exc)
+
+            sender = threading.Thread(target=_pump, daemon=True)
+            sender.start()
+
+        delivered: list[Any] = []
+        for event in self.queued_run_events:
+            delivered.append(event)
+            if on_event is not None:
+                on_event(event)
+            if is_terminal is not None and is_terminal(event):
+                break
+        self.queued_run_events.clear()
+        if sender is not None:
+            sender.join(timeout=15.0)
+        if sender_error:
+            raise sender_error[0]
+        return delivered
+
+    def download(self, path: str, dest, params: Any = None, chunk_size: int = 0) -> dict:
+        path = path.lstrip("/")
+        self.download_calls.append({"path": path, "dest": str(dest), "params": params})
+        with open(dest, "wb") as fh:
+            fh.write(self.download_payload)
+        return {
+            "path": str(dest),
+            "bytes": len(self.download_payload),
+            "content_type": "audio/x-wav",
+            "declared_length": len(self.download_payload),
+            "size_matches": True,
+        }
 
     def set_ws_error(self, msg_type: str, code: str, message: str = "") -> None:
         self.ws_errors[msg_type] = (code, message)

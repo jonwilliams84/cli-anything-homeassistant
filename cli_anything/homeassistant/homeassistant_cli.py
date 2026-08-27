@@ -38,6 +38,7 @@ from cli_anything.homeassistant.core import history as history_core
 from cli_anything.homeassistant.core import lovelace as lovelace_core
 from cli_anything.homeassistant.core import areas as areas_core
 from cli_anything.homeassistant.core import assist as assist_core
+from cli_anything.homeassistant.core import assist_pipeline_run as assist_run_core
 from cli_anything.homeassistant.core import backup as backup_core
 from cli_anything.homeassistant.core import blueprints as blueprints_core
 from cli_anything.homeassistant.core import calendars as calendars_core
@@ -5706,6 +5707,117 @@ def assist_pipelines(ctx):
 @click.pass_context
 def assist_pipeline_get(ctx, pipeline_id):
     emit(ctx, assist_core.pipeline_get(make_client(ctx), pipeline_id))
+
+
+@assist.command("run")
+@click.argument("text", required=False)
+@click.option(
+    "--start-stage",
+    type=click.Choice(assist_run_core.STAGES),
+    default="intent",
+    show_default=True,
+    help="First stage to execute. wake_word/stt read --audio; intent/tts read TEXT.",
+)
+@click.option(
+    "--end-stage",
+    type=click.Choice(assist_run_core.STAGES),
+    default="tts",
+    show_default=True,
+    help="Last stage to execute. Must not come before --start-stage.",
+)
+@click.option(
+    "--audio",
+    "audio_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="16-bit mono PCM WAV to feed a wake_word/stt run",
+)
+@click.option(
+    "--sample-rate",
+    default=None,
+    type=int,
+    help="Override the rate declared to HA (default: the WAV's own; HA resamples)",
+)
+@click.option("--pipeline", default=None, help="Pipeline id (default: the preferred one)")
+@click.option("--conversation-id", default=None, help="Continue an existing conversation")
+@click.option("--device-id", default=None, help="Attribute the run to a device")
+@click.option(
+    "--wake-word-phrase",
+    default=None,
+    help="Wake word already detected upstream (--start-stage stt only)",
+)
+@click.option("--timeout", "run_timeout", default=None, type=float, help="Pipeline timeout (s)")
+@click.option("--events", is_flag=True, default=False, help="Include the raw event stream")
+@click.option(
+    "--stream",
+    is_flag=True,
+    default=False,
+    help="Print each event as it arrives (to stderr, so --json stays parseable)",
+)
+@click.option(
+    "--save-tts",
+    "save_tts",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Download the audio the tts stage produced to this file",
+)
+@click.pass_context
+def assist_run(
+    ctx,
+    text,
+    start_stage,
+    end_stage,
+    audio_path,
+    sample_rate,
+    pipeline,
+    conversation_id,
+    device_id,
+    wake_word_phrase,
+    run_timeout,
+    events,
+    stream,
+    save_tts,
+):
+    """Run an Assist pipeline end to end and report what each stage produced.
+
+    `assist ask` reaches the conversation agent; this runs the PIPELINE — its
+    own STT, its own agent, its own TTS engine — which is the only way to find
+    out whether the thing you wired together actually works.
+
+    \b
+      assist run "turn on the kitchen light"        # intent -> tts
+      assist run "hello" --end-stage intent         # skip speech synthesis
+      assist run --start-stage stt --audio cmd.wav  # transcribe, then act
+      assist run "hello" --start-stage tts --save-tts hello.wav
+
+    A run that reached `run-end` reports `completed: true`; a stage that failed
+    leaves its diagnosis in `error` and still completes.
+    """
+    client = make_client(ctx)
+    on_event = None
+    if stream:
+
+        def on_event(event):  # noqa: F811
+            click.echo(json.dumps(event, default=str), err=True)
+
+    result = assist_run_core.run(
+        client,
+        text=text,
+        audio_path=audio_path,
+        start_stage=start_stage,
+        end_stage=end_stage,
+        pipeline=pipeline,
+        conversation_id=conversation_id,
+        device_id=device_id,
+        wake_word_phrase=wake_word_phrase,
+        sample_rate=sample_rate,
+        timeout=run_timeout,
+        include_events=events,
+        on_event=on_event,
+    )
+    if save_tts:
+        result["saved_tts"] = assist_run_core.save_tts(client, result.get("tts_url"), save_tts)
+    emit(ctx, result)
 
 
 @assist.command("prepare")

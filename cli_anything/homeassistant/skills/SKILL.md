@@ -109,7 +109,7 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `notifications`    | Persistent notification create/list/dismiss.                                                   |
 | `tag`              | NFC tags + HA tag IDs.                                                                         |
 | `tts`              | Text-to-speech: engines, speak, clear-cache.                                                   |
-| `assist`           | Conversation pipeline: send text, list agents/sentences/languages, debug sentence matching.    |
+| `assist`           | Conversation pipeline: send text, list agents/sentences/languages, debug sentence matching. `assist run` executes a pipeline END TO END (STT -> agent -> TTS); `--audio cmd.wav` transcribes a 16-bit mono WAV, `--save-tts` keeps the spoken reply. |
 | `assist-satellite` | `assist_satellite.*` — current config, set wake words, test connection.                        |
 | `mobile-app`       | Companion app push delivery receipts.                                                          |
 | `media`            | `media_source` browse / resolve / remove.                                                      |

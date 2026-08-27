@@ -149,6 +149,7 @@ stderr and return a non-zero exit code.
 | `camera`     | `camera.*` — capabilities / stream URL / prefs / WebRTC config      |
 | `device-automation` | List a device's available triggers/conditions/actions        |
 | `assist-satellite` | `assist_satellite.*` — wake-word config + test-connection     |
+| `assist run`  | Run a pipeline END TO END (`assist_pipeline/run`) — its own STT, agent and TTS, not just the conversation agent. `--audio` streams a 16-bit mono WAV as binary frames |
 | `mobile-app` | Companion app push delivery receipts                                |
 | `media`      | `media_source` browse / resolve / remove                            |
 | `category`   | Category registry CRUD (scope-bound tags for automations/scripts/…) |
@@ -239,6 +240,8 @@ is fetched on demand. This means:
 | Grab an HLS URL for a camera          | `camera stream camera.front_door --json`                         |
 | What triggers/conditions/actions does a device expose? | `device-automation summary <device_id> --json` |
 | How would Assist parse a sentence?    | `assist debug "turn off the lights"`                             |
+| Does the voice pipeline actually work? | `assist run "turn on the kitchen light" --json`                 |
+| Transcribe a WAV and act on it        | `assist run --start-stage stt --audio cmd.wav --save-tts reply.mp3` |
 | Switch a satellite's wake word        | `assist-satellite wake-words-set assist_satellite.kitchen okay_nabu` |
 | Browse the media library              | `media browse --json`                                            |
 | Who am I right now                    | `auth me --json`                                                 |
