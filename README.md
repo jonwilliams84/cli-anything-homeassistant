@@ -73,7 +73,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `alarm` | `alarm_control_panel.*` — `arm-away` / `arm-home` / `arm-night` / `arm-vacation` / `disarm` |
 | `search` | `search/related` — every automation/scene/script/dashboard tied to an entity, device, area, … |
 | `entity expose` | Per-assistant expose flags + new-entity defaults (cloud.alexa / cloud.google_assistant) |
-| `camera` | `camera.*` capabilities, HLS stream URL, prefs, WebRTC client config |
+| `camera` | `camera.*` capabilities, HLS stream URL, prefs, WebRTC client config, **stills and stream frames** (`snapshot` / `capture` / `proxy-url`) |
 | `device-automation` | List a device's available triggers, conditions, actions — what the HA UI's automation editor shows |
 | `assist agents` / `sentences` / `debug` / `satellites` / `languages` | Conversation pipeline introspection + sentence-matching debugger |
 | `assist run` | **Run a pipeline end to end** (WS `assist_pipeline/run`) — the pipeline's own STT → agent → TTS, not just the conversation agent. `--start-stage stt --audio cmd.wav` transcribes a 16-bit mono WAV (streamed as binary frames) and acts on it; `--save-tts` writes the spoken reply to a file; `--stream` tails events live |
@@ -81,7 +81,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `mobile-app` | Companion app push delivery receipts |
 | `media` | media_source browse / resolve to URL / local file remove |
 | `light` | `light.*` — `on` (brightness/kelvin/rgb/effect/transition) / `off` / `toggle` |
-| `media-player` | `media_player.*` — play/pause/stop/next/prev, volume/mute, source, play-media, shuffle, repeat, join/unjoin |
+| `media-player` | `media_player.*` — play/pause/stop/next/prev, volume/mute, source, play-media, shuffle, repeat, join/unjoin, `artwork` (cover art / browse-media thumbnails) |
 | `climate` | `climate.*` — set-temperature, set-hvac-mode, set-fan-mode, set-preset, set-humidity, set-swing |
 | `cover` | `cover.*` — open/close/stop/toggle, set-position, set-tilt + tilt open/close/stop |
 | `fan` | `fan.*` — turn-on (percentage/preset), set-percentage, set-preset, set-direction, oscillate, increase/decrease |
@@ -226,6 +226,34 @@ cli-anything-homeassistant --json action run \
 # Who actually provides this entity? (and what's an orphan)
 cli-anything-homeassistant --json entity source light.kitchen
 cli-anything-homeassistant --json entity source --by-integration | jq 'map_values(length)'
+
+# Get the BYTES an entity is showing, not a description of them (v1.51+)
+# A still from a camera. --width and --height must be given TOGETHER: HA only
+# rescales when both are present, and only for JPEG cameras (`resized` in the
+# JSON says whether it actually happened).
+cli-anything-homeassistant camera snapshot camera.front_door front.jpg
+cli-anything-homeassistant --json camera snapshot camera.front_door small.jpg \
+    --width 640 --height 480 | jq .resized
+
+# Frames off the MJPEG stream. The stream NEVER ENDS, so a capture is bounded
+# by both a frame budget and a deadline. --interval makes HA compose the
+# stream from stills instead of using the camera's native MJPEG (which not
+# every platform has). HA deliberately sends the first frame twice; duplicates
+# are collapsed and counted.
+cli-anything-homeassistant --json camera capture camera.front_door ./frames \
+    --frames 5 --interval 1.0 --timeout 30 | jq '.frames, .duplicates_skipped'
+
+# Frames from an image entity (no interval — HA pushes on change; a static
+# entity yields one frame and reports complete:false at the timeout)
+cli-anything-homeassistant --json image capture image.doorbell ./frames --frames 3
+
+# A URL a browser or curl can fetch with no Authorization header
+cli-anything-homeassistant --json camera proxy-url camera.front_door --expires 300 | jq -r .url
+
+# Cover art for what's playing, or a thumbnail from the browse tree
+cli-anything-homeassistant media-player artwork media_player.lounge art.jpg
+cli-anything-homeassistant media-player artwork media_player.lounge thumb.jpg \
+    --content-type album --content-id 'library/albums/17'
 ```
 
 ## Agent / `--json` mode
@@ -260,7 +288,8 @@ cli_anything/homeassistant/
 │   ├── backup.py, control.py, repairs.py, notifications.py
 │   ├── diagnostics.py, statistics.py, assist.py, updates.py, inspect.py
 │   ├── logger.py, groups.py, mqtt.py, mqtt_discovery.py, watch.py
-│   └── system.py, references.py, recorder.py, template.py
+│   ├── system.py, references.py, recorder.py, template.py
+│   └── media_proxy.py   # binary GETs: camera/image stills + MJPEG, artwork
 └── utils/
     ├── homeassistant_backend.py   # requests Session + WS client
     └── repl_skin.py
@@ -280,6 +309,13 @@ python3 -m pytest tests/ -v
 Tests use a FakeClient that records every call — over 200 unit tests cover
 every core module against synthetic payloads. End-to-end tests boot a real
 Home Assistant in a temp config dir (requires `pip install homeassistant`).
+
+Two suites deliberately do NOT use a fake, because a fixture written by the
+author of the parser encodes the same assumption twice and agrees with itself:
+`tests/test_ws_run_events.py` runs the websocket client against a server that
+implements HA's protocol from the other side, and
+`tests/test_media_proxy_stream.py` parses multipart frames produced by Home
+Assistant's *own* `async_get_still_stream` over a real socket.
 
 ## Sibling projects
 

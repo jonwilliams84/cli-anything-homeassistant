@@ -58,6 +58,11 @@ All requests require a **Long-Lived Access Token** (Bearer):
 | `POST /api/backup/upload`             | Push a backup back (`?agent_id=`, repeatable) |
 | `POST /api/file_upload`               | Stage a file, returns `file_id`          |
 | `POST /api/media_source/local_source/upload` | Into the media library (image/video/audio ONLY) |
+| `GET /api/camera_proxy/<entity_id>`   | Camera still (`?width=&height=`, JPEG-only rescale) |
+| `GET /api/camera_proxy_stream/<entity_id>` | Camera MJPEG stream (`?interval=`, NEVER ends) |
+| `GET /api/image_proxy/<entity_id>`    | Image entity still                       |
+| `GET /api/image_proxy_stream/<entity_id>` | Image entity still-stream (NEVER ends) |
+| `GET /api/media_player_proxy/<entity_id>` | Cover art; `/browse_media/<type>/<id>` for a thumb |
 | `POST /api/image/upload`              | image_upload integration                 |
 | `POST /api/tts_get_url`               | Synthesise and return a playable URL     |
 | `POST /api/intent/handle`             | Fire an intent by name, no sentence parsing |
@@ -146,7 +151,7 @@ stderr and return a non-zero exit code.
 | `lock`       | `lock.*` shortcuts (`lock`/`unlock`/`open`)                         |
 | `alarm`      | `alarm_control_panel.*` arm/disarm shortcuts                        |
 | `search`     | `search/related` — find entities/devices/areas tied to an item      |
-| `camera`     | `camera.*` — capabilities / stream URL / prefs / WebRTC config      |
+| `camera`     | `camera.*` — capabilities / stream URL / prefs / WebRTC + `snapshot` / `capture` / `proxy-url` |
 | `device-automation` | List a device's available triggers/conditions/actions        |
 | `assist-satellite` | `assist_satellite.*` — wake-word config + test-connection     |
 | `assist run`  | Run a pipeline END TO END (`assist_pipeline/run`) — its own STT, agent and TTS, not just the conversation agent. `--audio` streams a 16-bit mono WAV as binary frames |
@@ -238,6 +243,10 @@ is fetched on demand. This means:
 | Find everything tied to a light       | `search entity light.kitchen --json`                             |
 | Hide an entity from Alexa             | `entity expose set --assistant cloud.alexa --entity light.bedroom --hide` |
 | Grab an HLS URL for a camera          | `camera stream camera.front_door --json`                         |
+| See what the camera sees right now    | `camera snapshot camera.front_door front.jpg`                    |
+| Record a few frames off the stream    | `camera capture camera.front_door ./frames --frames 5 --interval 1.0` |
+| Embed a camera still with no auth header | `camera proxy-url camera.front_door --expires 300 --json`     |
+| Save the album art that's on screen   | `media-player artwork media_player.lounge art.jpg`               |
 | What triggers/conditions/actions does a device expose? | `device-automation summary <device_id> --json` |
 | How would Assist parse a sentence?    | `assist debug "turn off the lights"`                             |
 | Does the voice pipeline actually work? | `assist run "turn on the kitchen light" --json`                 |
@@ -277,6 +286,14 @@ is fetched on demand. This means:
 - **CLI subprocess tests** (`TestCLISubprocess`) — invoke
   `cli-anything-homeassistant` via the installed entry point with
   `_resolve_cli("cli-anything-homeassistant")`.
+- **Real-counterparty tests** — where the harness implements a WIRE FORMAT
+  rather than a JSON call, a `FakeClient` is not evidence: a fixture written
+  from the same reading of the protocol as the client agrees with the client
+  whether or not either is right. Two suites therefore run against a genuine
+  second implementation: `test_ws_run_events.py` (an aiohttp server speaking
+  HA's websocket framing) and `test_media_proxy_stream.py` (multipart frames
+  produced by Home Assistant's OWN `async_get_still_stream`, read over a real
+  socket). The latter caught two client bugs on first run.
 
 The tests must NOT skip when `homeassistant` is not installed — Home
 Assistant is a hard dependency.

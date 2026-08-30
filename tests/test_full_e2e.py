@@ -1996,3 +1996,158 @@ class TestThreadLive:
         assert "not a valid integer" not in (r.stderr or "")
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout)["timeout"] == 1.5
+
+
+class TestMediaProxyLive:
+    """The media-proxy refine pass against a real Home Assistant.
+
+    WHAT CAN AND CANNOT BE PROVEN HERE, STATED PLAINLY
+        The throwaway instance loads no camera, image or media_player
+        platform, so there is no entity whose bytes could be fetched. What IS
+        proven for real:
+
+        * `camera proxy-url --signed` is a genuine round trip. `auth/sign_path`
+          is a CORE websocket command, available on every instance regardless
+          of which integrations are configured, so the signature this returns
+          is one HA actually minted.
+        * Every client-side refusal (a lone `--width`, a sub-floor
+          `--interval`, a timeout too short for the frames asked for, half a
+          browse-media pair, the wrong domain) never reaches the wire, and
+          arrives as a sentence with no traceback.
+        * A request for an entity that does not exist comes back as the
+          NAMED 404, not a bare status.
+
+        The framing itself — the two incompatible boundaries and the
+        deliberate duplicate frames — is proven against HA's own stream writer
+        over a real socket in `tests/test_media_proxy_stream.py`, which is a
+        stronger test than this file could run without a camera platform.
+    """
+
+    def _env(self, hass_instance):
+        env = dict(os.environ)
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        return env
+
+    def _run(self, args, hass_instance, check=False):
+        return subprocess.run(
+            CLI_BASE + args,
+            capture_output=True,
+            text=True,
+            env=self._env(hass_instance),
+            check=check,
+            timeout=60,
+        )
+
+    # ───────────────────────────────────────────────── a real signed URL
+
+    def test_signed_camera_proxy_url_is_minted_by_home_assistant(self, hass_instance):
+        r = self._run(["--json", "camera", "proxy-url", "camera.front"], hass_instance)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["signed"] is True
+        assert data["path"].startswith("/api/camera_proxy/camera.front")
+        # HA appends its own signature parameter; the client does not fabricate it.
+        assert "authSig=" in data["path"]
+        assert data["url"].startswith(hass_instance["url"])
+
+    def test_unsigned_camera_proxy_url_makes_no_call(self, hass_instance):
+        r = self._run(
+            ["--json", "camera", "proxy-url", "camera.front", "--unsigned"], hass_instance
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["signed"] is False
+        assert "authSig=" not in data["path"]
+        assert data["expires"] is None
+
+    def test_signed_stream_url_points_at_the_stream_view(self, hass_instance):
+        r = self._run(
+            ["--json", "camera", "proxy-url", "camera.front", "--stream"], hass_instance
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["path"].startswith("/api/camera_proxy_stream/camera.front")
+        assert data["stream"] is True
+
+    # ─────────────────────────────────────────── a missing entity is named
+
+    def test_snapshot_of_a_missing_camera_is_a_named_404(self, hass_instance, tmp_path):
+        dest = tmp_path / "nope.jpg"
+        r = self._run(
+            ["--json", "camera", "snapshot", "camera.does_not_exist", str(dest)], hass_instance
+        )
+        assert r.returncode == 1
+        assert "Traceback" not in r.stderr
+        assert "no such camera entity" in r.stderr
+        # Nothing is written when the fetch fails.
+        assert not dest.exists()
+
+    def test_artwork_of_a_missing_player_does_not_traceback(self, hass_instance, tmp_path):
+        r = self._run(
+            [
+                "--json", "media-player", "artwork",
+                "media_player.does_not_exist", str(tmp_path / "a.jpg"),
+            ],
+            hass_instance,
+        )
+        assert r.returncode == 1
+        assert "Traceback" not in r.stderr
+        assert not (tmp_path / "a.jpg").exists()
+
+    # ────────────────────────────────── refusals that never reach the wire
+
+    @pytest.mark.parametrize(
+        "args,needle",
+        [
+            (["camera", "snapshot", "camera.x", "OUT", "--width", "640"], "must be given together"),
+            (["camera", "capture", "camera.x", "OUT", "--interval", "0.1"], "interval must be >="),
+            (
+                ["camera", "capture", "camera.x", "OUT", "--frames", "50",
+                 "--interval", "1.0", "--timeout", "2"],
+                "cannot capture",
+            ),
+            (["camera", "capture", "camera.x", "OUT", "--frames", "0"], "frames must be >= 1"),
+            (["image", "capture", "camera.x", "OUT"], "not an image"),
+            (["camera", "snapshot", "image.x", "OUT"], "not a camera"),
+            (
+                ["media-player", "artwork", "media_player.x", "OUT", "--content-type", "album"],
+                "must be given together",
+            ),
+            (["media-player", "artwork", "camera.x", "OUT"], "not a media_player"),
+        ],
+    )
+    def test_client_side_refusals_are_sentences(self, hass_instance, tmp_path, args, needle):
+        out = str(tmp_path / "out")
+        args = ["--json"] + [out if a == "OUT" else a for a in args]
+        r = self._run(args, hass_instance)
+        assert r.returncode == 1, r.stdout
+        assert needle in r.stderr
+        assert "Traceback" not in r.stderr
+        assert not os.path.exists(out)
+
+    def test_refusing_to_clobber_a_file_is_a_sentence_not_a_traceback(
+        self, hass_instance, tmp_path
+    ):
+        """A safety check that ends in a stack trace reads as a crash."""
+        dest = tmp_path / "taken.jpg"
+        dest.write_bytes(b"do not lose me")
+        r = self._run(
+            ["--json", "camera", "snapshot", "camera.front", str(dest)], hass_instance
+        )
+        assert r.returncode == 1
+        assert "Traceback" not in r.stderr
+        assert "--overwrite" in r.stderr
+        assert dest.read_bytes() == b"do not lose me"
+
+    def test_the_new_commands_are_registered(self, hass_instance):
+        for group, command in (
+            ("camera", "snapshot"),
+            ("camera", "capture"),
+            ("camera", "proxy-url"),
+            ("image", "capture"),
+            ("media-player", "artwork"),
+        ):
+            r = self._run([group, command, "--help"], hass_instance)
+            assert r.returncode == 0, f"{group} {command}: {r.stderr}"
+            assert "Usage:" in r.stdout

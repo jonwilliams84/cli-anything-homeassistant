@@ -116,6 +116,7 @@ from cli_anything.homeassistant.core import weather_advanced as weather_advanced
 from cli_anything.homeassistant.core import zone as zone_core
 from cli_anything.homeassistant.core import webhook as webhook_core
 from cli_anything.homeassistant.core import image as image_core
+from cli_anything.homeassistant.core import media_proxy as media_proxy_core
 from cli_anything.homeassistant.core import profiler as profiler_core
 from cli_anything.homeassistant.core import backup_advanced as backup_advanced_core
 from cli_anything.homeassistant.core import calendar_ws as calendar_ws_core
@@ -302,12 +303,21 @@ class _HandledGroup(click.Group):
     rather than of how it was launched. `main()` keeps its own handler for
     anything raised before the group is entered (config loading, argv
     hoisting).
+
+    `FileExistsError` is in the list because refusing to clobber a file is a
+    NORMAL outcome of every command that writes one (`image snapshot`,
+    `camera snapshot`, `camera capture`, `media-player artwork`). It carries
+    its own remedy in the message — "pass --overwrite" — and a message that
+    ends in a stack trace reads as a crash rather than as the safety check it
+    is. `HomeAssistantError` subclasses `RuntimeError`, so a core module that
+    raises it for a wire failure is presented here too; a bare `RuntimeError`
+    is NOT, which is why core functions must raise one of these three.
     """
 
     def invoke(self, ctx):
         try:
             return super().invoke(ctx)
-        except (HomeAssistantError, ValueError) as exc:
+        except (HomeAssistantError, ValueError, FileExistsError) as exc:
             _abort(str(exc))
 
 
@@ -8551,6 +8561,122 @@ def camera_webrtc_config(ctx, entity_id):
     )
 
 
+@camera.command("snapshot")
+@click.argument("entity_id")
+@click.argument("output_path", type=click.Path(dir_okay=False, writable=True))
+@click.option(
+    "--overwrite/--no-overwrite", default=False, help="Replace OUTPUT_PATH if it already exists"
+)
+@click.option(
+    "--width",
+    type=int,
+    default=None,
+    help="Rescale width. MUST be given with --height: HA only rescales when both "
+    "are present, and only for JPEG cameras.",
+)
+@click.option("--height", type=int, default=None, help="Rescale height (see --width)")
+@click.option(
+    "--signed/--direct",
+    default=False,
+    help="Use auth/sign_path to mint a one-shot URL, then fetch unauthenticated",
+)
+@click.option(
+    "--expires", type=int, default=30, help="If --signed, seconds the signed URL is valid for"
+)
+@click.pass_context
+def camera_snapshot(ctx, entity_id, output_path, overwrite, width, height, signed, expires):
+    """Download the current frame from a camera to OUTPUT_PATH.
+
+    A camera that is switched off answers 503 with no body; the error names
+    `camera turn-on` rather than repeating the bare status.
+    """
+    emit(
+        ctx,
+        media_proxy_core.camera_snapshot(
+            make_client(ctx),
+            entity_id=entity_id,
+            output_path=output_path,
+            overwrite=overwrite,
+            width=width,
+            height=height,
+            signed=signed,
+            expires=expires,
+        ),
+    )
+
+
+@camera.command("capture")
+@click.argument("entity_id")
+@click.argument("output_dir", type=click.Path(file_okay=False))
+@click.option("--frames", type=int, default=1, show_default=True, help="Distinct frames to keep")
+@click.option(
+    "--interval",
+    type=float,
+    default=None,
+    help="Compose the stream from stills this many seconds apart (>= 0.5). "
+    "Omit to use the camera's native MJPEG stream, which not every platform has.",
+)
+@click.option(
+    "--timeout",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Give up after N seconds — the stream itself never ends",
+)
+@click.option("--prefix", default="frame", show_default=True, help="Output filename prefix")
+@click.option("--overwrite/--no-overwrite", default=False, help="Replace existing frame files")
+@click.option("--signed/--direct", default=False, help="Fetch through a signed one-shot URL")
+@click.option("--expires", type=int, default=30, help="If --signed, seconds the URL is valid for")
+@click.pass_context
+def camera_capture(ctx, entity_id, output_dir, frames, interval, timeout, prefix, overwrite,
+                   signed, expires):
+    """Capture N distinct frames from a camera's MJPEG stream into OUTPUT_DIR.
+
+    Home Assistant deliberately sends the first frame twice (browsers render
+    the n-1 frame of a multipart stream); consecutive duplicates are collapsed
+    and reported as `duplicates_skipped`.
+    """
+    emit(
+        ctx,
+        media_proxy_core.camera_capture(
+            make_client(ctx),
+            entity_id=entity_id,
+            output_dir=output_dir,
+            frames=frames,
+            interval=interval,
+            timeout=timeout,
+            prefix=prefix,
+            overwrite=overwrite,
+            signed=signed,
+            expires=expires,
+        ),
+    )
+
+
+@camera.command("proxy-url")
+@click.argument("entity_id")
+@click.option(
+    "--signed/--unsigned",
+    default=True,
+    help="Sign the URL so it works without an Authorization header (default: signed)",
+)
+@click.option("--stream/--still", default=False, help="Point at the MJPEG stream view instead")
+@click.option("--expires", type=int, default=30, show_default=True)
+@click.pass_context
+def camera_proxy_url(ctx, entity_id, signed, stream, expires):
+    """Return the `/api/camera_proxy/<entity_id>` URL (signed by default)."""
+    emit(
+        ctx,
+        media_proxy_core.proxy_url(
+            make_client(ctx),
+            entity_id=entity_id,
+            signed=signed,
+            expires=expires,
+            stream=stream,
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────── device-automation
 
 
@@ -12174,6 +12300,45 @@ def image_proxy_url(ctx, entity_id, signed, expires):
     )
 
 
+@image.command("capture")
+@click.argument("entity_id")
+@click.argument("output_dir", type=click.Path(file_okay=False))
+@click.option("--frames", type=int, default=1, show_default=True, help="Distinct frames to keep")
+@click.option(
+    "--timeout",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Give up after N seconds — the stream itself never ends",
+)
+@click.option("--prefix", default="frame", show_default=True, help="Output filename prefix")
+@click.option("--overwrite/--no-overwrite", default=False, help="Replace existing frame files")
+@click.option("--signed/--direct", default=False, help="Fetch through a signed one-shot URL")
+@click.option("--expires", type=int, default=30, help="If --signed, seconds the URL is valid for")
+@click.pass_context
+def image_capture(ctx, entity_id, output_dir, frames, timeout, prefix, overwrite, signed, expires):
+    """Capture N distinct frames from an image entity's stream into OUTPUT_DIR.
+
+    The image stream has no interval — HA pushes a frame when the entity
+    changes. A static image entity yields ONE distinct frame and then blocks,
+    so the result reports `complete: false` at the timeout instead of hanging.
+    """
+    emit(
+        ctx,
+        media_proxy_core.image_capture(
+            make_client(ctx),
+            entity_id=entity_id,
+            output_dir=output_dir,
+            frames=frames,
+            timeout=timeout,
+            prefix=prefix,
+            overwrite=overwrite,
+            signed=signed,
+            expires=expires,
+        ),
+    )
+
+
 @image.command("subscribe")
 @click.argument("entity_id")
 @click.option("--timeout", type=int, default=10, help="Stop after N seconds (default 10)")
@@ -15420,6 +15585,51 @@ def media_player_search(ctx, entity_id, query, media_content_id, media_content_t
             query=query,
             media_content_id=media_content_id,
             media_content_type=media_content_type,
+        ),
+    )
+
+
+@media_player_grp.command("artwork")
+@click.argument("entity_id")
+@click.argument("output_path", type=click.Path(dir_okay=False, writable=True))
+@click.option(
+    "--overwrite/--no-overwrite", default=False, help="Replace OUTPUT_PATH if it already exists"
+)
+@click.option(
+    "--content-type",
+    "media_content_type",
+    default=None,
+    help="Fetch a browse-media thumbnail instead of the now-playing art. "
+    "Must be given with --content-id.",
+)
+@click.option("--content-id", "media_content_id", default=None, help="See --content-type")
+@click.option("--image-id", "media_image_id", default=None, help="Optional media_image_id")
+@click.option("--signed/--direct", default=False, help="Fetch through a signed one-shot URL")
+@click.option("--expires", type=int, default=30, help="If --signed, seconds the URL is valid for")
+@click.pass_context
+def media_player_artwork(ctx, entity_id, output_path, overwrite, media_content_type,
+                         media_content_id, media_image_id, signed, expires):
+    """Download a media player's cover art (or a browse-media thumbnail).
+
+    With --content-type/--content-id this fetches the thumbnail for one node
+    of the `media_player browse` tree — the only way to get those bytes, since
+    the URLs `browse_media` returns point straight back at this endpoint.
+
+    A player with no artwork answers 500; that is a normal outcome, not a
+    server fault, and the error says so.
+    """
+    emit(
+        ctx,
+        media_proxy_core.media_player_artwork(
+            make_client(ctx),
+            entity_id=entity_id,
+            output_path=output_path,
+            overwrite=overwrite,
+            media_content_type=media_content_type,
+            media_content_id=media_content_id,
+            media_image_id=media_image_id,
+            signed=signed,
+            expires=expires,
         ),
     )
 

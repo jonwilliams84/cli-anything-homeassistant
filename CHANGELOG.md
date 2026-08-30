@@ -4,6 +4,92 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.51.0] — 2026-08-30
+
+Refine pass scoped by re-enumerating the running version's surface (235
+websocket commands, 88 REST views on 2025.1.4) and diffing it against every
+string this harness sends. Websocket coverage came back 204/235, and the
+remainder belongs to integrations this harness cannot reach (KNX, LCN,
+dynalite). **The REST side had a real hole, and it was the one that returns
+pixels:** four binary GET views that nothing here called.
+
+### Added — get the BYTES an entity is serving
+
+The harness could describe a camera in complete detail and could not show you
+what it sees. `camera capabilities` / `stream` / `prefs-get` read the wiring
+and `camera_ws` negotiates WebRTC, but none of them returns an image.
+`image snapshot` existed for `image.*` entities only.
+
+- `camera snapshot ENTITY_ID OUTPUT_PATH` — `/api/camera_proxy/<entity_id>`.
+  `--width`/`--height` (refused unless BOTH are given, see below),
+  `--overwrite`, `--signed`/`--direct`, `--expires`. Reports `resized` — did
+  HA actually rescale, not did you ask it to.
+- `camera capture ENTITY_ID OUTPUT_DIR` — N distinct frames off
+  `/api/camera_proxy_stream/<entity_id>`. `--frames`, `--interval`,
+  `--timeout`, `--prefix`, `--overwrite`, `--signed`, `--expires`.
+- `image capture ENTITY_ID OUTPUT_DIR` — the same for
+  `/api/image_proxy_stream/<entity_id>`, which has no interval.
+- `camera proxy-url ENTITY_ID` — signed (default) or plain URL for the still
+  or, with `--stream`, the MJPEG view. Mirrors `image proxy-url`.
+- `media-player artwork ENTITY_ID OUTPUT_PATH` —
+  `/api/media_player_proxy/<entity_id>`: the cover art for what is playing,
+  or with `--content-type`/`--content-id` the thumbnail for one node of the
+  `media_player browse` tree, whose URLs point straight back at this endpoint.
+
+### Added — `core/media_proxy.py`
+
+One module for all four views, with the transport details that make them
+different from every other endpoint in this harness:
+
+- **`requires_auth = False` does not mean unauthenticated.** All three views
+  check `request[KEY_AUTHENTICATED]` or a per-entity access token by hand.
+  The refusal differs from the rest of the API: with an `Authorization`
+  header present HA answers 401, with none at all it answers **403**. A
+  signed request therefore has to have the bearer header REMOVED, or a
+  signature failure is reported as a token failure.
+- **A camera that is off is a 503 with an empty body.** `CameraView.get`
+  checks `camera.is_on` before taking a picture. The error now names
+  `camera turn-on <entity_id>` instead of repeating a bare status.
+- **Bounded capture.** Both streams run forever by design, so handing either
+  to `client.download()` writes an infinitely growing file. Every capture is
+  limited by a frame budget AND a deadline, and closes the response — which
+  is what makes HA stop.
+- **Duplicate frames are collapsed.** HA sends the first frame twice
+  (camera) or every frame twice (image) because Chrome renders the n-1 frame
+  of a multipart stream. Reported as `duplicates_skipped`.
+- **Length-driven multipart parsing** rather than boundary-driven, because
+  the two views declare incompatible boundaries (see below).
+
+### Fixed — a wire failure in these commands was a traceback, not a message
+
+`_HandledGroup` catches `HomeAssistantError`, `ValueError` and now
+`FileExistsError`. The new core functions raise `HomeAssistantError` (which
+subclasses `RuntimeError`) rather than a bare `RuntimeError`, so a 404/503/500
+from a proxy view is presented as `error: …` from every entry point. Refusing
+to clobber an existing file — a normal outcome of any command that writes one,
+including the pre-existing `image snapshot` — is now a sentence carrying its
+own remedy instead of a stack trace. Caught by the live e2e test, not by
+review.
+
+### Tests
+
++99 (3,885 → 3,984 passing, 30 skipped).
+
+- `tests/test_media_proxy.py` — 50 unit tests: URL and query construction,
+  the signed/bearer split, every bodyless status translated, all client-side
+  refusals.
+- `tests/test_media_proxy_stream.py` — 10 tests against **Home Assistant's own
+  stream writer over a real socket**. The camera route calls
+  `homeassistant.components.camera.async_get_still_stream` — the actual
+  function that serves `/api/camera_proxy_stream` — and the image route is
+  built from the image component's own constants. This found two bugs a
+  hand-written fixture would have agreed with.
+- `tests/test_cli_media_proxy_wiring.py` — 24 CliRunner tests.
+- `tests/test_full_e2e.py::TestMediaProxyLive` — 15 tests against a real HA:
+  a genuinely HA-minted signed URL (`auth/sign_path` is a core command and
+  needs no camera platform), named 404s, and every refusal proven to stop
+  before the wire.
+
 ## [1.50.0] — 2026-08-27
 
 Refine pass scoped by re-enumerating HA's websocket + REST surface and diffing

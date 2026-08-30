@@ -113,7 +113,7 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `assist-satellite` | `assist_satellite.*` — current config, set wake words, test connection.                        |
 | `mobile-app`       | Companion app push delivery receipts.                                                          |
 | `media`            | `media_source` browse / resolve / remove.                                                      |
-| `camera`           | `camera.*` capabilities / HLS stream URL / prefs / WebRTC config.                              |
+| `camera`           | `camera.*` capabilities / HLS URL / prefs / WebRTC + `snapshot`, `capture`, `proxy-url`.       |
 | `device-automation`| List a device's available triggers/conditions/actions.                                         |
 | `auth`             | `me`, `sign-path`, `tokens` (refresh-token CRUD), `user` (full user admin).                    |
 | `logger`           | Runtime log-level control (REST + WS-per-component).                                           |
@@ -338,6 +338,45 @@ cli-anything-homeassistant image snapshot image.front_door /tmp/door.png --overw
 cli-anything-homeassistant image proxy-url image.front_door --expires 300 --json
 ```
 
+### Get the pixels: camera stills, stream frames, cover art (v1.51+)
+
+```bash
+# One still from a camera
+cli-anything-homeassistant camera snapshot camera.front_door /tmp/front.jpg --overwrite
+
+# Rescale: --width and --height MUST be given together. HA only rescales when
+# both are present AND the camera returns JPEG; `resized` reports whether it
+# actually happened, so never assume it did.
+cli-anything-homeassistant --json camera snapshot camera.front_door /tmp/s.jpg \
+    --width 640 --height 480 | jq .resized
+
+# N distinct frames off the MJPEG stream. The stream never ends, so ALWAYS
+# bound it: --frames is the budget and --timeout is the deadline. --interval
+# makes HA compose the stream from stills (>= 0.5s) instead of using the
+# camera's native MJPEG, which not every platform has (a 502 says so).
+cli-anything-homeassistant --json camera capture camera.front_door /tmp/frames \
+    --frames 5 --interval 1.0 --timeout 30 | jq '{frames, duplicates_skipped, complete}'
+
+# Image entities stream too, but with no interval — HA pushes on change. A
+# static entity gives ONE frame and reports complete:false at the deadline.
+cli-anything-homeassistant --json image capture image.doorbell /tmp/frames --frames 3
+
+# A URL something without an Auth header can fetch (browser, curl, notification)
+cli-anything-homeassistant --json camera proxy-url camera.front_door --expires 300 | jq -r .url
+
+# Cover art for what's playing; or a thumbnail from the browse tree, which is
+# the only way to get those bytes (--content-type and --content-id together).
+cli-anything-homeassistant media-player artwork media_player.lounge /tmp/art.jpg
+cli-anything-homeassistant media-player artwork media_player.lounge /tmp/t.jpg \
+    --content-type album --content-id 'library/albums/17'
+```
+
+Failure modes worth knowing, because HA answers all of them with an empty body:
+`503` = **the camera is off** (`camera turn-on <id>`), `502` = the platform has
+no MJPEG stream (use `--interval`), `500` = no image/artwork available, `403` =
+no credentials reached HA (a bad `--signed` URL), `404` = no such entity. The
+CLI translates each of these into a sentence naming the remedy.
+
 ### Author an automation without shipping a broken one
 
 ```bash
@@ -518,6 +557,18 @@ These are paid in lost time. Read them before mutating anything.
   entity attributes, which report an empty list).
 - **`media search` on the ROOT is an error** (`search_not_supported`), not an
   empty result. Scope it: `--scope media-source://media_source`.
+- **`camera snapshot --width` alone does NOTHING and HA will not say so.**
+  Rescaling happens only when width AND height are both present and the
+  camera returns JPEG; otherwise the size argument is passed to the platform,
+  ignored, and you get a full-size image with a 200. The CLI refuses one
+  without the other, and `resized` in the JSON is the honest answer.
+- **Never point `camera capture` / `image capture` at an unbounded run.**
+  Both MJPEG views stream forever by design — `--frames` and `--timeout` are
+  not optional tuning, they are the only things that end the request. Check
+  `complete` in the output: `false` means the deadline hit first, which for a
+  static entity is the normal answer, not a fault.
+- **A camera that is switched off answers 503**, not 404 and not a blank
+  image. If a snapshot "fails on the server", check `camera turn-on` first.
 - **`media upload` only accepts image/ video/ audio/.** HA answers a bare 400
   for anything else and logs the reason server-side only.
 - **Token = full admin.** Treat `~/.config/cli-anything-homeassistant.json`
