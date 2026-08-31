@@ -68,13 +68,27 @@ class HomeAssistantError(RuntimeError):
     a named answer, and `core_config.detect()` uses it to tell "the geo-IP
     lookup blew up on the HA host" apart from "you may not call this".
 
-    The `str()` of the exception is UNCHANGED by this — the code is additive,
-    so anything already asserting on the message text keeps working.
+    `status` is the counterpart for the REST side: the HTTP status of a failed
+    request. A REST failure has no machine-readable code — and, for the service
+    endpoint, no BODY either (see `core/service_errors.py`), so the status is
+    the only thing that distinguishes "HA never ran this" (400) from "HA ran it
+    and the handler raised" (500). It is `None` for websocket and transport
+    failures.
+
+    The `str()` of the exception is UNCHANGED by either of these — both are
+    additive, so anything already asserting on the message text keeps working.
     """
 
-    def __init__(self, message: str, *, code: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        status: int | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        self.status = status
 
 
 class HomeAssistantClient:
@@ -161,7 +175,10 @@ class HomeAssistantClient:
             raise HomeAssistantError(f"Request timed out after {self.timeout}s: {exc}") from exc
         self._check_auth(resp)
         if not resp.ok:
-            raise HomeAssistantError(f"GET {path} -> {resp.status_code}: {resp.text[:500]}")
+            raise HomeAssistantError(
+                f"GET {path} -> {resp.status_code}: {resp.text[:500]}",
+                status=resp.status_code,
+            )
         return self._decode(resp)
 
     def post(self, path: str, payload: Any = None, params: dict | None = None) -> Any:
@@ -191,7 +208,10 @@ class HomeAssistantClient:
             raise HomeAssistantError(f"Request timed out after {self.timeout}s: {exc}") from exc
         self._check_auth(resp)
         if not resp.ok:
-            raise HomeAssistantError(f"POST {path} -> {resp.status_code}: {resp.text[:500]}")
+            raise HomeAssistantError(
+                f"POST {path} -> {resp.status_code}: {resp.text[:500]}",
+                status=resp.status_code,
+            )
         return self._decode(resp)
 
     def download(
@@ -227,7 +247,10 @@ class HomeAssistantClient:
         with resp:
             self._check_auth(resp)
             if not resp.ok:
-                raise HomeAssistantError(f"GET {path} -> {resp.status_code}: {resp.text[:500]}")
+                raise HomeAssistantError(
+                    f"GET {path} -> {resp.status_code}: {resp.text[:500]}",
+                    status=resp.status_code,
+                )
             written = 0
             with open(dest, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=chunk_size):
@@ -308,7 +331,10 @@ class HomeAssistantClient:
             ) from exc
         self._check_auth(resp)
         if not resp.ok:
-            raise HomeAssistantError(f"POST {path} -> {resp.status_code}: {resp.text[:500]}")
+            raise HomeAssistantError(
+                f"POST {path} -> {resp.status_code}: {resp.text[:500]}",
+                status=resp.status_code,
+            )
         return self._decode(resp)
 
     def delete(self, path: str, params: dict | None = None) -> Any:
@@ -319,7 +345,10 @@ class HomeAssistantClient:
             raise self._connection_error(exc) from exc
         self._check_auth(resp)
         if not resp.ok:
-            raise HomeAssistantError(f"DELETE {path} -> {resp.status_code}: {resp.text[:500]}")
+            raise HomeAssistantError(
+                f"DELETE {path} -> {resp.status_code}: {resp.text[:500]}",
+                status=resp.status_code,
+            )
         return self._decode(resp)
 
     # ------------------------------------------------------------------ WebSocket

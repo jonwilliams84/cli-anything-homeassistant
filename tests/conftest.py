@@ -52,6 +52,8 @@ class FakeClient:
         # Downloads: `download()` writes this payload and reports its size.
         self.download_calls: list[dict] = []
         self.download_payload: bytes = b"fake-audio"
+        # REST failure recorder — see `set_rest_error`.
+        self.rest_errors: dict[tuple[str, str], tuple[int, str]] = {}
 
     def set_run_events(self, *events: Any) -> None:
         """Queue the events the next `ws_run_events` call streams back."""
@@ -144,6 +146,30 @@ class FakeClient:
     def set_service(self, domain: str, service: str, response: Any) -> None:
         self.service_responses[f"{domain}.{service}"] = response
 
+    def set_rest_error(self, verb: str, path: str, status: int, body: str = "") -> None:
+        """Make `verb path` raise the same error the real client raises on a
+        non-ok REST response — INCLUDING the HTTP status.
+
+        The status is the whole point for `core/service_errors.py`: the
+        service endpoint answers a failure with a status and an empty body, so
+        400 ("HA never ran this") vs 500 ("HA ran it and the handler raised")
+        is the only signal the client gets.
+        """
+        self.rest_errors[(verb.upper(), path.lstrip("/"))] = (status, body)
+
+    def _maybe_rest_error(self, verb: str, path: str) -> None:
+        entry = self.rest_errors.get((verb.upper(), path.lstrip("/").split("?", 1)[0]))
+        if entry is None:
+            return
+        from cli_anything.homeassistant.utils.homeassistant_backend import (
+            HomeAssistantError,
+        )
+
+        status, body = entry
+        raise HomeAssistantError(
+            f"{verb.upper()} {path} -> {status}: {body}", status=status
+        )
+
     def set(self, verb: str, path: str, response: Any) -> None:
         self.responses[(verb.upper(), path.lstrip("/"))] = response
 
@@ -155,6 +181,7 @@ class FakeClient:
         # Strip any querystring fragment for matching.
         match_path = path.split("?", 1)[0]
         self.calls.append({"verb": "GET", "path": path, "params": params})
+        self._maybe_rest_error("GET", path)
         return self.responses.get(("GET", match_path),
                                   self.responses.get(("GET", path), []))
 
@@ -166,6 +193,7 @@ class FakeClient:
         if params is not None:
             call["params"] = params
         self.calls.append(call)
+        self._maybe_rest_error("POST", path)
         # If this looks like services/<domain>/<svc>, also record it via the
         # service-call recorder so logger / mqtt tests can inspect.
         if match_path.startswith("services/"):

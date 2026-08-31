@@ -99,6 +99,7 @@ from cli_anything.homeassistant.core import recorder as recorder_core
 from cli_anything.homeassistant.core import scenes as scenes_core
 from cli_anything.homeassistant.core import service_shortcuts as service_shortcuts_core
 from cli_anything.homeassistant.core import entity_control as entity_control_core
+from cli_anything.homeassistant.core import service_errors as service_errors_core
 from cli_anything.homeassistant.core import powercalc as powercalc_core
 from cli_anything.homeassistant.core import powercalc_calibration as powercalc_calibration_core
 from cli_anything.homeassistant.core import powercalc_regression as powercalc_regression_core
@@ -1160,6 +1161,67 @@ def service_call(ctx, domain_arg, service_arg, data, target, return_response, dr
         return_response=return_response,
     )
     emit(ctx, result if result else {"called": f"{domain_arg}.{service_arg}"})
+
+
+@service.command("explain")
+@click.argument("domain_arg")
+@click.argument("service_arg")
+@click.option(
+    "--data", "-D", multiple=True, help="Service data key=value (JSON values supported, repeatable)"
+)
+@click.pass_context
+def service_explain(ctx, domain_arg, service_arg, data):
+    """Why did that service call fail? Ask over the WEBSOCKET.
+
+    `POST /api/services/<domain>/<service>` throws away the reason: a service
+    that is not registered, or arguments that fail its schema, come back as a
+    bare `400 Bad Request`, and a handler that raises comes back as a bare
+    `500 Server got itself in trouble`. The sentence goes to HA's log only.
+
+    The websocket `call_service` command keeps it, with HA's own
+    machine-readable code — `not_found`, `invalid_format`,
+    `service_validation_error`, `home_assistant_error`.
+
+    **This CALLS THE SERVICE.** It is a second attempt, not a dry run; use
+    `service call --dry-run` if you only want to see the payload.
+    """
+    sd = parse_kv_pairs(data) if data else None
+    emit(
+        ctx,
+        service_errors_core.explain(
+            make_client(ctx),
+            domain_arg,
+            service_arg,
+            service_data=sd,
+        ),
+    )
+
+
+@service.command("registered")
+@click.argument("domain_arg")
+@click.argument("service_arg")
+@click.pass_context
+def service_registered(ctx, domain_arg, service_arg):
+    """Is DOMAIN.SERVICE actually callable on THIS instance?
+
+    A domain's `services.yaml` is documentation, not the registry — on
+    2025.1.4 `vacuum/services.yaml` documents `turn_on`, `turn_off`, `toggle`
+    and `start_pause` and none of the four is registered. This reads
+    `/api/services`, which is the registry, and costs one GET with no side
+    effects.
+    """
+    client = make_client(ctx)
+    registry = service_errors_core.registered_services(client)
+    available = registry.get(domain_arg, [])
+    emit(
+        ctx,
+        {
+            "service": f"{domain_arg}.{service_arg}",
+            "registered": service_arg in available,
+            "domain_loaded": domain_arg in registry,
+            "domain_provides": available,
+        },
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────── event
@@ -2643,6 +2705,73 @@ def group_expand(ctx, entity_id, no_state):
         emit(ctx, groups_core.deep_expand(make_client(ctx), entity_id))
     else:
         emit(ctx, groups_core.expand(make_client(ctx), entity_id))
+
+
+@group.command("set")
+@click.argument("object_id")
+@click.option("--name", default=None, help="Friendly name")
+@click.option("--icon", default=None, help="mdi: icon")
+@click.option(
+    "--entity",
+    "entities",
+    multiple=True,
+    help="REPLACE the membership with these (repeatable)",
+)
+@click.option("--add", "add_entities", multiple=True, help="Add a member (repeatable)")
+@click.option(
+    "--remove", "remove_entities", multiple=True, help="Remove a member (repeatable)"
+)
+@click.option(
+    "--all/--any",
+    "all_must_be_on",
+    default=None,
+    help="--all: the group is on only while EVERY member is on. "
+    "--any (HA's default): on while any member is on.",
+)
+@click.pass_context
+def group_set(ctx, object_id, name, icon, entities, add_entities, remove_entities, all_must_be_on):
+    """Create or edit a group at runtime — no YAML, no restart.
+
+    OBJECT_ID is the bare id (`kitchen`), not the entity id; `group.kitchen`
+    is accepted and unwrapped.
+
+    --entity replaces the whole membership, --add/--remove edit it. Mixing
+    the two is refused rather than silently ordered.
+    """
+    emit(
+        ctx,
+        groups_core.set_group(
+            make_client(ctx),
+            object_id,
+            name=name,
+            icon=icon,
+            entities=list(entities) if entities else None,
+            add_entities=list(add_entities),
+            remove_entities=list(remove_entities),
+            all_must_be_on=all_must_be_on,
+        ),
+    )
+
+
+@group.command("remove")
+@click.argument("object_id")
+@click.confirmation_option(prompt="Remove this group?")
+@click.pass_context
+def group_remove(ctx, object_id):
+    """Delete a runtime group.
+
+    A group that came from configuration.yaml returns on the next reload;
+    only one created by `group set` stays gone.
+    """
+    emit(ctx, groups_core.remove_group(make_client(ctx), object_id))
+
+
+@group.command("reload")
+@click.confirmation_option(prompt="Reload groups from configuration.yaml?")
+@click.pass_context
+def group_reload(ctx):
+    """Re-read the `group:` section of configuration.yaml."""
+    emit(ctx, groups_core.reload_groups(make_client(ctx)))
 
 
 @cli.group("mqtt-discovery")
@@ -5249,6 +5378,72 @@ def system_reload_all(ctx):
     emit(ctx, {"reloaded": "all", "result": control_core.reload_all(make_client(ctx))})
 
 
+@system.command("reload-templates")
+@click.confirmation_option(prompt="Reload custom Jinja templates?")
+@click.pass_context
+def system_reload_templates(ctx):
+    """Re-read `custom_templates/*.jinja` (the shared macro files).
+
+    NOT template entities — those are `system reload-all`.
+    """
+    emit(
+        ctx,
+        {
+            "reloaded": "custom_templates",
+            "result": control_core.reload_custom_templates(make_client(ctx)),
+        },
+    )
+
+
+@system.command("save-states")
+@click.pass_context
+def system_save_states(ctx):
+    """Flush restore-state to disk now (`homeassistant.save_persistent_states`).
+
+    HA writes `.storage/core.restore_state` on a timer and at shutdown. Call
+    this before cutting power to the host, or before a backup that has to
+    contain current values.
+    """
+    emit(
+        ctx,
+        {
+            "saved": "persistent_states",
+            "result": control_core.save_persistent_states(make_client(ctx)),
+        },
+    )
+
+
+@system.command("set-location")
+@click.argument("latitude", type=float)
+@click.argument("longitude", type=float)
+@click.option("--elevation", type=float, default=None, help="Metres above sea level")
+@click.confirmation_option(
+    prompt="Move this instance's home location? Every zone test, sun.sun and "
+    "zone-triggered automation is evaluated against it."
+)
+@click.pass_context
+def system_set_location(ctx, latitude, longitude, elevation):
+    """Set the instance's home coordinates (admin only).
+
+    Persists in `.storage/core.config` and overrides configuration.yaml.
+    Elevation is left as-is when not given.
+    """
+    emit(
+        ctx,
+        {
+            "latitude": latitude,
+            "longitude": longitude,
+            "elevation": elevation,
+            "result": control_core.set_location(
+                make_client(ctx),
+                latitude=latitude,
+                longitude=longitude,
+                elevation=elevation,
+            ),
+        },
+    )
+
+
 @system.command("safe-restart")
 @click.option(
     "--wait",
@@ -7396,6 +7591,36 @@ def entity_disable(ctx, entity_id):
     emit(ctx, registry_core.update_entity(make_client(ctx), entity_id, disabled_by="user"))
 
 
+@entity.command("refresh")
+@click.argument("entity_ids", nargs=-1, required=True)
+@click.option(
+    "--no-verify",
+    is_flag=True,
+    default=False,
+    help="Skip the before/after last_updated check and just fire the service",
+)
+@click.pass_context
+def entity_refresh(ctx, entity_ids, no_verify):
+    """Force a poll of ENTITY_IDS now (`homeassistant.update_entity`).
+
+    The raw service tells you nothing: it returns HTTP 200 and `[]` whether
+    the entity refreshed, could not, or DOES NOT EXIST — a typo is a silent
+    success. So each entity's `last_updated` is read before and after and
+    reported as `refreshed`, `unchanged` (normal for a non-polling entity) or
+    `missing`.
+
+    `all` is not accepted — HA's schema is `cv.entity_ids`, which rejects it.
+    """
+    emit(
+        ctx,
+        control_core.update_entity(
+            make_client(ctx),
+            list(entity_ids),
+            verify=not no_verify,
+        ),
+    )
+
+
 @entity.command("enable")
 @click.argument("entity_id")
 @click.pass_context
@@ -7936,6 +8161,42 @@ def alarm_disarm(ctx, entity_id, code):
     emit(
         ctx,
         service_shortcuts_core.alarm_disarm(
+            make_client(ctx),
+            entity_id,
+            code=code,
+        ),
+    )
+
+
+@alarm.command("arm-custom-bypass")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.pass_context
+def alarm_arm_custom_bypass(ctx, entity_id, code):
+    """Arm with the panel's configured zones bypassed."""
+    emit(
+        ctx,
+        entity_control_core.alarm_arm_custom_bypass(
+            make_client(ctx),
+            entity_id,
+            code=code,
+        ),
+    )
+
+
+@alarm.command("trigger")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.confirmation_option(
+    prompt="Trigger the alarm? This sounds the siren and fires every "
+    "automation watching for it."
+)
+@click.pass_context
+def alarm_trigger_cmd(ctx, entity_id, code):
+    """Trigger the alarm, as if a sensor had fired."""
+    emit(
+        ctx,
+        entity_control_core.alarm_trigger(
             make_client(ctx),
             entity_id,
             code=code,
@@ -8488,7 +8749,12 @@ def entity_expose_new_set(ctx, assistant, expose_new):
 
 @cli.group()
 def camera():
-    """camera.* entities — stream URLs, capabilities, prefs, WebRTC config."""
+    """camera.* entities — power, motion detection, stills, streams, recording.
+
+    Two different things write files. `snapshot` / `capture` pull bytes over
+    `/api/camera_proxy` to THIS machine; `host-snapshot` / `record` ask HA to
+    write on the HOME ASSISTANT HOST, inside `allowlist_external_dirs`.
+    """
 
 
 @camera.command("capabilities")
@@ -8673,6 +8939,137 @@ def camera_proxy_url(ctx, entity_id, signed, stream, expires):
             signed=signed,
             expires=expires,
             stream=stream,
+        ),
+    )
+
+
+@camera.command("on")
+@click.argument("entity_id")
+@click.pass_context
+def camera_on(ctx, entity_id):
+    """Turn a camera on."""
+    emit(ctx, entity_control_core.camera_turn_on(make_client(ctx), entity_id))
+
+
+@camera.command("off")
+@click.argument("entity_id")
+@click.pass_context
+def camera_off(ctx, entity_id):
+    """Turn a camera off.
+
+    While off, `camera snapshot` / `capture` answer 503 — HA checks
+    `camera.is_on` before it will serve the proxy.
+    """
+    emit(ctx, entity_control_core.camera_turn_off(make_client(ctx), entity_id))
+
+
+@camera.command("motion-on")
+@click.argument("entity_id")
+@click.pass_context
+def camera_motion_on(ctx, entity_id):
+    """Enable motion detection on a camera."""
+    emit(
+        ctx,
+        entity_control_core.camera_enable_motion_detection(make_client(ctx), entity_id),
+    )
+
+
+@camera.command("motion-off")
+@click.argument("entity_id")
+@click.pass_context
+def camera_motion_off(ctx, entity_id):
+    """Disable motion detection on a camera."""
+    emit(
+        ctx,
+        entity_control_core.camera_disable_motion_detection(make_client(ctx), entity_id),
+    )
+
+
+@camera.command("host-snapshot")
+@click.argument("entity_id")
+@click.argument("filename")
+@click.pass_context
+def camera_host_snapshot(ctx, entity_id, filename):
+    """Write a still to FILENAME **on the Home Assistant host**.
+
+    This is not `camera snapshot`, which downloads a frame to THIS machine.
+    Here HA does the writing, so FILENAME must be an absolute path inside
+    `allowlist_external_dirs` in HA's configuration.yaml — otherwise the call
+    comes back as a bare HTTP 500.
+
+    FILENAME is a Jinja template on HA's side, so `{{ entity_id.name }}` works.
+    """
+    client = make_client(ctx)
+    entity_control_core.camera_host_snapshot(client, entity_id, filename=filename)
+    emit(
+        ctx,
+        {
+            "entity_id": entity_id,
+            "written_on": "home-assistant-host",
+            "filename": filename,
+        },
+    )
+
+
+@camera.command("record")
+@click.argument("entity_id")
+@click.argument("filename")
+@click.option(
+    "--duration",
+    type=int,
+    default=None,
+    help="Seconds to record, 1-3600 (HA's default is 30)",
+)
+@click.option(
+    "--lookback",
+    type=int,
+    default=None,
+    help="Seconds of already-buffered past to prepend, 0-300. Only yields "
+    "anything when the camera has --preload-stream on.",
+)
+@click.pass_context
+def camera_record_cmd(ctx, entity_id, filename, duration, lookback):
+    """Record to FILENAME **on the Home Assistant host**.
+
+    Needs the `stream` integration and a camera that provides a stream source;
+    one that does not answers a bare HTTP 500 whose real message
+    ("does not support record service") is only in HA's log. FILENAME follows
+    the same allowlist rule as `host-snapshot`.
+    """
+    client = make_client(ctx)
+    entity_control_core.camera_record(
+        client,
+        entity_id,
+        filename=filename,
+        duration=duration,
+        lookback=lookback,
+    )
+    emit(
+        ctx,
+        {
+            "entity_id": entity_id,
+            "written_on": "home-assistant-host",
+            "filename": filename,
+            "duration": duration if duration is not None else 30,
+            "lookback": lookback if lookback is not None else 0,
+        },
+    )
+
+
+@camera.command("play-stream")
+@click.argument("entity_id")
+@click.argument("media_player")
+@click.option("--format", "stream_format", default="hls", type=click.Choice(["hls"]))
+@click.pass_context
+def camera_play_stream(ctx, entity_id, media_player, stream_format):
+    """Cast a camera's live stream to MEDIA_PLAYER."""
+    emit(
+        ctx,
+        entity_control_core.camera_play_stream(
+            make_client(ctx),
+            entity_id,
+            media_player=media_player,
+            stream_format=stream_format,
         ),
     )
 
@@ -9924,6 +10321,30 @@ def mp_unjoin(ctx, entity_id):
     emit(ctx, entity_control_core.media_player_unjoin(make_client(ctx), entity_id))
 
 
+@media_player_grp.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def mp_toggle(ctx, entity_id):
+    """Toggle a media player's power."""
+    emit(ctx, entity_control_core.media_player_toggle(make_client(ctx), entity_id))
+
+
+@media_player_grp.command("seek")
+@click.argument("entity_id")
+@click.argument("position", type=float)
+@click.pass_context
+def mp_seek(ctx, entity_id, position):
+    """Seek to POSITION seconds from the start of the current item."""
+    emit(
+        ctx,
+        entity_control_core.media_player_seek(
+            make_client(ctx),
+            entity_id,
+            position=position,
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────── climate
 
 
@@ -10043,6 +10464,34 @@ def climate_off(ctx, entity_id):
     emit(ctx, entity_control_core.climate_turn_off(make_client(ctx), entity_id))
 
 
+@climate.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def climate_toggle_cmd(ctx, entity_id):
+    """Toggle a climate entity between off and its previous hvac mode."""
+    emit(ctx, entity_control_core.climate_toggle(make_client(ctx), entity_id))
+
+
+@climate.command("set-swing-horizontal")
+@click.argument("entity_id")
+@click.argument("mode")
+@click.pass_context
+def climate_set_swing_horizontal(ctx, entity_id, mode):
+    """Set the HORIZONTAL swing mode (separate from `set-swing`).
+
+    Read the valid values from the entity's `swing_horizontal_modes`
+    attribute: `state get <entity_id>`.
+    """
+    emit(
+        ctx,
+        entity_control_core.climate_set_swing_horizontal_mode(
+            make_client(ctx),
+            entity_id,
+            swing_horizontal_mode=mode,
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────── cover
 
 
@@ -10129,6 +10578,14 @@ def cover_close_tilt_cmd(ctx, entity_id):
 @click.pass_context
 def cover_stop_tilt_cmd(ctx, entity_id):
     emit(ctx, entity_control_core.cover_stop_tilt(make_client(ctx), entity_id))
+
+
+@cover.command("toggle-tilt")
+@click.argument("entity_id")
+@click.pass_context
+def cover_toggle_tilt_cmd(ctx, entity_id):
+    """Toggle the tilt between fully open and fully closed."""
+    emit(ctx, entity_control_core.cover_toggle_tilt(make_client(ctx), entity_id))
 
 
 # ──────────────────────────────────────────────────────── fan
@@ -10838,6 +11295,208 @@ def text_set(ctx, entity_id, value):
             value=value,
         ),
     )
+
+
+# ──────────────────────────────────────────────────────── switch
+
+
+@cli.group()
+def switch():
+    """switch.* entities — on / off / toggle."""
+
+
+@switch.command("on")
+@click.argument("entity_id")
+@click.pass_context
+def switch_on(ctx, entity_id):
+    """Turn a switch on."""
+    emit(ctx, entity_control_core.switch_turn_on(make_client(ctx), entity_id))
+
+
+@switch.command("off")
+@click.argument("entity_id")
+@click.pass_context
+def switch_off(ctx, entity_id):
+    """Turn a switch off."""
+    emit(ctx, entity_control_core.switch_turn_off(make_client(ctx), entity_id))
+
+
+@switch.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def switch_toggle_cmd(ctx, entity_id):
+    """Toggle a switch."""
+    emit(ctx, entity_control_core.switch_toggle(make_client(ctx), entity_id))
+
+
+@switch.command("list")
+@click.pass_context
+def switch_list(ctx):
+    """List every switch.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="switch"))
+
+
+# ──────────────────────────────────────────────────────── date / time / datetime
+
+
+@cli.group()
+def date():
+    """date.* entities — set the stored calendar date."""
+
+
+@date.command("set")
+@click.argument("entity_id")
+@click.argument("value")
+@click.pass_context
+def date_set(ctx, entity_id, value):
+    """Set a date entity to VALUE (ISO `YYYY-MM-DD`).
+
+    Only ISO is accepted — HA's own services.yaml example, `2022/11/01`, is
+    rejected by the parser with a bare 400.
+    """
+    emit(ctx, entity_control_core.date_set_value(make_client(ctx), entity_id, date=value))
+
+
+@date.command("list")
+@click.pass_context
+def date_list(ctx):
+    """List every date.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="date"))
+
+
+@cli.group()
+def time():
+    """time.* entities — set the stored time of day."""
+
+
+@time.command("set")
+@click.argument("entity_id")
+@click.argument("value")
+@click.pass_context
+def time_set(ctx, entity_id, value):
+    """Set a time entity to VALUE (`HH:MM` or `HH:MM:SS`; stored as `HH:MM:SS`)."""
+    emit(ctx, entity_control_core.time_set_value(make_client(ctx), entity_id, time=value))
+
+
+@time.command("list")
+@click.pass_context
+def time_list(ctx):
+    """List every time.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="time"))
+
+
+@cli.group("datetime")
+def datetime_grp():
+    """datetime.* entities — set the stored date AND time."""
+
+
+@datetime_grp.command("set")
+@click.argument("entity_id")
+@click.argument("value")
+@click.pass_context
+def datetime_set(ctx, entity_id, value):
+    """Set a datetime entity to VALUE (ISO-8601).
+
+    A naive value is interpreted in HOME ASSISTANT's timezone, not yours; pass
+    an offset (or a trailing `Z`) to be explicit. A date-only value is
+    accepted and stored as midnight.
+    """
+    emit(
+        ctx,
+        entity_control_core.datetime_set_value(make_client(ctx), entity_id, datetime=value),
+    )
+
+
+@datetime_grp.command("list")
+@click.pass_context
+def datetime_list(ctx):
+    """List every datetime.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="datetime"))
+
+
+# ──────────────────────────────────────────────────────── device-tracker
+
+
+@cli.group("device-tracker")
+def device_tracker_grp():
+    """device_tracker.* entities — report a device's position to HA."""
+
+
+@device_tracker_grp.command("see")
+@click.option("--dev-id", default=None, help="Device slug, e.g. `phonedave` (creates it)")
+@click.option("--mac", default=None, help="MAC address, as an alternative key to --dev-id")
+@click.option("--host-name", default=None, help="Friendly hostname")
+@click.option(
+    "--location",
+    "location_name",
+    default=None,
+    help="Zone by name: `home`, `not_home`, or a zone's friendly name",
+)
+@click.option(
+    "--gps",
+    nargs=2,
+    type=float,
+    default=None,
+    help="LATITUDE LONGITUDE — HA resolves the zone itself",
+)
+@click.option("--gps-accuracy", type=int, default=None, help="Accuracy radius in metres")
+@click.option("--battery", type=int, default=None, help="Battery level, 0-100")
+@click.pass_context
+def device_tracker_see(
+    ctx, dev_id, mac, host_name, location_name, gps, gps_accuracy, battery
+):
+    """Report a position. Creates `device_tracker.<dev-id>` on first use.
+
+    Needs at least one of --dev-id / --mac. --location and --gps are
+    alternatives: the first names a zone, the second gives coordinates.
+    """
+    emit(
+        ctx,
+        entity_control_core.device_tracker_see(
+            make_client(ctx),
+            dev_id=dev_id,
+            mac=mac,
+            host_name=host_name,
+            location_name=location_name,
+            gps=list(gps) if gps else None,
+            gps_accuracy=gps_accuracy,
+            battery=battery,
+        ),
+    )
+
+
+@device_tracker_grp.command("list")
+@click.pass_context
+def device_tracker_list(ctx):
+    """List every device_tracker.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="device_tracker"))
+
+
+# ──────────────────────────────────────────────────────── image-processing
+
+
+@cli.group("image-processing")
+def image_processing_grp():
+    """image_processing.* entities — force a scan now."""
+
+
+@image_processing_grp.command("scan")
+@click.argument("entity_id")
+@click.pass_context
+def image_processing_scan(ctx, entity_id):
+    """Scan now instead of waiting for the poll.
+
+    The result lands on the entity itself — read it back with
+    `state get <entity_id>`.
+    """
+    emit(ctx, entity_control_core.image_processing_scan(make_client(ctx), entity_id))
+
+
+@image_processing_grp.command("list")
+@click.pass_context
+def image_processing_list(ctx):
+    """List every image_processing.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="image_processing"))
 
 
 # ──────────────────────────────────────────────────────── notify
