@@ -351,6 +351,78 @@ class HomeAssistantClient:
             )
         return self._decode(resp)
 
+    def root_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: Any = None,
+        form: dict | None = None,
+        params: dict | None = None,
+        send_auth: bool = True,
+    ) -> tuple[int, Any]:
+        """Call a path that is NOT under `/api/`, and return `(status, body)`.
+
+        `get`/`post`/`delete` all route through `_url()`, which hardcodes the
+        `/api/` prefix. Home Assistant's authentication endpoints do not live
+        there — they are mounted at the server ROOT (`/auth/token`,
+        `/auth/login_flow`, `/.well-known/oauth-authorization-server`) — so
+        they are unreachable through those methods. This is the transport for
+        them.
+
+        THREE THINGS DIFFER FROM EVERY OTHER REQUEST THIS CLIENT MAKES.
+
+        1. THE BODY ENCODING IS NOT UNIFORM ACROSS THE AUTH ENDPOINTS.
+           `/auth/login_flow` is wrapped in `RequestDataValidator` and parses
+           JSON (a form body is answered `400 {"message": "Invalid JSON."}`).
+           `/auth/token` and `/auth/revoke` call `await request.post()`, which
+           only populates from a FORM content type. Since `__init__` sets
+           `Content-Type: application/json` on the session for every request,
+           a form body sent without an override is parsed as an EMPTY
+           MultiDict, and the reply is `400 {"error":
+           "unsupported_grant_type"}` — an error about the grant type when the
+           grant type was correct and the CONTENT TYPE was the problem. Pass
+           `form=` and the header is set to `application/x-www-form-urlencoded`
+           for that one request.
+
+        2. A NON-2xx BODY IS THE ANSWER, NOT A FAILURE. The login flow reports
+           a bad password as `200` with `errors.base = invalid_auth`, and the
+           token endpoint reports every refusal as a 400/403 carrying an OAuth
+           `error` code that names what to do. Raising on status would throw
+           the diagnosis away, so the status is RETURNED and the caller
+           decides. Transport failures (unreachable, timeout) still raise.
+
+        3. AUTH IS OPTIONAL AND SOMETIMES MUST BE ABSENT. These endpoints exist
+           to obtain a token, so they run with none. `send_auth=False` drops
+           the session's `Authorization` header for the request — needed for
+           `/auth/login_flow`, where a stale bearer would otherwise be offered
+           on a call whose entire purpose is that there is no valid one.
+           (Measured: `/auth/token` tolerates a garbage bearer and answers 200
+           regardless, because `requires_auth = False` and the middleware only
+           RECORDS the result. Dropping it is hygiene, not a workaround.)
+        """
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        headers: dict[str, str | None] = {}
+        if form is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        if not send_auth:
+            headers["Authorization"] = None
+        try:
+            resp = self.session.request(
+                method.upper(),
+                url,
+                params=params,
+                json=json_payload,
+                data=form,
+                headers=headers or None,
+                timeout=self.timeout,
+            )
+        except requests.exceptions.ConnectionError as exc:
+            raise self._connection_error(exc) from exc
+        except requests.exceptions.Timeout as exc:
+            raise HomeAssistantError(f"Request timed out after {self.timeout}s: {exc}") from exc
+        return resp.status_code, self._decode(resp)
+
     # ------------------------------------------------------------------ WebSocket
 
     def ws_call(self, msg_type: str, payload: dict | None = None) -> Any:

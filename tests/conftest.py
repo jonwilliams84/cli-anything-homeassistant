@@ -54,6 +54,59 @@ class FakeClient:
         self.download_payload: bytes = b"fake-audio"
         # REST failure recorder — see `set_rest_error`.
         self.rest_errors: dict[tuple[str, str], tuple[int, str]] = {}
+        # Root-path recorder — the `/auth/*` and `/.well-known/*` views, which
+        # live OUTSIDE `/api/` and so never reach `get`/`post`. Keyed by
+        # (VERB, path) and queued as a LIST, because the auth endpoints answer
+        # the same (verb, path) differently on consecutive calls: a login flow
+        # POSTs twice to `/auth/login_flow/{id}` and gets a form step then a
+        # create_entry, and `revoke --verify` POSTs to `/auth/token` expecting
+        # the refresh to now FAIL.
+        self.root_calls: list[dict] = []
+        self.root_responses: dict[tuple[str, str], list[tuple[int, Any]]] = {}
+
+    #: Whatever a core module derives a default client_id from. A real-looking
+    #: origin, since `validate_client_id` is applied to it for real.
+    base_url = "http://fake.local:8123"
+
+    def set_root(self, verb: str, path: str, status: int, body: Any = None) -> None:
+        """Queue one `(status, body)` answer for `verb path` on `root_request`.
+
+        Repeated calls QUEUE rather than overwrite; the last queued answer
+        repeats once the queue is drained.
+        """
+        self.root_responses.setdefault((verb.upper(), path), []).append((status, body))
+
+    def root_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: Any = None,
+        form: dict | None = None,
+        params: dict | None = None,
+        send_auth: bool = True,
+    ) -> tuple[int, Any]:
+        """Shim for the non-`/api/` transport. Returns `(status, body)`.
+
+        `send_auth` and the json/form split are RECORDED, not just accepted:
+        which of the two encodings a call uses is the single most consequential
+        detail on these endpoints (`/auth/login_flow` parses only JSON,
+        `/auth/token` only a form body), so tests assert on it.
+        """
+        self.root_calls.append(
+            {
+                "method": method.upper(),
+                "path": path,
+                "json": json_payload,
+                "form": form,
+                "params": params,
+                "send_auth": send_auth,
+            }
+        )
+        queue = self.root_responses.get((method.upper(), path))
+        if not queue:
+            return 200, {}
+        return queue.pop(0) if len(queue) > 1 else queue[0]
 
     def set_run_events(self, *events: Any) -> None:
         """Queue the events the next `ws_run_events` call streams back."""

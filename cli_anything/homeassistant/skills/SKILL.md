@@ -36,6 +36,9 @@ When you join a session and don't know the install, run these in order:
 # 1. Confirm you can reach HA and the token is valid.
 cli-anything-homeassistant --json system info
 # → {"message": "API running."} or an error.
+#
+# If that says "Unauthorized (401)" and you have NO token, you are not stuck —
+# see "Bootstrapping a token" below. `auth login` needs no existing credential.
 
 # 2. Know who you are.
 cli-anything-homeassistant --json whoami
@@ -115,7 +118,7 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `media`            | `media_source` browse / resolve / remove.                                                      |
 | `camera`           | `camera.*` capabilities / HLS URL / prefs / WebRTC + `snapshot`, `capture`, `proxy-url`.       |
 | `device-automation`| List a device's available triggers/conditions/actions.                                         |
-| `auth`             | `me`, `sign-path`, `tokens` (refresh-token CRUD), `user` (full user admin).                    |
+| `auth`             | `me`, `sign-path`, `tokens` (refresh-token CRUD), `user` (full user admin). **No token yet:** `login` (username+password → token), `providers`, `refresh`, `revoke`, `exchange-code`, `link-user`, `login-flow start/step/abort`, `oauth-metadata`. |
 | `logger`           | Runtime log-level control (REST + WS-per-component).                                           |
 | `search`           | `search/related` — every automation/scene/script/dashboard tied to an item.                    |
 | `group`            | List members of a group entity.                                                                |
@@ -180,6 +183,68 @@ Always start with `--help` if you're unsure:
 `cli-anything-homeassistant <group> [<subcommand>] --help`.
 
 ## Golden-path recipes
+
+### Bootstrapping a token from a username and password (v1.52+)
+
+Every other command needs a token. These do not — they wrap the endpoints Home
+Assistant mounts outside `/api/`, which is how a token is obtained.
+
+```bash
+export HASS_URL=http://homeassistant.local:8123
+unset HASS_TOKEN                        # you genuinely don't need one here
+
+# What this instance accepts. `type`/`id` is the login `handler`.
+cli-anything-homeassistant --json auth providers
+# → {"providers":[{"name":"Home Assistant Local","id":null,"type":"homeassistant"}], ...}
+
+# Username + password → a working access token, saved to the profile (0600).
+cli-anything-homeassistant --json auth login --username agent --password 's3cret' --save
+# → {"access_token","refresh_token","expires_in":1800,"client_id","username","handler","steps","saved_to"}
+
+# THE ACCESS TOKEN LASTS 30 MINUTES. Make it durable:
+cli-anything-homeassistant --json auth tokens create my-agent   # → long-lived token
+cli-anything-homeassistant config set --token "<that token>"
+```
+
+Follow-ups:
+
+```bash
+# New access token later. --client-id MUST be the value `login` reported —
+# HA compares it against the one the refresh token was issued to and answers a
+# bare 400 "invalid_request" on any mismatch (including omitting it).
+cli-anything-homeassistant --json auth refresh --refresh-token "$RT" \
+  --client-id http://homeassistant.local:8123/ --save
+
+# Revoke. /auth/revoke returns 200 for a valid token, a bogus one and a missing
+# one alike (RFC 7009 2.2), so ask for proof.
+cli-anything-homeassistant --json auth revoke --token "$RT" --verify --yes
+# → {"revoked":true,"verified":true,...}
+```
+
+Two-factor, or a provider wanting fields `login` doesn't know:
+
+```bash
+cli-anything-homeassistant --json auth login --username agent --password p --mfa-code 123456
+
+# Or drive it by hand — `data_schema` names the fields for the next step.
+FID=$(cli-anything-homeassistant --json auth login-flow start | jq -r .flow_id)
+cli-anything-homeassistant --json auth login-flow step "$FID" \
+  --field username=agent --field password=p            # → {"type":"create_entry","result":"<code>"}
+cli-anything-homeassistant --json auth exchange-code "<code>"
+cli-anything-homeassistant auth login-flow abort "$FID" # if you bail out midway
+```
+
+**Gotchas that will otherwise cost you an hour.**
+
+- A **wrong password is an HTTP 200** — the rejection is only in
+  `errors.base = "invalid_auth"`. The CLI raises on it; raw `curl` won't.
+- Each failed attempt is **counted toward an IP ban**. Never loop.
+- Authorization codes are **single-use and expire in minutes**.
+- `--client-id` defaults to the HA base URL, and `--redirect-uri` defaults to
+  `--client-id`. Giving them different origins makes HA **fetch the client_id
+  URL over the network** and then reject the login *after* accepting the
+  password.
+- `auth link-user` is the one command here that **does** need an existing token.
 
 ### Find entities by attribute
 

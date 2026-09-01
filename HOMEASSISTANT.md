@@ -26,7 +26,7 @@ more API calls against a running HA instance.
 
 ### Authentication
 
-All requests require a **Long-Lived Access Token** (Bearer):
+Almost every request carries a **Long-Lived Access Token** (Bearer):
 
 1. Start Home Assistant.
 2. Sign in to the UI, open your profile (bottom-left avatar).
@@ -34,7 +34,37 @@ All requests require a **Long-Lived Access Token** (Bearer):
 4. Save it to the harness with `cli-anything-homeassistant config set --token <token>`
    or expose it via the `HASS_TOKEN` environment variable.
 
+**Or get one without the UI (v1.52.0+).** The `auth login` / `providers` /
+`login-flow` / `refresh` / `revoke` / `oauth-metadata` commands need no
+existing token — they wrap the views Home Assistant mounts at the server root,
+outside `/api/`:
+
+```bash
+HASS_URL=http://ha.local:8123 cli-anything-homeassistant \
+  auth login --username agent --save     # password prompted, hidden
+cli-anything-homeassistant auth tokens create my-agent   # make it durable
+```
+
+The access token from `auth login` lasts `expires_in` seconds (1800 by
+default); `auth tokens create` converts it into a long-lived one. See
+`core/auth_login.py` for the encoding and status-code traps — the two halves of
+the flow disagree about body encoding, and a wrong password is an HTTP 200.
+
 ### Reference Endpoints
+
+Root-mounted (NOT under `/api/`, so `client.get()`/`post()` cannot reach them —
+they go through `client.root_request()`):
+
+| Endpoint                                       | Purpose                                  |
+|------------------------------------------------|------------------------------------------|
+| `GET /.well-known/oauth-authorization-server`   | RFC 8414 metadata (no auth)              |
+| `GET /auth/providers`                           | Configured auth providers (no auth)      |
+| `POST /auth/login_flow`                         | Open a login flow — **JSON body**        |
+| `POST|DELETE /auth/login_flow/{flow_id}`        | Advance / abort a flow — **JSON body**   |
+| `POST /auth/token`                              | Code or refresh grant — **FORM body**    |
+| `POST /auth/revoke`                             | Revoke a refresh token — **FORM body**   |
+| `POST /auth/link_user`                          | Link a credential — JSON, **needs auth** |
+
 
 | Endpoint                              | Purpose                                  |
 |---------------------------------------|------------------------------------------|
@@ -159,6 +189,7 @@ stderr and return a non-zero exit code.
 | `media`      | `media_source` browse / resolve / remove                            |
 | `category`   | Category registry CRUD (scope-bound tags for automations/scripts/…) |
 | `auth` (extensions) | `me`, `sign-path`, refresh token CRUD, full user admin       |
+| `auth` (pre-auth)   | `login` (username+password → token, NO existing token needed), `providers`, `refresh`, `revoke`, `exchange-code`, `link-user`, `login-flow start/step/abort`, `oauth-metadata` |
 | `logger` (extensions) | WS-side per-component log levels (`info-ws`/`level-get`/`level-set`) |
 | `system` (extensions) | manifest / analytics / app-credentials / issue / usb-scan / zha-permit-join / hardware-info / log |
 | `light`        | `light.*` ergonomic shortcuts (brightness/kelvin/rgb/effect/transition) |
@@ -253,6 +284,11 @@ is fetched on demand. This means:
 | Transcribe a WAV and act on it        | `assist run --start-stage stt --audio cmd.wav --save-tts reply.mp3` |
 | Switch a satellite's wake word        | `assist-satellite wake-words-set assist_satellite.kitchen okay_nabu` |
 | Browse the media library              | `media browse --json`                                            |
+| Get a token with no token             | `auth login --username agent --save --json`                      |
+| What logins does this instance accept | `auth providers --json`                                          |
+| Renew a short-lived access token      | `auth refresh --refresh-token <rt> --client-id <cid> --save`     |
+| Revoke a refresh token, and prove it  | `auth revoke --token <rt> --verify --yes`                        |
+| Log in to a 2FA account               | `auth login --username u --password p --mfa-code 123456`         |
 | Who am I right now                    | `auth me --json`                                                 |
 | Audit & revoke refresh tokens         | `auth tokens list --json` / `auth tokens delete <id> --yes`      |
 | Sign a one-shot URL for download      | `auth sign-path /api/camera_proxy/camera.front --expires 300`    |

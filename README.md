@@ -20,7 +20,8 @@ pip install -e .
 cli-anything-homeassistant --help
 ```
 
-External dep: a running Home Assistant with a long-lived access token.
+External dep: a running Home Assistant. A long-lived access token if you have
+one; if you don't, `auth login` will get you one (see below).
 
 ## First-time setup
 
@@ -30,6 +31,30 @@ cli-anything-homeassistant \
   --token "<long-lived-token>" \
   config save
 ```
+
+### No token yet? (v1.52+)
+
+`auth login` drives Home Assistant's IndieAuth flow — it needs no existing
+credential, because getting one is the point:
+
+```bash
+# Username + password → access token, written straight into the profile.
+cli-anything-homeassistant --url http://homeassistant.local:8123 \
+  auth login --username agent --save          # prompts for the password, hidden
+
+# That token expires in 30 minutes. Trade it for a durable one:
+cli-anything-homeassistant auth tokens create my-agent
+cli-anything-homeassistant config set --token "<the long-lived token>"
+```
+
+Useful companions: `auth providers` (what this instance accepts, no token
+needed), `auth refresh --refresh-token …` (new access token; pass the SAME
+`--client-id` `login` reported), `auth revoke --token … --verify`, and
+`auth login-flow start/step/abort` when a provider asks for fields `login`
+doesn't know about. `auth login --mfa-code` handles two-factor accounts.
+
+> A wrong password counts toward Home Assistant's IP-ban tracker, so don't
+> script a retry loop around `auth login`.
 
 Profile is stored at `~/.config/cli-anything-homeassistant.json` (mode 0600).
 Per-key env overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL` (`0` to
@@ -62,7 +87,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `updates` | List, install, skip, clear-skipped on `update.*` entities |
 | `logger` | Runtime log-level control without restart |
 | `group` | List members of light/switch/sensor groups |
-| `auth` | Users, long-lived tokens, whoami |
+| `auth` | Users, long-lived tokens, whoami — plus **`login` (username + password → token, no existing token needed)**, `providers`, `refresh`, `revoke`, `exchange-code`, `link-user`, `login-flow start/step/abort`, `oauth-metadata` |
 | `event subscribe` / `state watch` | Live tails — agent-friendly until-state-X loops |
 | `entity-references` | Find every UI-managed automation/template/lovelace that mentions an entity_id |
 | `scene` | List, activate (with `--transition`), apply ad-hoc states, snapshot to a new scene, reload |

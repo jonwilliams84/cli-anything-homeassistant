@@ -144,6 +144,7 @@ from cli_anything.homeassistant.core import core_config as core_config_core
 from cli_anything.homeassistant.core import thread_network as thread_network_core
 from cli_anything.homeassistant.core import otbr as otbr_core
 from cli_anything.homeassistant.core import voice as voice_core
+from cli_anything.homeassistant.core import auth_login as auth_login_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
     HomeAssistantError,
@@ -2826,7 +2827,11 @@ def mqtt_discovery_republish(ctx):
 
 @cli.group()
 def auth():
-    """Auth operations (users, long-lived tokens)."""
+    """Auth operations — log in, users, long-lived tokens.
+
+    `login` / `providers` / `login-flow` need NO existing token: they wrap the
+    endpoints Home Assistant mounts outside `/api/` and are how you get one.
+    """
 
 
 @auth.command("users")
@@ -9598,6 +9603,275 @@ def auth_user_rename_login(ctx, user_id, username):
             username=username,
         ),
     )
+
+
+# ────────────────────────────────────────── auth: getting a token in the first place
+#
+# Everything above needs a token already. These wrap the endpoints Home
+# Assistant mounts OUTSIDE `/api/` — `/auth/login_flow`, `/auth/token`,
+# `/auth/revoke`, `/auth/providers` — which are how a token is obtained.
+# See `core/auth_login.py` for the encoding and status-code traps.
+
+
+@auth.command("providers")
+@click.pass_context
+def auth_providers(ctx):
+    """List the auth providers this instance offers (no token needed).
+
+    The `type`/`id` pair of a provider is the `handler` for `auth login` and
+    `auth login-flow start`. A `trusted_networks` provider is hidden by HA
+    unless THIS host's IP is one it trusts.
+    """
+    emit(ctx, auth_login_core.list_providers(make_client(ctx)))
+
+
+@auth.command("oauth-metadata")
+@click.pass_context
+def auth_oauth_metadata(ctx):
+    """Show the RFC 8414 authorization-server metadata (no token needed)."""
+    emit(ctx, auth_login_core.oauth_metadata(make_client(ctx)))
+
+
+@auth.command("login")
+@click.option("--username", required=True, help="Sign-in username")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    help="Password (prompted for, hidden, if not given)",
+)
+@click.option("--mfa-code", default=None, help="Multi-factor code, if the account needs one")
+@click.option(
+    "--client-id",
+    default=None,
+    help="IndieAuth client id (default: the HA base URL). Keep it — `auth refresh` needs the same value.",
+)
+@click.option(
+    "--redirect-uri",
+    default=None,
+    help="Defaults to --client-id. A different origin makes HA fetch the client_id URL over the network.",
+)
+@click.option("--provider-type", default=None, help="Auth provider type (default: homeassistant)")
+@click.option("--provider-id", default=None, help="Auth provider id, for a provider that has one")
+@click.option(
+    "--save",
+    is_flag=True,
+    default=False,
+    help="Write the access token into the connection profile (mode 0600)",
+)
+@click.pass_context
+def auth_login(
+    ctx,
+    username,
+    password,
+    mfa_code,
+    client_id,
+    redirect_uri,
+    provider_type,
+    provider_id,
+    save,
+):
+    """Exchange a username + password for an access token.
+
+    Drives the whole IndieAuth flow — providers, login flow, credentials,
+    optional MFA, authorization code, token — so this works on an instance you
+    have no token for yet.
+
+    THE TOKEN IS SHORT-LIVED (`expires_in`, 1800s by default). For a durable
+    credential, follow up with `auth tokens create <name>` using it:
+
+        eval "$(cli-anything-homeassistant auth login --username u --password p --save)"
+        cli-anything-homeassistant auth tokens create my-agent
+
+    A wrong password counts toward Home Assistant's IP ban, so do not script a
+    retry loop around this.
+    """
+    result = auth_login_core.login(
+        make_client(ctx),
+        username=username,
+        password=password,
+        mfa_code=mfa_code,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        provider_type=provider_type,
+        provider_id=provider_id,
+    )
+    if save:
+        path = project.save_config(
+            url=ctx.obj["url"],
+            token=result["access_token"],
+            verify_ssl=ctx.obj["verify_ssl"],
+            timeout=ctx.obj["timeout"],
+            config_path=ctx.obj.get("config_path"),
+        )
+        result = {**result, "saved_to": str(path)}
+    emit(ctx, result)
+
+
+@auth.command("refresh")
+@click.option("--refresh-token", required=True, help="Refresh token from `auth login`")
+@click.option(
+    "--client-id",
+    default=None,
+    help="MUST match the client_id the refresh token was issued to (default: the HA base URL)",
+)
+@click.option(
+    "--save", is_flag=True, default=False, help="Write the new access token into the profile"
+)
+@click.pass_context
+def auth_refresh(ctx, refresh_token, client_id, save):
+    """Mint a fresh access token from a refresh token.
+
+    No new refresh token comes back — only `access_token`, `token_type` and
+    `expires_in`. Run twice inside one second the access token is byte-identical,
+    because the JWT's only varying claims are `iat`/`exp`.
+    """
+    result = auth_login_core.refresh_access_token(
+        make_client(ctx), refresh_token=refresh_token, client_id=client_id
+    )
+    if save:
+        path = project.save_config(
+            url=ctx.obj["url"],
+            token=result["access_token"],
+            verify_ssl=ctx.obj["verify_ssl"],
+            timeout=ctx.obj["timeout"],
+            config_path=ctx.obj.get("config_path"),
+        )
+        result = {**result, "saved_to": str(path)}
+    emit(ctx, result)
+
+
+@auth.command("revoke")
+@click.option("--token", "token_value", required=True, help="The REFRESH token to revoke")
+@click.option(
+    "--verify/--no-verify",
+    default=False,
+    help="Prove the revocation by re-trying the refresh grant (it must fail)",
+)
+@click.option("--client-id", default=None, help="client_id the token was issued to (for --verify)")
+@click.confirmation_option(prompt="Revoke this refresh token?")
+@click.pass_context
+def auth_revoke(ctx, token_value, verify, client_id):
+    """Revoke a refresh token via the OAuth revocation endpoint.
+
+    `/auth/revoke` answers 200 with an empty body for a valid token, an invalid
+    token and a missing one alike (RFC 7009 §2.2), so the response alone proves
+    nothing — pass `--verify` to have it confirmed.
+    """
+    emit(
+        ctx,
+        auth_login_core.revoke_token(
+            make_client(ctx), token=token_value, verify=verify, client_id=client_id
+        ),
+    )
+
+
+@auth.command("exchange-code")
+@click.argument("code")
+@click.option("--client-id", default=None, help="Must match the client_id that started the flow")
+@click.pass_context
+def auth_exchange_code(ctx, code, client_id):
+    """Trade an authorization code from `auth login-flow step` for tokens.
+
+    Codes are single-use and expire in minutes.
+    """
+    emit(ctx, auth_login_core.exchange_code(make_client(ctx), code=code, client_id=client_id))
+
+
+@auth.command("link-user")
+@click.argument("code")
+@click.option("--client-id", default=None, help="Must match the client_id that started the flow")
+@click.pass_context
+def auth_link_user(ctx, code, client_id):
+    """Link the credential behind an authorization code to the ACTIVE user.
+
+    The one endpoint in this section that REQUIRES an existing token. The code
+    must come from `auth login-flow start --type link_user`.
+    """
+    emit(ctx, auth_login_core.link_user(make_client(ctx), code=code, client_id=client_id))
+
+
+@auth.group("login-flow")
+def auth_login_flow():
+    """Drive the login flow step by step (for MFA or a non-standard provider).
+
+    `auth login` is the one-shot version and is what you usually want. Use
+    these when a provider asks for fields `auth login` does not know about.
+    """
+
+
+@auth_login_flow.command("start")
+@click.option("--provider-type", default=None, help="Auth provider type (default: homeassistant)")
+@click.option("--provider-id", default=None, help="Auth provider id, for a provider that has one")
+@click.option("--client-id", default=None, help="IndieAuth client id (default: the HA base URL)")
+@click.option("--redirect-uri", default=None, help="Defaults to --client-id")
+@click.option(
+    "--type",
+    "flow_type",
+    type=click.Choice(auth_login_core.FLOW_TYPES),
+    default="authorize",
+    help="'authorize' to log in, 'link_user' to produce a code for `auth link-user`",
+)
+@click.pass_context
+def auth_login_flow_start(ctx, provider_type, provider_id, client_id, redirect_uri, flow_type):
+    """Open a login flow and print its first step.
+
+    `data_schema` in the output names the fields to pass to `step --field`.
+    """
+    client = make_client(ctx)
+    handler = auth_login_core.resolve_handler(
+        client, provider_type=provider_type, provider_id=provider_id
+    )
+    emit(
+        ctx,
+        auth_login_core.start_login_flow(
+            client,
+            handler=handler,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            flow_type=flow_type,
+        ),
+    )
+
+
+@auth_login_flow.command("step")
+@click.argument("flow_id")
+@click.option(
+    "--field",
+    "fields",
+    multiple=True,
+    metavar="NAME=VALUE",
+    help="A field from the step's data_schema. Repeatable (e.g. --field username=x --field password=y).",
+)
+@click.option("--client-id", default=None, help="Must match the client_id that started the flow")
+@click.pass_context
+def auth_login_flow_step(ctx, flow_id, fields, client_id):
+    """Submit one step of a login flow.
+
+    On the final step the output is `type: create_entry` and `result` holds the
+    authorization code — feed it to `auth exchange-code`.
+    """
+    step_data = {}
+    for item in fields:
+        if "=" not in item:
+            raise click.BadParameter(f"--field must be NAME=VALUE, got {item!r}")
+        name, value = item.split("=", 1)
+        step_data[name] = value
+    emit(
+        ctx,
+        auth_login_core.advance_login_flow(
+            make_client(ctx), flow_id=flow_id, step_data=step_data, client_id=client_id
+        ),
+    )
+
+
+@auth_login_flow.command("abort")
+@click.argument("flow_id")
+@click.pass_context
+def auth_login_flow_abort(ctx, flow_id):
+    """Cancel a login flow that was started and never finished."""
+    emit(ctx, auth_login_core.abort_login_flow(make_client(ctx), flow_id=flow_id))
 
 
 # ──────────────────────────────────────────────────────── category
