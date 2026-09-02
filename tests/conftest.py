@@ -63,6 +63,13 @@ class FakeClient:
         # the refresh to now FAIL.
         self.root_calls: list[dict] = []
         self.root_responses: dict[tuple[str, str], list[tuple[int, Any]]] = {}
+        # Sequenced REST answers — see `set_seq`. Needed by anything that
+        # POSTs the SAME path repeatedly and expects different answers: a
+        # config flow submits every step to
+        # `config/config_entries/flow/<flow_id>`, so a single canned response
+        # per path would make a three-step helper flow look like a one-step
+        # one.
+        self.response_queues: dict[tuple[str, str], list[Any]] = {}
 
     #: Whatever a core module derives a default client_id from. A real-looking
     #: origin, since `validate_client_id` is applied to it for real.
@@ -226,6 +233,21 @@ class FakeClient:
     def set(self, verb: str, path: str, response: Any) -> None:
         self.responses[(verb.upper(), path.lstrip("/"))] = response
 
+    def set_seq(self, verb: str, path: str, *responses: Any) -> None:
+        """Queue successive answers for repeated calls to `verb path`.
+
+        The last queued answer repeats once the queue is drained (same rule
+        as `set_root`), so a test only has to enumerate the answers that
+        differ.
+        """
+        self.response_queues.setdefault((verb.upper(), path.lstrip("/")), []).extend(responses)
+
+    def _dequeue(self, verb: str, match_path: str) -> tuple[bool, Any]:
+        queue = self.response_queues.get((verb.upper(), match_path))
+        if not queue:
+            return False, None
+        return True, (queue.pop(0) if len(queue) > 1 else queue[0])
+
     def set_ws(self, msg_type: str, response: Any) -> None:
         self.ws_responses[msg_type] = response
 
@@ -235,6 +257,9 @@ class FakeClient:
         match_path = path.split("?", 1)[0]
         self.calls.append({"verb": "GET", "path": path, "params": params})
         self._maybe_rest_error("GET", path)
+        queued, response = self._dequeue("GET", match_path)
+        if queued:
+            return response
         return self.responses.get(("GET", match_path),
                                   self.responses.get(("GET", path), []))
 
@@ -247,6 +272,9 @@ class FakeClient:
             call["params"] = params
         self.calls.append(call)
         self._maybe_rest_error("POST", path)
+        queued, response = self._dequeue("POST", match_path)
+        if queued:
+            return response
         # If this looks like services/<domain>/<svc>, also record it via the
         # service-call recorder so logger / mqtt tests can inspect.
         if match_path.startswith("services/"):
@@ -269,6 +297,10 @@ class FakeClient:
         if params is not None:
             call["params"] = params
         self.calls.append(call)
+        self._maybe_rest_error("DELETE", path)
+        queued, response = self._dequeue("DELETE", path.split("?", 1)[0])
+        if queued:
+            return response
         return self.responses.get(("DELETE", path), {})
 
     def ws_call(self, msg_type: str, payload: dict | None = None) -> Any:
@@ -482,6 +514,11 @@ def hass_instance() -> Iterator[dict]:
         "  time_zone: Etc/UTC\n"
         "api:\n"
         "auth:\n"
+        # `config:` registers the config_entries / config_flow / device- and
+        # entity-registry WS commands. Without it every `config_entries/flow/*`
+        # call answers `unknown_command` and the whole helper / integration
+        # setup surface is untestable against a real instance.
+        "config:\n"
         "logbook:\n"
         "history:\n"
         "persistent_notification:\n"

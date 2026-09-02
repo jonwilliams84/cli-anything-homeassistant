@@ -34,6 +34,7 @@ from cli_anything.homeassistant.core import config_entries as config_entries_cor
 from cli_anything.homeassistant.core import domain as domain_core
 from cli_anything.homeassistant.core import events as events_core
 from cli_anything.homeassistant.core import helpers as helpers_core
+from cli_anything.homeassistant.core import helper_integrations as helper_integrations_core
 from cli_anything.homeassistant.core import history as history_core
 from cli_anything.homeassistant.core import lovelace as lovelace_core
 from cli_anything.homeassistant.core import areas as areas_core
@@ -5087,6 +5088,810 @@ def helpers_list_all(ctx, no_config_flow):
     """Enumerate every helper across every type, grouped by type."""
     emit(
         ctx, helpers_core.list_all_helpers(make_client(ctx), include_config_flow=not no_config_flow)
+    )
+
+
+# ─────────────────────────────────────────────── helpers — config-flow helpers
+# The other half of the Helpers page: entries built by a config flow
+# (derivative, utility meter, template, group, …). REST-only; see
+# core/helper_integrations.py.
+
+
+def _parse_duration(value: str | None, field: str) -> dict | None:
+    """Parse a CLI duration into HA's duration dict.
+
+    Accepts ``90`` (seconds), ``5m`` / ``2h`` / ``1d`` / ``30s``,
+    ``HH:MM:SS``, or a JSON object like ``{"minutes": 5}``.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(f"{field}: not valid JSON ({exc})")
+        if not isinstance(parsed, dict):
+            raise click.BadParameter(f"{field}: JSON must be an object")
+        return parsed
+    if ":" in text:
+        parts = text.split(":")
+        if len(parts) != 3:
+            raise click.BadParameter(f"{field}: expected HH:MM:SS, got {text!r}")
+        try:
+            hours, minutes, seconds = (int(p) for p in parts)
+        except ValueError:
+            raise click.BadParameter(f"{field}: expected HH:MM:SS, got {text!r}")
+        return {"hours": hours, "minutes": minutes, "seconds": seconds}
+    units = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+    suffix = text[-1:].lower()
+    if suffix in units:
+        try:
+            amount = float(text[:-1])
+        except ValueError:
+            raise click.BadParameter(f"{field}: expected e.g. 30s / 5m / 2h, got {text!r}")
+        return {units[suffix]: int(amount) if amount.is_integer() else amount}
+    try:
+        return {"hours": 0, "minutes": 0, "seconds": float(text) if "." in text else int(text)}
+    except ValueError:
+        raise click.BadParameter(
+            f"{field}: expected seconds, 30s/5m/2h/1d, HH:MM:SS or a JSON object, got {text!r}"
+        )
+
+
+def _resolve_options(f):
+    """--no-resolve / --wait, shared by every `helpers create` subcommand."""
+    f = click.option(
+        "--wait",
+        type=float,
+        default=5.0,
+        show_default=True,
+        help="Seconds to wait for the new entity to appear in the registry",
+    )(f)
+    f = click.option(
+        "--no-resolve",
+        is_flag=True,
+        default=False,
+        help="Skip the entity-registry lookup (just report the entry_id)",
+    )(f)
+    return f
+
+
+@helpers.command("kinds")
+@click.argument("kind", required=False)
+@click.pass_context
+def helpers_kinds(ctx, kind):
+    """List config-flow helper kinds (or describe one).
+
+    These are the helpers `helpers create <kind>` can build: derivative,
+    riemann, utility-meter, min-max, threshold, trend, statistics,
+    history-stats, random, template, group, generic-thermostat,
+    generic-hygrostat, switch-as-x, tod, mold-indicator.
+    """
+    if kind:
+        emit(ctx, helper_integrations_core.describe_kind(kind))
+        return
+    emit(ctx, {"kinds": helper_integrations_core.list_kinds()})
+
+
+@helpers.command("entries")
+@click.option("--domain", default=None, help="Only helpers of this integration domain")
+@click.pass_context
+def helpers_entries(ctx, domain):
+    """List every config-entry-backed helper on this instance."""
+    for entry in helper_integrations_core.list_helpers(make_client(ctx), domain=domain):
+        emit(ctx, entry)
+
+
+@helpers.command("show")
+@click.argument("entry_id")
+@click.pass_context
+def helpers_show(ctx, entry_id):
+    """Show one helper config entry plus the entities it owns."""
+    client = make_client(ctx)
+    entry = helper_integrations_core.get_helper(client, entry_id)
+    if entry is None:
+        _abort(f"no helper config entry with id {entry_id}")
+    emit(
+        ctx,
+        {
+            **entry,
+            "entities": helper_integrations_core.helper_entities(client, entry_id, wait=0),
+        },
+    )
+
+
+@helpers.command("entities")
+@click.argument("entry_id")
+@click.option("--wait", type=float, default=0.0, show_default=True, help="Seconds to poll")
+@click.pass_context
+def helpers_entities_cmd(ctx, entry_id, wait):
+    """List the entity ids a helper config entry produced."""
+    emit(
+        ctx,
+        {
+            "entry_id": entry_id,
+            "entities": helper_integrations_core.helper_entities(
+                make_client(ctx), entry_id, wait=wait
+            ),
+        },
+    )
+
+
+@helpers.command("set-options")
+@click.argument("entry_id")
+@click.option("--set", "set_pairs", multiple=True, help="option as key=value (JSON-aware)")
+@click.option(
+    "--from-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the full options dict from a JSON file",
+)
+@click.pass_context
+def helpers_set_options(ctx, entry_id, set_pairs, from_file):
+    """Run a helper's options flow — the only way to reach fields its
+    CREATE form does not have (trend's sample window, generic_hygrostat's
+    humidity limits, …).
+
+    The options flow REPLACES the stored options, so pass every field you
+    want to keep. Inspect the form first with `config-entry options-init`.
+    """
+    user_input: dict = {}
+    if from_file:
+        user_input.update(json.loads(Path(from_file).read_text()))
+    if set_pairs:
+        user_input.update(parse_kv_pairs(set_pairs))
+    if not user_input:
+        raise click.UsageError("Provide --set key=value and/or --from-file")
+    emit(ctx, helper_integrations_core.set_helper_options(make_client(ctx), entry_id, user_input))
+
+
+@helpers.command("delete")
+@click.argument("entry_id")
+@click.option("--yes", is_flag=True, default=False, help="Skip confirmation")
+@click.pass_context
+def helpers_delete(ctx, entry_id, yes):
+    """Delete a config-flow helper. Destructive — requires --yes."""
+    if not yes:
+        if not click.confirm(f"Delete helper config entry {entry_id}?", default=False):
+            click.echo("aborted")
+            return
+    emit(
+        ctx,
+        {
+            "deleted": entry_id,
+            "result": helper_integrations_core.delete_helper(make_client(ctx), entry_id),
+        },
+    )
+
+
+@helpers.group("create")
+def helpers_create():
+    """Create a config-flow helper (derivative, utility meter, group, …).
+
+    Run `helpers kinds` for the catalogue. Every subcommand walks the real
+    config flow, then reports the new entry_id and the entity it produced.
+    """
+
+
+@helpers_create.command("derivative")
+@click.option("--name", required=True, help="Display name (drives the entity slug)")
+@click.option("--source", required=True, help="Source sensor entity_id")
+@click.option(
+    "--time-window",
+    default=None,
+    help="Smoothing window (e.g. 5m, 00:05:00). Default: none (instantaneous)",
+)
+@click.option(
+    "--unit-time",
+    default="h",
+    show_default=True,
+    type=click.Choice(["s", "min", "h", "d"]),
+    help="Denominator of the rate",
+)
+@click.option("--round", "round_digits", type=int, default=2, show_default=True)
+@click.option("--unit-prefix", default=None, help="n|µ|m|k|M|G|T|P — scales the result")
+@_resolve_options
+@click.pass_context
+def helpers_create_derivative(
+    ctx, name, source, time_window, unit_time, round_digits, unit_prefix, no_resolve, wait
+):
+    """Derivative sensor — the rate of change of a source sensor."""
+    emit(
+        ctx,
+        helper_integrations_core.create_derivative(
+            make_client(ctx),
+            name=name,
+            source=source,
+            time_window=_parse_duration(time_window, "--time-window"),
+            unit_time=unit_time,
+            round_digits=round_digits,
+            unit_prefix=unit_prefix,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("riemann")
+@click.option("--name", required=True)
+@click.option("--source", required=True, help="Source sensor entity_id (e.g. a power sensor)")
+@click.option(
+    "--method",
+    default="trapezoidal",
+    show_default=True,
+    type=click.Choice(["trapezoidal", "left", "right"]),
+)
+@click.option(
+    "--unit-time", default="h", show_default=True, type=click.Choice(["s", "min", "h", "d"])
+)
+@click.option("--round", "round_digits", type=int, default=2, show_default=True)
+@click.option("--unit-prefix", default=None, help="k|M|G|T")
+@click.option("--max-sub-interval", default=None, help="Force a sample at least this often")
+@_resolve_options
+@click.pass_context
+def helpers_create_riemann(
+    ctx, name, source, method, unit_time, round_digits, unit_prefix, max_sub_interval,
+    no_resolve, wait,
+):
+    """Riemann-sum integral sensor (HA's `integration` helper) — power → energy."""
+    emit(
+        ctx,
+        helper_integrations_core.create_riemann(
+            make_client(ctx),
+            name=name,
+            source=source,
+            method=method,
+            unit_time=unit_time,
+            round_digits=round_digits,
+            unit_prefix=unit_prefix,
+            max_sub_interval=_parse_duration(max_sub_interval, "--max-sub-interval"),
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("utility-meter")
+@click.option("--name", required=True)
+@click.option("--source", required=True, help="Source sensor entity_id (a total, e.g. energy)")
+@click.option(
+    "--cycle",
+    default="none",
+    show_default=True,
+    type=click.Choice(
+        [
+            "none",
+            "quarter-hourly",
+            "hourly",
+            "daily",
+            "weekly",
+            "monthly",
+            "bimonthly",
+            "quarterly",
+            "yearly",
+        ]
+    ),
+    help="When the meter resets",
+)
+@click.option("--offset", type=int, default=0, show_default=True, help="Days offset of the cycle")
+@click.option("--tariff", "tariffs", multiple=True, help="Tariff name (repeatable)")
+@click.option("--net-consumption/--no-net-consumption", default=False, show_default=True)
+@click.option("--delta-values/--no-delta-values", default=False, show_default=True)
+@click.option("--periodically-resetting/--no-periodically-resetting", default=True, show_default=True)
+@click.option("--always-available/--no-always-available", "always_available", default=None)
+@_resolve_options
+@click.pass_context
+def helpers_create_utility_meter(
+    ctx, name, source, cycle, offset, tariffs, net_consumption, delta_values,
+    periodically_resetting, always_available, no_resolve, wait,
+):
+    """Utility meter — a totaliser that resets on a cycle, with tariffs."""
+    emit(
+        ctx,
+        helper_integrations_core.create_utility_meter(
+            make_client(ctx),
+            name=name,
+            source=source,
+            cycle=cycle,
+            offset=offset,
+            tariffs=list(tariffs),
+            net_consumption=net_consumption,
+            delta_values=delta_values,
+            periodically_resetting=periodically_resetting,
+            always_available=always_available,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("min-max")
+@click.option("--name", required=True)
+@click.option("--entity", "entities", multiple=True, required=True, help="Source entity (repeatable)")
+@click.option(
+    "--type",
+    "combine_type",
+    default="mean",
+    show_default=True,
+    type=click.Choice(["min", "max", "mean", "median", "last", "range", "sum"]),
+)
+@click.option("--round-digits", type=int, default=2, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_min_max(ctx, name, entities, combine_type, round_digits, no_resolve, wait):
+    """Min/max/mean/median/last/range/sum across several sensors."""
+    emit(
+        ctx,
+        helper_integrations_core.create_min_max(
+            make_client(ctx),
+            name=name,
+            entity_ids=list(entities),
+            type=combine_type,
+            round_digits=round_digits,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("threshold")
+@click.option("--name", required=True)
+@click.option("--entity-id", required=True, help="Source sensor entity_id")
+@click.option("--lower", type=float, default=None, help="On below this value")
+@click.option("--upper", type=float, default=None, help="On above this value")
+@click.option("--hysteresis", type=float, default=0.0, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_threshold(ctx, name, entity_id, lower, upper, hysteresis, no_resolve, wait):
+    """Threshold binary sensor — on while a source is past a bound."""
+    emit(
+        ctx,
+        helper_integrations_core.create_threshold(
+            make_client(ctx),
+            name=name,
+            entity_id=entity_id,
+            lower=lower,
+            upper=upper,
+            hysteresis=hysteresis,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("trend")
+@click.option("--name", required=True)
+@click.option("--entity-id", required=True, help="Source sensor entity_id")
+@click.option("--attribute", default=None, help="Track this attribute instead of the state")
+@click.option("--invert/--no-invert", default=False, show_default=True, help="On when FALLING")
+@click.option("--max-samples", type=int, default=None, help="Options-flow field (applied after create)")
+@click.option("--min-samples", type=int, default=None, help="Options-flow field")
+@click.option("--min-gradient", type=float, default=None, help="Options-flow field")
+@click.option("--sample-duration", type=int, default=None, help="Options-flow field (seconds)")
+@_resolve_options
+@click.pass_context
+def helpers_create_trend(
+    ctx, name, entity_id, attribute, invert, max_samples, min_samples, min_gradient,
+    sample_duration, no_resolve, wait,
+):
+    """Trend binary sensor — on while the source is rising.
+
+    HA's create form only carries --attribute/--invert; the sample-window
+    options are applied through the options flow right after creation.
+    """
+    emit(
+        ctx,
+        helper_integrations_core.create_trend(
+            make_client(ctx),
+            name=name,
+            entity_id=entity_id,
+            attribute=attribute,
+            invert=invert,
+            max_samples=max_samples,
+            min_samples=min_samples,
+            min_gradient=min_gradient,
+            sample_duration=sample_duration,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("statistics")
+@click.option("--name", required=True)
+@click.option("--entity-id", required=True, help="Source entity_id")
+@click.option(
+    "--characteristic",
+    "state_characteristic",
+    default="mean",
+    show_default=True,
+    help="mean / median / count / change / … (valid set depends on the source's domain)",
+)
+@click.option("--sampling-size", type=int, default=20, show_default=True)
+@click.option("--max-age", default=None, help="Only keep samples newer than this (e.g. 24h)")
+@click.option("--keep-last-sample/--no-keep-last-sample", default=None)
+@click.option("--percentile", type=int, default=None, help="Only for --characteristic percentile")
+@click.option("--precision", type=int, default=2, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_statistics(
+    ctx, name, entity_id, state_characteristic, sampling_size, max_age, keep_last_sample,
+    percentile, precision, no_resolve, wait,
+):
+    """Statistics sensor — a rolling characteristic over a source's samples."""
+    emit(
+        ctx,
+        helper_integrations_core.create_statistics(
+            make_client(ctx),
+            name=name,
+            entity_id=entity_id,
+            state_characteristic=state_characteristic,
+            sampling_size=sampling_size,
+            max_age=_parse_duration(max_age, "--max-age"),
+            keep_last_sample=keep_last_sample,
+            percentile=percentile,
+            precision=precision,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("history-stats")
+@click.option("--name", required=True)
+@click.option("--entity-id", required=True, help="Source entity_id")
+@click.option("--state", "states", multiple=True, required=True, help="State to count (repeatable)")
+@click.option(
+    "--type", "stat_type", default="time", show_default=True,
+    type=click.Choice(["time", "ratio", "count"]),
+)
+@click.option("--start", default=None, help="Template for the period start (e.g. '{{ today_at() }}')")
+@click.option("--end", default=None, help="Template for the period end")
+@click.option("--duration", default=None, help="Period length (e.g. 24h) — give exactly two bounds")
+@_resolve_options
+@click.pass_context
+def helpers_create_history_stats(
+    ctx, name, entity_id, states, stat_type, start, end, duration, no_resolve, wait
+):
+    """History-stats sensor — time/ratio/count a source spent in a state."""
+    emit(
+        ctx,
+        helper_integrations_core.create_history_stats(
+            make_client(ctx),
+            name=name,
+            entity_id=entity_id,
+            state=list(states),
+            type=stat_type,
+            start=start,
+            end=end,
+            duration=_parse_duration(duration, "--duration"),
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("random")
+@click.option("--name", required=True)
+@click.option(
+    "--variant", default="sensor", show_default=True, type=click.Choice(["sensor", "binary_sensor"])
+)
+@click.option("--minimum", type=int, default=None, help="sensor variant only")
+@click.option("--maximum", type=int, default=None, help="sensor variant only")
+@click.option("--device-class", default=None)
+@click.option("--unit-of-measurement", default=None, help="sensor variant only")
+@_resolve_options
+@click.pass_context
+def helpers_create_random(
+    ctx, name, variant, minimum, maximum, device_class, unit_of_measurement, no_resolve, wait
+):
+    """Random sensor / binary_sensor — useful for testing dashboards."""
+    emit(
+        ctx,
+        helper_integrations_core.create_random(
+            make_client(ctx),
+            name=name,
+            variant=variant,
+            minimum=minimum,
+            maximum=maximum,
+            device_class=device_class,
+            unit_of_measurement=unit_of_measurement,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("template")
+@click.option("--name", required=True)
+@click.option(
+    "--variant",
+    default="sensor",
+    show_default=True,
+    type=click.Choice(
+        [
+            "alarm_control_panel",
+            "binary_sensor",
+            "button",
+            "image",
+            "number",
+            "select",
+            "sensor",
+            "switch",
+        ]
+    ),
+)
+@click.option("--state", default=None, help="Jinja template for the state")
+@click.option("--unit-of-measurement", default=None)
+@click.option("--device-class", default=None)
+@click.option("--state-class", default=None)
+@click.option(
+    "--set", "set_pairs", multiple=True,
+    help="Any other field this variant's form offers, as key=value (JSON-aware)",
+)
+@_resolve_options
+@click.pass_context
+def helpers_create_template(
+    ctx, name, variant, state, unit_of_measurement, device_class, state_class, set_pairs,
+    no_resolve, wait,
+):
+    """Template helper — a template-backed entity of any supported type."""
+    emit(
+        ctx,
+        helper_integrations_core.create_template(
+            make_client(ctx),
+            name=name,
+            variant=variant,
+            state=state,
+            unit_of_measurement=unit_of_measurement,
+            device_class=device_class,
+            state_class=state_class,
+            fields=parse_kv_pairs(set_pairs) if set_pairs else None,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("group")
+@click.option("--name", required=True)
+@click.option("--entity", "entities", multiple=True, required=True, help="Member entity (repeatable)")
+@click.option(
+    "--variant",
+    default="light",
+    show_default=True,
+    type=click.Choice(
+        [
+            "binary_sensor",
+            "button",
+            "cover",
+            "event",
+            "fan",
+            "light",
+            "lock",
+            "media_player",
+            "notify",
+            "sensor",
+            "switch",
+        ]
+    ),
+)
+@click.option("--hide-members/--show-members", default=False, show_default=True)
+@click.option("--all/--any", "require_all", default=None, help="binary_sensor only: on when ALL are on")
+@click.option("--type", "aggregation", default=None, help="sensor only: mean|sum|min|max|…")
+@_resolve_options
+@click.pass_context
+def helpers_create_group(
+    ctx, name, entities, variant, hide_members, require_all, aggregation, no_resolve, wait
+):
+    """Group helper — one entity that fronts several of the same domain."""
+    emit(
+        ctx,
+        helper_integrations_core.create_group(
+            make_client(ctx),
+            name=name,
+            entities=list(entities),
+            variant=variant,
+            hide_members=hide_members,
+            all=require_all,
+            type=aggregation,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("generic-thermostat")
+@click.option("--name", required=True)
+@click.option("--heater", required=True, help="switch.* that drives the heater (or A/C)")
+@click.option("--target-sensor", required=True, help="temperature sensor entity_id")
+@click.option("--ac-mode/--heat-mode", default=False, show_default=True)
+@click.option("--cold-tolerance", type=float, default=0.3, show_default=True)
+@click.option("--hot-tolerance", type=float, default=0.3, show_default=True)
+@click.option("--min-cycle-duration", default=None, help="Minimum on/off time (e.g. 5m)")
+@click.option("--min-temp", type=float, default=None)
+@click.option("--max-temp", type=float, default=None)
+@click.option(
+    "--preset", "presets", multiple=True,
+    help="Preset temperature as name=value (away, comfort, eco, home, sleep, activity)",
+)
+@_resolve_options
+@click.pass_context
+def helpers_create_generic_thermostat(
+    ctx, name, heater, target_sensor, ac_mode, cold_tolerance, hot_tolerance,
+    min_cycle_duration, min_temp, max_temp, presets, no_resolve, wait,
+):
+    """Generic thermostat — switch + temperature sensor → a climate entity."""
+    preset_input = {}
+    for key, value in (parse_kv_pairs(presets) if presets else {}).items():
+        preset_input[key if key.endswith("_temp") else f"{key}_temp"] = value
+    emit(
+        ctx,
+        helper_integrations_core.create_generic_thermostat(
+            make_client(ctx),
+            name=name,
+            heater=heater,
+            target_sensor=target_sensor,
+            ac_mode=ac_mode,
+            cold_tolerance=cold_tolerance,
+            hot_tolerance=hot_tolerance,
+            min_cycle_duration=_parse_duration(min_cycle_duration, "--min-cycle-duration"),
+            min_temp=min_temp,
+            max_temp=max_temp,
+            presets=preset_input or None,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("generic-hygrostat")
+@click.option("--name", required=True)
+@click.option("--humidifier", required=True, help="switch.* that drives the humidifier")
+@click.option("--target-sensor", required=True, help="humidity sensor entity_id")
+@click.option(
+    "--device-class", default="humidifier", show_default=True,
+    type=click.Choice(["humidifier", "dehumidifier"]),
+)
+@click.option("--dry-tolerance", type=float, default=3.0, show_default=True)
+@click.option("--wet-tolerance", type=float, default=3.0, show_default=True)
+@click.option("--min-cycle-duration", default=None, help="Minimum on/off time (e.g. 5m)")
+@_resolve_options
+@click.pass_context
+def helpers_create_generic_hygrostat(
+    ctx, name, humidifier, target_sensor, device_class, dry_tolerance, wet_tolerance,
+    min_cycle_duration, no_resolve, wait,
+):
+    """Generic hygrostat — switch + humidity sensor → a humidifier entity.
+
+    The humidity limits are options-flow only: follow up with
+    `helpers set-options <entry_id> --set target_humidity=55`.
+    """
+    emit(
+        ctx,
+        helper_integrations_core.create_generic_hygrostat(
+            make_client(ctx),
+            name=name,
+            humidifier=humidifier,
+            target_sensor=target_sensor,
+            device_class=device_class,
+            dry_tolerance=dry_tolerance,
+            wet_tolerance=wet_tolerance,
+            min_cycle_duration=_parse_duration(min_cycle_duration, "--min-cycle-duration"),
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("switch-as-x")
+@click.option("--entity-id", required=True, help="The switch.* entity to re-expose")
+@click.option(
+    "--target-domain",
+    required=True,
+    type=click.Choice(["cover", "fan", "light", "lock", "siren", "valve"]),
+)
+@click.option("--invert/--no-invert", default=False, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_switch_as_x(ctx, entity_id, target_domain, invert, no_resolve, wait):
+    """Re-expose a switch as a light / cover / lock / fan / siren / valve.
+
+    There is no --name: the new entity inherits the switch's name and object
+    id (and the switch itself is hidden).
+    """
+    emit(
+        ctx,
+        helper_integrations_core.create_switch_as_x(
+            make_client(ctx),
+            entity_id=entity_id,
+            target_domain=target_domain,
+            invert=invert,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("tod")
+@click.option("--name", required=True)
+@click.option("--after", "after_time", required=True, help="HH:MM:SS the sensor turns on")
+@click.option("--before", "before_time", required=True, help="HH:MM:SS the sensor turns off")
+@_resolve_options
+@click.pass_context
+def helpers_create_tod(ctx, name, after_time, before_time, no_resolve, wait):
+    """Times-of-day binary sensor — on between two times."""
+    emit(
+        ctx,
+        helper_integrations_core.create_tod(
+            make_client(ctx),
+            name=name,
+            after_time=after_time,
+            before_time=before_time,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("mold-indicator")
+@click.option("--name", required=True)
+@click.option("--indoor-temp-sensor", required=True)
+@click.option("--indoor-humidity-sensor", required=True)
+@click.option("--outdoor-temp-sensor", required=True)
+@click.option("--calibration-factor", type=float, default=2.0, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_mold_indicator(
+    ctx, name, indoor_temp_sensor, indoor_humidity_sensor, outdoor_temp_sensor,
+    calibration_factor, no_resolve, wait,
+):
+    """Mould indicator — estimated wall-surface humidity / mould risk."""
+    emit(
+        ctx,
+        helper_integrations_core.create_mold_indicator(
+            make_client(ctx),
+            name=name,
+            indoor_temp_sensor=indoor_temp_sensor,
+            indoor_humidity_sensor=indoor_humidity_sensor,
+            outdoor_temp_sensor=outdoor_temp_sensor,
+            calibration_factor=calibration_factor,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("raw")
+@click.option("--domain", required=True, help="Helper integration domain (e.g. filter)")
+@click.option(
+    "--step", "steps", multiple=True, required=True,
+    help="JSON user_input for one step, in order (repeatable). A menu step is "
+         "'{\"next_step_id\": \"sensor\"}'",
+)
+@_resolve_options
+@click.pass_context
+def helpers_create_raw(ctx, domain, steps, no_resolve, wait):
+    """Drive any helper config flow with explicit per-step JSON.
+
+    The escape hatch for helpers this harness has no typed command for —
+    inspect the form first with `config-flow init <domain>`.
+    """
+    parsed = []
+    for raw in steps:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(f"--step is not valid JSON: {exc}")
+        if not isinstance(value, dict):
+            raise click.BadParameter("each --step must be a JSON object")
+        parsed.append(value)
+    emit(
+        ctx,
+        helper_integrations_core.create_raw(
+            make_client(ctx), domain, parsed, resolve=not no_resolve, wait=wait
+        ),
     )
 
 
