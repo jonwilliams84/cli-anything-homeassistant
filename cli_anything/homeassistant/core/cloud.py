@@ -81,6 +81,7 @@ PREF_KEYS = (
     "tts_default_voice",
 )
 
+
 def _note(logged_in: bool, subject: str) -> str:
     if logged_in:
         return f"{subject} as reported by Home Assistant Cloud."
@@ -415,9 +416,7 @@ def google_entities(client) -> dict:
     act, and a Google command against them silently fails when no secure-
     devices PIN is set. Pair it with `cloud google set-2fa`.
     """
-    return _read(
-        client, "cloud/google_assistant/entities", "entities", "Google Assistant entities"
-    )
+    return _read(client, "cloud/google_assistant/entities", "entities", "Google Assistant entities")
 
 
 def google_entity(client, entity_id: str) -> dict:
@@ -425,9 +424,7 @@ def google_entity(client, entity_id: str) -> dict:
     if not entity_id or "." not in entity_id:
         raise ValueError(f"Not an entity_id: {entity_id!r}. Expected e.g. `lock.front_door`.")
     try:
-        result = client.ws_call(
-            "cloud/google_assistant/entities/get", {"entity_id": entity_id}
-        )
+        result = client.ws_call("cloud/google_assistant/entities/get", {"entity_id": entity_id})
     except HomeAssistantError as exc:
         code = getattr(exc, "code", None)
         if code == NOT_LOGGED_IN:
@@ -446,9 +443,7 @@ def google_entity(client, entity_id: str) -> dict:
         "logged_in": True,
         "entity_id": entity_id,
         "entity": result,
-        "note": (
-            "`might_2fa` traits ask for the secure-devices PIN before they act."
-        ),
+        "note": ("`might_2fa` traits ask for the secure-devices PIN before they act."),
     }
 
 
@@ -505,7 +500,9 @@ def tts_info(client, *, language: Optional[str] = None) -> dict:
         wanted = language.strip()
         if wanted not in by_language:
             close = sorted(
-                lang for lang in by_language if lang.lower().startswith(wanted.split("-")[0].lower())
+                lang
+                for lang in by_language
+                if lang.lower().startswith(wanted.split("-")[0].lower())
             )
             raise ValueError(
                 f"No cloud TTS voices for language {wanted!r}."

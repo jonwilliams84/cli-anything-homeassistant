@@ -334,8 +334,7 @@ def _explain(exc: HomeAssistantError, domain: str, step_id: str | None) -> HomeA
     where = f"{domain} step {step_id!r}" if step_id else domain
     if "Invalid handler specified" in detail:
         detail += (
-            f" (this HA build has no config flow for {domain!r}; "
-            "check `config-flow handlers`)"
+            f" (this HA build has no config flow for {domain!r}; check `config-flow handlers`)"
         )
     return HomeAssistantError(f"{where} rejected: {detail or text}")
 
@@ -402,7 +401,9 @@ def walk_flow(client, domain: str, steps: list[dict], *, validate: bool = True) 
     return form
 
 
-def helper_entities(client, entry_id: str, *, wait: float = 5.0, interval: float = 0.25) -> list[str]:
+def helper_entities(
+    client, entry_id: str, *, wait: float = 5.0, interval: float = 0.25
+) -> list[str]:
     """Entity ids the config entry `entry_id` produced.
 
     A helper's entity is registered a moment after `create_entry` returns, so
@@ -754,8 +755,7 @@ def create_history_stats(
     given = {k: v for k, v in bounds.items() if v is not None}
     if len(given) != 2:
         raise ValueError(
-            "provide exactly two of start/end/duration "
-            f"(got {', '.join(sorted(given)) or 'none'})"
+            f"provide exactly two of start/end/duration (got {', '.join(sorted(given)) or 'none'})"
         )
     if "duration" in given:
         given["duration"] = _duration(given["duration"], "duration")
@@ -801,9 +801,7 @@ def create_random(
         step["device_class"] = device_class
     if minimum is not None and maximum is not None and maximum <= minimum:
         raise ValueError("maximum must be greater than minimum")
-    return _create(
-        client, "random", [{"next_step_id": variant}, step], resolve=resolve, wait=wait
-    )
+    return _create(client, "random", [{"next_step_id": variant}, step], resolve=resolve, wait=wait)
 
 
 def create_template(
@@ -881,9 +879,7 @@ def create_group(
         step["all"] = all
     if type is not None:
         step["type"] = type
-    return _create(
-        client, "group", [{"next_step_id": variant}, step], resolve=resolve, wait=wait
-    )
+    return _create(client, "group", [{"next_step_id": variant}, step], resolve=resolve, wait=wait)
 
 
 def create_generic_thermostat(

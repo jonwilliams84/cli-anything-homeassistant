@@ -2721,9 +2721,7 @@ def group_expand(ctx, entity_id, no_state):
     help="REPLACE the membership with these (repeatable)",
 )
 @click.option("--add", "add_entities", multiple=True, help="Add a member (repeatable)")
-@click.option(
-    "--remove", "remove_entities", multiple=True, help="Remove a member (repeatable)"
-)
+@click.option("--remove", "remove_entities", multiple=True, help="Remove a member (repeatable)")
 @click.option(
     "--all/--any",
     "all_must_be_on",
@@ -5332,8 +5330,16 @@ def helpers_create_derivative(
 @_resolve_options
 @click.pass_context
 def helpers_create_riemann(
-    ctx, name, source, method, unit_time, round_digits, unit_prefix, max_sub_interval,
-    no_resolve, wait,
+    ctx,
+    name,
+    source,
+    method,
+    unit_time,
+    round_digits,
+    unit_prefix,
+    max_sub_interval,
+    no_resolve,
+    wait,
 ):
     """Riemann-sum integral sensor (HA's `integration` helper) — power → energy."""
     emit(
@@ -5379,13 +5385,25 @@ def helpers_create_riemann(
 @click.option("--tariff", "tariffs", multiple=True, help="Tariff name (repeatable)")
 @click.option("--net-consumption/--no-net-consumption", default=False, show_default=True)
 @click.option("--delta-values/--no-delta-values", default=False, show_default=True)
-@click.option("--periodically-resetting/--no-periodically-resetting", default=True, show_default=True)
+@click.option(
+    "--periodically-resetting/--no-periodically-resetting", default=True, show_default=True
+)
 @click.option("--always-available/--no-always-available", "always_available", default=None)
 @_resolve_options
 @click.pass_context
 def helpers_create_utility_meter(
-    ctx, name, source, cycle, offset, tariffs, net_consumption, delta_values,
-    periodically_resetting, always_available, no_resolve, wait,
+    ctx,
+    name,
+    source,
+    cycle,
+    offset,
+    tariffs,
+    net_consumption,
+    delta_values,
+    periodically_resetting,
+    always_available,
+    no_resolve,
+    wait,
 ):
     """Utility meter — a totaliser that resets on a cycle, with tariffs."""
     emit(
@@ -5409,7 +5427,9 @@ def helpers_create_utility_meter(
 
 @helpers_create.command("min-max")
 @click.option("--name", required=True)
-@click.option("--entity", "entities", multiple=True, required=True, help="Source entity (repeatable)")
+@click.option(
+    "--entity", "entities", multiple=True, required=True, help="Source entity (repeatable)"
+)
 @click.option(
     "--type",
     "combine_type",
@@ -5466,15 +5486,26 @@ def helpers_create_threshold(ctx, name, entity_id, lower, upper, hysteresis, no_
 @click.option("--entity-id", required=True, help="Source sensor entity_id")
 @click.option("--attribute", default=None, help="Track this attribute instead of the state")
 @click.option("--invert/--no-invert", default=False, show_default=True, help="On when FALLING")
-@click.option("--max-samples", type=int, default=None, help="Options-flow field (applied after create)")
+@click.option(
+    "--max-samples", type=int, default=None, help="Options-flow field (applied after create)"
+)
 @click.option("--min-samples", type=int, default=None, help="Options-flow field")
 @click.option("--min-gradient", type=float, default=None, help="Options-flow field")
 @click.option("--sample-duration", type=int, default=None, help="Options-flow field (seconds)")
 @_resolve_options
 @click.pass_context
 def helpers_create_trend(
-    ctx, name, entity_id, attribute, invert, max_samples, min_samples, min_gradient,
-    sample_duration, no_resolve, wait,
+    ctx,
+    name,
+    entity_id,
+    attribute,
+    invert,
+    max_samples,
+    min_samples,
+    min_gradient,
+    sample_duration,
+    no_resolve,
+    wait,
 ):
     """Trend binary sensor — on while the source is rising.
 
@@ -5517,8 +5548,17 @@ def helpers_create_trend(
 @_resolve_options
 @click.pass_context
 def helpers_create_statistics(
-    ctx, name, entity_id, state_characteristic, sampling_size, max_age, keep_last_sample,
-    percentile, precision, no_resolve, wait,
+    ctx,
+    name,
+    entity_id,
+    state_characteristic,
+    sampling_size,
+    max_age,
+    keep_last_sample,
+    percentile,
+    precision,
+    no_resolve,
+    wait,
 ):
     """Statistics sensor — a rolling characteristic over a source's samples."""
     emit(
@@ -5544,10 +5584,15 @@ def helpers_create_statistics(
 @click.option("--entity-id", required=True, help="Source entity_id")
 @click.option("--state", "states", multiple=True, required=True, help="State to count (repeatable)")
 @click.option(
-    "--type", "stat_type", default="time", show_default=True,
+    "--type",
+    "stat_type",
+    default="time",
+    show_default=True,
     type=click.Choice(["time", "ratio", "count"]),
 )
-@click.option("--start", default=None, help="Template for the period start (e.g. '{{ today_at() }}')")
+@click.option(
+    "--start", default=None, help="Template for the period start (e.g. '{{ today_at() }}')"
+)
 @click.option("--end", default=None, help="Template for the period end")
 @click.option("--duration", default=None, help="Period length (e.g. 24h) — give exactly two bounds")
 @_resolve_options
@@ -5628,14 +5673,24 @@ def helpers_create_random(
 @click.option("--device-class", default=None)
 @click.option("--state-class", default=None)
 @click.option(
-    "--set", "set_pairs", multiple=True,
+    "--set",
+    "set_pairs",
+    multiple=True,
     help="Any other field this variant's form offers, as key=value (JSON-aware)",
 )
 @_resolve_options
 @click.pass_context
 def helpers_create_template(
-    ctx, name, variant, state, unit_of_measurement, device_class, state_class, set_pairs,
-    no_resolve, wait,
+    ctx,
+    name,
+    variant,
+    state,
+    unit_of_measurement,
+    device_class,
+    state_class,
+    set_pairs,
+    no_resolve,
+    wait,
 ):
     """Template helper — a template-backed entity of any supported type."""
     emit(
@@ -5657,7 +5712,9 @@ def helpers_create_template(
 
 @helpers_create.command("group")
 @click.option("--name", required=True)
-@click.option("--entity", "entities", multiple=True, required=True, help="Member entity (repeatable)")
+@click.option(
+    "--entity", "entities", multiple=True, required=True, help="Member entity (repeatable)"
+)
 @click.option(
     "--variant",
     default="light",
@@ -5679,7 +5736,9 @@ def helpers_create_template(
     ),
 )
 @click.option("--hide-members/--show-members", default=False, show_default=True)
-@click.option("--all/--any", "require_all", default=None, help="binary_sensor only: on when ALL are on")
+@click.option(
+    "--all/--any", "require_all", default=None, help="binary_sensor only: on when ALL are on"
+)
 @click.option("--type", "aggregation", default=None, help="sensor only: mean|sum|min|max|…")
 @_resolve_options
 @click.pass_context
@@ -5714,14 +5773,27 @@ def helpers_create_group(
 @click.option("--min-temp", type=float, default=None)
 @click.option("--max-temp", type=float, default=None)
 @click.option(
-    "--preset", "presets", multiple=True,
+    "--preset",
+    "presets",
+    multiple=True,
     help="Preset temperature as name=value (away, comfort, eco, home, sleep, activity)",
 )
 @_resolve_options
 @click.pass_context
 def helpers_create_generic_thermostat(
-    ctx, name, heater, target_sensor, ac_mode, cold_tolerance, hot_tolerance,
-    min_cycle_duration, min_temp, max_temp, presets, no_resolve, wait,
+    ctx,
+    name,
+    heater,
+    target_sensor,
+    ac_mode,
+    cold_tolerance,
+    hot_tolerance,
+    min_cycle_duration,
+    min_temp,
+    max_temp,
+    presets,
+    no_resolve,
+    wait,
 ):
     """Generic thermostat — switch + temperature sensor → a climate entity."""
     preset_input = {}
@@ -5752,7 +5824,9 @@ def helpers_create_generic_thermostat(
 @click.option("--humidifier", required=True, help="switch.* that drives the humidifier")
 @click.option("--target-sensor", required=True, help="humidity sensor entity_id")
 @click.option(
-    "--device-class", default="humidifier", show_default=True,
+    "--device-class",
+    default="humidifier",
+    show_default=True,
     type=click.Choice(["humidifier", "dehumidifier"]),
 )
 @click.option("--dry-tolerance", type=float, default=3.0, show_default=True)
@@ -5761,8 +5835,16 @@ def helpers_create_generic_thermostat(
 @_resolve_options
 @click.pass_context
 def helpers_create_generic_hygrostat(
-    ctx, name, humidifier, target_sensor, device_class, dry_tolerance, wet_tolerance,
-    min_cycle_duration, no_resolve, wait,
+    ctx,
+    name,
+    humidifier,
+    target_sensor,
+    device_class,
+    dry_tolerance,
+    wet_tolerance,
+    min_cycle_duration,
+    no_resolve,
+    wait,
 ):
     """Generic hygrostat — switch + humidity sensor → a humidifier entity.
 
@@ -5845,8 +5927,14 @@ def helpers_create_tod(ctx, name, after_time, before_time, no_resolve, wait):
 @_resolve_options
 @click.pass_context
 def helpers_create_mold_indicator(
-    ctx, name, indoor_temp_sensor, indoor_humidity_sensor, outdoor_temp_sensor,
-    calibration_factor, no_resolve, wait,
+    ctx,
+    name,
+    indoor_temp_sensor,
+    indoor_humidity_sensor,
+    outdoor_temp_sensor,
+    calibration_factor,
+    no_resolve,
+    wait,
 ):
     """Mould indicator — estimated wall-surface humidity / mould risk."""
     emit(
@@ -5867,9 +5955,12 @@ def helpers_create_mold_indicator(
 @helpers_create.command("raw")
 @click.option("--domain", required=True, help="Helper integration domain (e.g. filter)")
 @click.option(
-    "--step", "steps", multiple=True, required=True,
+    "--step",
+    "steps",
+    multiple=True,
+    required=True,
     help="JSON user_input for one step, in order (repeatable). A menu step is "
-         "'{\"next_step_id\": \"sensor\"}'",
+    '\'{"next_step_id": "sensor"}\'',
 )
 @_resolve_options
 @click.pass_context
@@ -8999,8 +9090,7 @@ def alarm_arm_custom_bypass(ctx, entity_id, code):
 @click.argument("entity_id")
 @click.option("--code", default=None)
 @click.confirmation_option(
-    prompt="Trigger the alarm? This sounds the siren and fires every "
-    "automation watching for it."
+    prompt="Trigger the alarm? This sounds the siren and fires every automation watching for it."
 )
 @click.pass_context
 def alarm_trigger_cmd(ctx, entity_id, code):
@@ -9705,8 +9795,9 @@ def camera_snapshot(ctx, entity_id, output_path, overwrite, width, height, signe
 @click.option("--signed/--direct", default=False, help="Fetch through a signed one-shot URL")
 @click.option("--expires", type=int, default=30, help="If --signed, seconds the URL is valid for")
 @click.pass_context
-def camera_capture(ctx, entity_id, output_dir, frames, interval, timeout, prefix, overwrite,
-                   signed, expires):
+def camera_capture(
+    ctx, entity_id, output_dir, frames, interval, timeout, prefix, overwrite, signed, expires
+):
     """Capture N distinct frames from a camera's MJPEG stream into OUTPUT_DIR.
 
     Home Assistant deliberately sends the first frame twice (browsers render
@@ -10826,8 +10917,9 @@ def onboarding_finish_integration(ctx, client_id, redirect_uri):
     help="Write the resulting access token into the connection profile (mode 0600)",
 )
 @click.pass_context
-def onboarding_provision(ctx, name, username, password, language, client_id, redirect_uri,
-                          no_finish, save):
+def onboarding_provision(
+    ctx, name, username, password, language, client_id, redirect_uri, no_finish, save
+):
     """Fresh instance → owner account → access token, in one call.
 
     Creates the owner, redeems its authorization code for a token, then
@@ -12706,9 +12798,7 @@ def device_tracker_grp():
 @click.option("--gps-accuracy", type=int, default=None, help="Accuracy radius in metres")
 @click.option("--battery", type=int, default=None, help="Battery level, 0-100")
 @click.pass_context
-def device_tracker_see(
-    ctx, dev_id, mac, host_name, location_name, gps, gps_accuracy, battery
-):
+def device_tracker_see(ctx, dev_id, mac, host_name, location_name, gps, gps_accuracy, battery):
     """Report a position. Creates `device_tracker.<dev-id>` on first use.
 
     Needs at least one of --dev-id / --mac. --location and --gps are
@@ -17530,8 +17620,17 @@ def media_player_search(ctx, entity_id, query, media_content_id, media_content_t
 @click.option("--signed/--direct", default=False, help="Fetch through a signed one-shot URL")
 @click.option("--expires", type=int, default=30, help="If --signed, seconds the URL is valid for")
 @click.pass_context
-def media_player_artwork(ctx, entity_id, output_path, overwrite, media_content_type,
-                         media_content_id, media_image_id, signed, expires):
+def media_player_artwork(
+    ctx,
+    entity_id,
+    output_path,
+    overwrite,
+    media_content_type,
+    media_content_id,
+    media_image_id,
+    signed,
+    expires,
+):
     """Download a media player's cover art (or a browse-media thumbnail).
 
     With --content-type/--content-id this fetches the thumbnail for one node
@@ -17599,14 +17698,18 @@ def cloud_subscription(ctx):
 
 
 @cloud.command("set-prefs")
-@click.option("--alexa/--no-alexa", "alexa_enabled", default=None, help="Enable the Alexa integration.")
+@click.option(
+    "--alexa/--no-alexa", "alexa_enabled", default=None, help="Enable the Alexa integration."
+)
 @click.option(
     "--alexa-report-state/--no-alexa-report-state",
     "alexa_report_state",
     default=None,
     help="Proactively push state changes to Alexa.",
 )
-@click.option("--google/--no-google", "google_enabled", default=None, help="Enable Google Assistant.")
+@click.option(
+    "--google/--no-google", "google_enabled", default=None, help="Enable Google Assistant."
+)
 @click.option(
     "--google-report-state/--no-google-report-state",
     "google_report_state",
@@ -17815,9 +17918,7 @@ def cloud_google_set_2fa(ctx, entity_id, require_pin):
     """
     emit(
         ctx,
-        cloud_core.google_set_2fa(
-            make_client(ctx), entity_id, disable_2fa=not require_pin
-        ),
+        cloud_core.google_set_2fa(make_client(ctx), entity_id, disable_2fa=not require_pin),
     )
 
 
@@ -17898,7 +17999,9 @@ def thread_decode(ctx, tlv, reveal):
     default=None,
     help="Read the TLV from a file instead — keeps the credential out of your shell history.",
 )
-@click.option("--source", default="cli-anything", show_default=True, help="Free-text label for who added it.")
+@click.option(
+    "--source", default="cli-anything", show_default=True, help="Free-text label for who added it."
+)
 @click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually store it.")
 @click.pass_context
 def thread_add_dataset(ctx, tlv, tlv_file, source, apply_changes):
@@ -17913,9 +18016,7 @@ def thread_add_dataset(ctx, tlv, tlv_file, source, apply_changes):
     text = tlv if tlv else Path(tlv_file).read_text().strip()
     emit(
         ctx,
-        thread_network_core.add_dataset(
-            make_client(ctx), text, source=source, apply=apply_changes
-        ),
+        thread_network_core.add_dataset(make_client(ctx), text, source=source, apply=apply_changes),
     )
 
 
@@ -18056,9 +18157,7 @@ def thread_otbr_set_channel(ctx, extended_address, channel, apply_changes):
     """
     emit(
         ctx,
-        otbr_core.set_channel(
-            make_client(ctx), extended_address, channel, apply=apply_changes
-        ),
+        otbr_core.set_channel(make_client(ctx), extended_address, channel, apply=apply_changes),
     )
 
 
@@ -18076,9 +18175,7 @@ def thread_otbr_set_network(ctx, extended_address, dataset_id, apply_changes):
     """
     emit(
         ctx,
-        otbr_core.set_network(
-            make_client(ctx), extended_address, dataset_id, apply=apply_changes
-        ),
+        otbr_core.set_network(make_client(ctx), extended_address, dataset_id, apply=apply_changes),
     )
 
 
@@ -18096,10 +18193,14 @@ def thread_otbr_create_network(ctx, extended_address, apply_changes, yes):
     --reveal`. Without --apply it only reports what it would do; the
     confirmation prompt is on the apply, never on the dry run.
     """
-    if apply_changes and not yes and not click.confirm(
-        f"Factory-reset border router {extended_address} and form a NEW Thread "
-        "network? Every device on the current network is orphaned.",
-        default=False,
+    if (
+        apply_changes
+        and not yes
+        and not click.confirm(
+            f"Factory-reset border router {extended_address} and form a NEW Thread "
+            "network? Every device on the current network is orphaned.",
+            default=False,
+        )
     ):
         _abort("Aborted.")
     emit(

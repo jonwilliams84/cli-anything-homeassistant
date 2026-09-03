@@ -208,8 +208,10 @@ def set_network(client, extended_address: str, dataset_id: str, *, apply: bool =
         "target_channel": entry.get("channel"),
         "current_channel": router.get("channel"),
         "current_extended_pan_id": router.get("extended_pan_id"),
-        "already_on_network": (str(entry.get("extended_pan_id") or "").lower()
-                               == str(router.get("extended_pan_id") or "").lower()),
+        "already_on_network": (
+            str(entry.get("extended_pan_id") or "").lower()
+            == str(router.get("extended_pan_id") or "").lower()
+        ),
         "note": (
             "Dry run — nothing was sent. Applying disables the radio, writes this "
             "dataset and re-enables it: devices on the router's previous network "

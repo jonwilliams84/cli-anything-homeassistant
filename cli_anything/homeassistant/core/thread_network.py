@@ -196,8 +196,7 @@ def parse_tlv(tlv: str) -> list[dict]:
         pos += 2
         if pos + size > length:
             raise ValueError(
-                f"truncated tlv: tag {tag} declares {size} bytes, "
-                f"{length - pos} remain"
+                f"truncated tlv: tag {tag} declares {size} bytes, {length - pos} remain"
             )
         value = raw[pos : pos + size]
         pos += size
@@ -420,7 +419,11 @@ def add_dataset(client, tlv: str, *, source: str = "cli-anything", apply: bool =
         )
     epid = described["extended_pan_id"]
     existing = next(
-        (row for row in current["datasets"] if (row.get("extended_pan_id") or "").lower() == (epid or "").lower()),
+        (
+            row
+            for row in current["datasets"]
+            if (row.get("extended_pan_id") or "").lower() == (epid or "").lower()
+        ),
         None,
     )
 
@@ -718,7 +721,9 @@ def discover_routers(
             }
         raise HomeAssistantError(errors[0])
 
-    routers = sorted(found.values(), key=lambda row: str(row.get("extended_address") or row.get("key")))
+    routers = sorted(
+        found.values(), key=lambda row: str(row.get("extended_address") or row.get("key"))
+    )
     return {
         "available": True,
         "routers": routers,
@@ -898,4 +903,3 @@ def audit(client, *, discover_timeout: float = 0.0) -> dict:
             "`thread routers` (mDNS), never here."
         ),
     }
-

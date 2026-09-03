@@ -62,8 +62,7 @@ _CODE_MEANING: dict[str, str] = {
         "provides it is not loaded, or the service was removed in this HA version"
     ),
     "invalid_format": (
-        "the arguments did not pass the service's schema — a value has the "
-        "wrong type or format"
+        "the arguments did not pass the service's schema — a value has the wrong type or format"
     ),
     "service_validation_error": (
         "the service exists but this entity does not support it "
@@ -123,8 +122,7 @@ def assert_registered(client, domain: str, service: str) -> None:
         )
     available = ", ".join(registry[domain]) or "(none)"
     raise ValueError(
-        f"{domain}.{service} is not registered on this instance. "
-        f"{domain} provides: {available}"
+        f"{domain}.{service} is not registered on this instance. {domain} provides: {available}"
     )
 
 
@@ -220,9 +218,7 @@ def call(
         status = getattr(exc, "status", None)
         if status not in (400, 500):
             raise
-        raise _enriched(
-            client, domain, service, payload, exc, status, explain_failures
-        ) from exc
+        raise _enriched(client, domain, service, payload, exc, status, explain_failures) from exc
 
 
 def _enriched(

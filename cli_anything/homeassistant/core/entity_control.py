@@ -952,16 +952,23 @@ def _validate_date(value: str) -> str:
     `datetime.strptime(dt_str, "%Y-%m-%d")`, so slashes are a 400 with no body.
     """
     import datetime as _dt
+    import re as _re
 
     if not value:
         raise ValueError("date is required")
-    try:
-        _dt.datetime.strptime(value, "%Y-%m-%d")
-    except ValueError:
+    # `date.fromisoformat` also accepts the basic form ("20221101"), which HA's
+    # `%Y-%m-%d` parser does not — so pin the shape first, then let the stdlib
+    # reject impossible dates. A date carries no timezone, so this stays clear
+    # of the naive-datetime rule the strptime form tripped (DTZ007).
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         raise ValueError(
             f"date must be ISO `YYYY-MM-DD`, got {value!r} — note that HA's own "
             f"services.yaml example ('2022/11/01') is not accepted by the parser"
-        ) from None
+        )
+    try:
+        _dt.date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"date must be a real calendar date, got {value!r}") from None
     return value
 
 
@@ -1167,9 +1174,7 @@ def camera_play_stream(
     if not media_player:
         raise ValueError("media_player is required")
     if not media_player.startswith("media_player."):
-        raise ValueError(
-            f"expected media_player.* entity_id for the target, got {media_player!r}"
-        )
+        raise ValueError(f"expected media_player.* entity_id for the target, got {media_player!r}")
     if stream_format not in ("hls",):
         raise ValueError(f"format must be 'hls', got {stream_format!r}")
     return _call(
@@ -1192,9 +1197,7 @@ def climate_toggle(client, entity_id: str) -> Any:
     return _call(client, "climate", "toggle", {"entity_id": entity_id})
 
 
-def climate_set_swing_horizontal_mode(
-    client, entity_id: str, *, swing_horizontal_mode: str
-) -> Any:
+def climate_set_swing_horizontal_mode(client, entity_id: str, *, swing_horizontal_mode: str) -> Any:
     """Set the HORIZONTAL swing mode — a separate service from `set_swing_mode`.
 
     (`climate.set_aux_heat` is deliberately not wrapped: it is deprecated and

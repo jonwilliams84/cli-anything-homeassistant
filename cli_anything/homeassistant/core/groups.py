@@ -71,8 +71,7 @@ def _object_id(value: str) -> str:
         return value.split(".", 1)[1]
     if "." in value:
         raise ValueError(
-            f"object_id must be a bare id like 'kitchen' (or 'group.kitchen'), "
-            f"got {value!r}"
+            f"object_id must be a bare id like 'kitchen' (or 'group.kitchen'), got {value!r}"
         )
     return value
 

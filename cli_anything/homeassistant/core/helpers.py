@@ -1032,6 +1032,7 @@ def tag_delete(client, tag_id: str) -> dict:
         raise ValueError("tag_id required")
     return _ws_collection(client, "tag", "delete", payload={"tag_id": tag_id})
 
+
 # ════════════════════════════════════════════════════════════════════════
 # Config-flow helpers — derivative, utility_meter, template, group, etc.
 # ════════════════════════════════════════════════════════════════════════
@@ -1120,9 +1121,7 @@ def config_flow_init(client, handler: str, *, show_advanced_options: bool = Fals
     """
     if not handler:
         raise ValueError("handler required")
-    return _config_entries.flow_init(
-        client, handler, show_advanced_options=show_advanced_options
-    )
+    return _config_entries.flow_init(client, handler, show_advanced_options=show_advanced_options)
 
 
 def config_flow_configure(client, flow_id: str, user_input: dict) -> dict:

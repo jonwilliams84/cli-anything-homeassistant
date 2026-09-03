@@ -272,9 +272,7 @@ def finish_step(client, step: str, *, token: str | None = None) -> dict:
             "credentials (use create_user) and `integration` needs a redirect_uri "
             "(use finish_integration)"
         )
-    code, body = client.root_request(
-        "POST", f"{_BASE}/{step}", json_payload={}, auth_token=token
-    )
+    code, body = client.root_request("POST", f"{_BASE}/{step}", json_payload={}, auth_token=token)
     if code == 200:
         return {"step": step, "ok": True, "committed": True, "detail": None}
     if code == 403:
@@ -450,9 +448,7 @@ def provision(
             result = {"step": step, "ok": False, "committed": True, "detail": str(exc)}
         out["steps"][step] = {k: v for k, v in result.items() if k != "step"}
     try:
-        result = finish_integration(
-            client, client_id=cid, redirect_uri=redirect_uri, token=access
-        )
+        result = finish_integration(client, client_id=cid, redirect_uri=redirect_uri, token=access)
     except HomeAssistantError as exc:
         result = {
             "step": "integration",

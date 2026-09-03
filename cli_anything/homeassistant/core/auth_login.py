@@ -218,9 +218,7 @@ def oauth_metadata(client) -> dict:
     """
     status, body = client.root_request("GET", _WELL_KNOWN, send_auth=False)
     if status != 200:
-        raise HomeAssistantError(
-            f"GET {_WELL_KNOWN} -> {status}: {_describe(body)}", status=status
-        )
+        raise HomeAssistantError(f"GET {_WELL_KNOWN} -> {status}: {_describe(body)}", status=status)
     return body
 
 
@@ -397,9 +395,7 @@ def abort_login_flow(client, *, flow_id: str) -> dict:
     """Cancel a login flow that was started and not finished."""
     if not flow_id:
         raise ValueError("flow_id is required")
-    status, body = client.root_request(
-        "DELETE", f"/auth/login_flow/{flow_id}", send_auth=False
-    )
+    status, body = client.root_request("DELETE", f"/auth/login_flow/{flow_id}", send_auth=False)
     if status == 404:
         raise HomeAssistantError(
             f"Login flow {flow_id} is not in progress — nothing to abort.", status=404
@@ -432,9 +428,7 @@ def _check_step(step: Any, *, stage: str) -> dict:
             )
         elif base == "invalid_code":
             hint = " — the multi-factor code was rejected."
-        raise HomeAssistantError(
-            f"Login step failed ({base}){hint}", code=str(base)
-        )
+        raise HomeAssistantError(f"Login step failed ({base}){hint}", code=str(base))
     return step
 
 
@@ -458,7 +452,9 @@ def exchange_code(client, *, code: str, client_id: str | None = None) -> dict:
         send_auth=False,
     )
     if status != 200:
-        raise HomeAssistantError(_token_error(status, body, grant="authorization_code"), status=status)
+        raise HomeAssistantError(
+            _token_error(status, body, grant="authorization_code"), status=status
+        )
     return {**body, "client_id": cid}
 
 
@@ -515,9 +511,7 @@ def revoke_token(
         "POST", "/auth/revoke", form={"token": token}, send_auth=False
     )
     if status != 200:
-        raise HomeAssistantError(
-            f"POST /auth/revoke -> {status}: {_describe(body)}", status=status
-        )
+        raise HomeAssistantError(f"POST /auth/revoke -> {status}: {_describe(body)}", status=status)
     result = {
         "revoked": True,
         "verified": False,
@@ -649,9 +643,7 @@ def login(
 
     code = step.get("result")
     if not code:
-        raise HomeAssistantError(
-            f"Login flow completed without an authorization code: {step!r}"
-        )
+        raise HomeAssistantError(f"Login flow completed without an authorization code: {step!r}")
     tokens = exchange_code(client, code=code, client_id=cid)
     return {
         **tokens,

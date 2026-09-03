@@ -151,9 +151,7 @@ def update_entity(client, entity_ids: list[str], *, verify: bool = True) -> dict
             status = "refreshed"
         else:
             status = "unchanged"
-        entities.append(
-            {"entity_id": eid, "status": status, "last_updated": now}
-        )
+        entities.append({"entity_id": eid, "status": status, "last_updated": now})
     return {
         "requested": ids,
         "entities": entities,
@@ -203,9 +201,7 @@ def set_location(
     }
     if elevation is not None:
         data["elevation"] = float(elevation)
-    return services_core.call_service(
-        client, "homeassistant", "set_location", service_data=data
-    )
+    return services_core.call_service(client, "homeassistant", "set_location", service_data=data)
 
 
 def reload_custom_templates(client) -> Any:

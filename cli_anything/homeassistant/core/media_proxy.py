@@ -284,10 +284,7 @@ def _raise_for_status(resp, *, path: str, entity_id: str, kind: str, signed: boo
             f"instead"
         )
     elif status == 400:
-        hint = (
-            f"Home Assistant rejected the stream interval — it must be >= "
-            f"{MIN_STREAM_INTERVAL}"
-        )
+        hint = f"Home Assistant rejected the stream interval — it must be >= {MIN_STREAM_INTERVAL}"
     elif status == 500:
         hint = (
             f"Home Assistant could not produce an image for {entity_id} "
@@ -321,7 +318,9 @@ def _parse_part_headers(blob: bytes) -> tuple[Optional[str], Optional[int]]:
     return ctype, length
 
 
-def _iter_parts(resp, *, deadline: float, max_parts: int, chunk_size: int = 65536) -> Iterator[tuple]:
+def _iter_parts(
+    resp, *, deadline: float, max_parts: int, chunk_size: int = 65536
+) -> Iterator[tuple]:
     """Yield `(content_type, payload)` for each part, bounded by both limits.
 
     Length-driven rather than boundary-driven. The deadline is checked between
