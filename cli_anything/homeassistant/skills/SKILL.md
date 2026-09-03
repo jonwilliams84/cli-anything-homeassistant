@@ -39,6 +39,9 @@ cli-anything-homeassistant --json system info
 #
 # If that says "Unauthorized (401)" and you have NO token, you are not stuck —
 # see "Bootstrapping a token" below. `auth login` needs no existing credential.
+#
+# If `auth providers` then says `onboarding_required`, the instance has no
+# ACCOUNTS yet, not just no token — see "Onboarding a brand-new instance".
 
 # 2. Know who you are.
 cli-anything-homeassistant --json whoami
@@ -183,6 +186,65 @@ Always start with `--help` if you're unsure:
 `cli-anything-homeassistant <group> [<subcommand>] --help`.
 
 ## Golden-path recipes
+
+### Onboarding a brand-new instance (v1.53+)
+
+The step BEFORE a token exists. If `auth providers` answers
+`400 onboarding_required`, this Home Assistant has never been set up: there is
+no account to log in as, so nothing else in this CLI can work.
+
+```bash
+export HASS_URL=http://homeassistant.local:8123
+unset HASS_TOKEN
+
+# Is it actually un-onboarded? No token needed.
+cli-anything-homeassistant --json onboarding status
+# → {"onboarded":false,"steps":{"user":false,...},"done":[],"remaining":[...]}
+
+# Nothing → owner account → working access token, in one call.
+cli-anything-homeassistant --json onboarding provision \
+  --name Agent --username agent --password 's3cret' --save
+# → {"access_token","refresh_token","expires_in":1800,"client_id","username",
+#    "steps":{"user":{...},"analytics":{...},"core_config":{...},
+#             "integration":{...}},"onboarded":true,"saved_to"}
+
+# THE ACCESS TOKEN LASTS 30 MINUTES, same as `auth login`. Make it durable:
+cli-anything-homeassistant --json auth tokens create my-agent
+cli-anything-homeassistant config set --token "<that token>"
+```
+
+**THE ONE RULE: every onboarding step is marked done BEFORE it can fail.**
+`_BaseOnboardingView` calls `_async_mark_done()` at the top of each handler,
+ahead of the work and ahead of every check. So:
+
+- A step that errors is **still finished**. Retrying answers
+  `403 "<Step> step already done"`, which reads like an unrelated fault.
+- Results carry **`ok` and `committed` separately**. `ok:false,
+  committed:true` is an OUTCOME, not a failure to retry — the CLI exits 0 for
+  it deliberately.
+- `provision` runs the fallible steps LAST and never aborts the run for one,
+  so a refused step cannot cost you the token you came for.
+
+Other gotchas, all measured against 2025.1.4:
+
+- `onboarding installation-type` is readable **only before the first step**.
+  The guard is `if self._data["done"]` — a non-empty LIST — so it 401s from
+  step one onward, not from completion. Use `system info` after that.
+- `core_config` commonly answers **500** on a perfectly good request: after
+  marking itself done it starts `google_translate`, `met`, `radio_browser` and
+  `shopping_list`, and a missing dependency in any of them escapes the
+  handler. That is a report about the server's optional integrations.
+- `finish-integration` needs a **credential-backed** token. A long-lived
+  access token has no credential behind it and gets
+  `403 Credentials for user not available` — after spending the step. Use one
+  from `onboarding provision` or `auth login`.
+- `create-user` returns an **authorization code**, not a token. Single-use,
+  10-minute expiry, bound to the `client_id` it was created with. HA does
+  *not* validate that `client_id`, so a malformed one burns the single user
+  step and yields a code that can never be redeemed — the CLI checks it
+  locally first.
+- The user step happens **once per instance**, ever. Add more accounts with
+  `auth user create`.
 
 ### Bootstrapping a token from a username and password (v1.52+)
 

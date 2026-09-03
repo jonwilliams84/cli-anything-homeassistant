@@ -21,7 +21,8 @@ cli-anything-homeassistant --help
 ```
 
 External dep: a running Home Assistant. A long-lived access token if you have
-one; if you don't, `auth login` will get you one (see below).
+one; if you don't, `auth login` will get you one — and if the instance is so
+new it has no accounts yet, `onboarding provision` will create one (see below).
 
 ## First-time setup
 
@@ -31,6 +32,27 @@ cli-anything-homeassistant \
   --token "<long-lived-token>" \
   config save
 ```
+
+### Brand-new Home Assistant, no account at all? (v1.53+)
+
+`onboarding provision` creates the first account and hands back a working
+token, in one call — the step before `auth login` is even possible:
+
+```bash
+cli-anything-homeassistant --url http://homeassistant.local:8123 \
+  onboarding provision --name Agent --username agent --save
+```
+
+Onboarding steps are **one-shot and commit before they can fail**: Home
+Assistant marks each done at the top of its handler, so a step that errors is
+still finished and retrying it answers "already done". Every command here
+reports `ok` and `committed` separately and nothing retries. `provision` runs
+the fallible steps last, so a refused one never costs you the token.
+
+Also: `onboarding status` (which steps are done — no token needed),
+`onboarding installation-type` (readable *only* before the first step),
+`onboarding create-user`, `onboarding finish-step`, `onboarding
+finish-integration`.
 
 ### No token yet? (v1.52+)
 
@@ -88,6 +110,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `logger` | Runtime log-level control without restart |
 | `group` | List members of light/switch/sensor groups |
 | `auth` | Users, long-lived tokens, whoami — plus **`login` (username + password → token, no existing token needed)**, `providers`, `refresh`, `revoke`, `exchange-code`, `link-user`, `login-flow start/step/abort`, `oauth-metadata` |
+| `onboarding` | **Set up a brand-new instance**: `provision` (nothing → owner account → access token in one call), `status`, `installation-type`, `create-user`, `finish-step`, `finish-integration` |
 | `event subscribe` / `state watch` | Live tails — agent-friendly until-state-X loops |
 | `entity-references` | Find every UI-managed automation/template/lovelace that mentions an entity_id |
 | `scene` | List, activate (with `--transition`), apply ad-hoc states, snapshot to a new scene, reload |

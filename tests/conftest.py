@@ -92,14 +92,20 @@ class FakeClient:
         form: dict | None = None,
         params: dict | None = None,
         send_auth: bool = True,
+        auth_token: str | None = None,
     ) -> tuple[int, Any]:
         """Shim for the non-`/api/` transport. Returns `(status, body)`.
 
-        `send_auth` and the json/form split are RECORDED, not just accepted:
-        which of the two encodings a call uses is the single most consequential
-        detail on these endpoints (`/auth/login_flow` parses only JSON,
-        `/auth/token` only a form body), so tests assert on it.
+        `send_auth`, `auth_token` and the json/form split are RECORDED, not
+        just accepted: which of the two encodings a call uses is the single
+        most consequential detail on these endpoints (`/auth/login_flow`
+        parses only JSON, `/auth/token` only a form body), and WHICH IDENTITY
+        a call is made under is the equivalent for onboarding — the three
+        authenticated steps must use the token minted by the unauthenticated
+        one, not the client's own (absent) bearer.
         """
+        if auth_token and not send_auth:
+            raise ValueError("auth_token and send_auth=False are contradictory")
         self.root_calls.append(
             {
                 "method": method.upper(),
@@ -108,6 +114,7 @@ class FakeClient:
                 "form": form,
                 "params": params,
                 "send_auth": send_auth,
+                "auth_token": auth_token,
             }
         )
         queue = self.root_responses.get((method.upper(), path))
@@ -488,6 +495,84 @@ def _create_long_lived_token(config_dir: Path, owner_username: str = "agent") ->
         return token
 
     return asyncio.run(_create())
+
+
+def _write_hass_config(config_dir: Path, port: int, *, extra: str = "") -> None:
+    """The minimal `configuration.yaml` the e2e fixtures boot against."""
+    (config_dir / "configuration.yaml").write_text(
+        "homeassistant:\n"
+        "  name: cli-anything-test\n"
+        "  latitude: 52.3676\n"
+        "  longitude: 4.9041\n"
+        "  elevation: 0\n"
+        "  unit_system: metric\n"
+        "  time_zone: Etc/UTC\n"
+        "api:\n"
+        "auth:\n"
+        "config:\n"
+        + extra
+        + f"http:\n  server_port: {port}\n  server_host: 127.0.0.1\n"
+        "logger:\n  default: warning\n"
+    )
+
+
+@pytest.fixture
+def fresh_hass_instance() -> Iterator[dict]:
+    """Boot a real Home Assistant that has NEVER been onboarded.
+
+    FUNCTION-SCOPED ON PURPOSE, unlike `hass_instance`. Onboarding steps are
+    one-shot and are marked done before they can fail, so a test that touches
+    one has permanently changed the instance for every test after it. Sharing
+    this would make the suite order-dependent in the most confusing possible
+    way: the second test to run would see "already done" and have no way to
+    tell that from a bug.
+
+    Yields `{url, config_dir, proc}` — and deliberately NO token, because not
+    having one is the entire situation these endpoints exist for.
+    """
+    if not _hass_available():
+        pytest.skip(
+            "Real Home Assistant not installed. Install with: pip install homeassistant"
+        )
+
+    port = _free_port()
+    config_dir = Path(tempfile.mkdtemp(prefix="cli-hass-fresh-"))
+    # `onboarding` and `person` are pulled in by `default_config` on a normal
+    # install; named explicitly here because the e2e config is deliberately
+    # minimal. Without `onboarding` the /api/onboarding views are never
+    # registered at all and every request 404s.
+    _write_hass_config(config_dir, port, extra="onboarding:\nperson:\nanalytics:\n")
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "homeassistant", "--config", str(config_dir)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        _wait_for_http(base_url + "/api/", timeout=180)
+    except TimeoutError as exc:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+        shutil.rmtree(config_dir, ignore_errors=True)
+        pytest.skip(f"Home Assistant did not come up: {exc}\nLog:\n{out[-2000:]}")
+
+    yield {"url": base_url, "config_dir": str(config_dir), "proc": proc}
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    shutil.rmtree(config_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

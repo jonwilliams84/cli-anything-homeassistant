@@ -360,6 +360,7 @@ class HomeAssistantClient:
         form: dict | None = None,
         params: dict | None = None,
         send_auth: bool = True,
+        auth_token: str | None = None,
     ) -> tuple[int, Any]:
         """Call a path that is NOT under `/api/`, and return `(status, body)`.
 
@@ -400,13 +401,26 @@ class HomeAssistantClient:
            (Measured: `/auth/token` tolerates a garbage bearer and answers 200
            regardless, because `requires_auth = False` and the middleware only
            RECORDS the result. Dropping it is hygiene, not a workaround.)
+
+           `auth_token` is the mirror image: a bearer for THIS request that the
+           client was not constructed with. Onboarding needs it — the token for
+           the three authenticated `/api/onboarding/*` steps is minted by the
+           unauthenticated step that precedes them, so it does not exist when
+           the client is built. Overriding here rather than mutating
+           `session.headers` keeps the change scoped to the one call, so a
+           caller that goes on using the same client still gets the identity it
+           configured.
         """
+        if auth_token and not send_auth:
+            raise ValueError("auth_token and send_auth=False are contradictory")
         url = f"{self.base_url}/{path.lstrip('/')}"
         headers: dict[str, str | None] = {}
         if form is not None:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         if not send_auth:
             headers["Authorization"] = None
+        elif auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
         try:
             resp = self.session.request(
                 method.upper(),

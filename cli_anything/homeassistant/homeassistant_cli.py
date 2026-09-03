@@ -146,6 +146,7 @@ from cli_anything.homeassistant.core import thread_network as thread_network_cor
 from cli_anything.homeassistant.core import otbr as otbr_core
 from cli_anything.homeassistant.core import voice as voice_core
 from cli_anything.homeassistant.core import auth_login as auth_login_core
+from cli_anything.homeassistant.core import onboarding as onboarding_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
     HomeAssistantError,
@@ -10677,6 +10678,190 @@ def auth_login_flow_step(ctx, flow_id, fields, client_id):
 def auth_login_flow_abort(ctx, flow_id):
     """Cancel a login flow that was started and never finished."""
     emit(ctx, auth_login_core.abort_login_flow(make_client(ctx), flow_id=flow_id))
+
+
+# ─────────────────────────────────────────────── onboarding: a brand-new instance
+#
+# `auth login` needs an account to log in as. On a Home Assistant that has just
+# started for the first time there is none, and `/auth/providers` says so with
+# `400 onboarding_required`. These wrap `/api/onboarding/*`, which is how the
+# first account is created. See `core/onboarding.py` — every step commits
+# BEFORE it can fail, which is the fact that shapes all of it.
+
+
+@cli.group()
+def onboarding():
+    """Set up a brand-new Home Assistant (create the first account).
+
+    ONBOARDING STEPS ARE ONE-SHOT AND COMMIT BEFORE THEY CAN FAIL. Home
+    Assistant marks each step done at the top of its handler, ahead of the
+    work and ahead of every check, so a step that errors is still finished and
+    retrying it answers "already done". Nothing here retries; `ok` and
+    `committed` are reported separately.
+
+    The usual call is one command:
+
+        cli-anything-homeassistant --url http://ha:8123 onboarding provision \\
+            --name Agent --username agent --password 's3cret' --save
+    """
+
+
+@onboarding.command("status")
+@click.pass_context
+def onboarding_status(ctx):
+    """Which onboarding steps are done. No token needed.
+
+    `onboarded: true` is the condition that unblocks `/auth/providers` and the
+    rest of the API — until then `auth login` cannot work.
+    """
+    emit(ctx, onboarding_core.status(make_client(ctx)))
+
+
+@onboarding.command("installation-type")
+@click.pass_context
+def onboarding_installation_type(ctx):
+    """How this instance was installed (OS / Container / Core / Supervised).
+
+    Only readable on an instance where NO step has been done yet — Home
+    Assistant refuses it from the first step onward. Use `system info` after
+    that.
+    """
+    emit(ctx, onboarding_core.installation_type(make_client(ctx)))
+
+
+@onboarding.command("create-user")
+@click.option("--name", required=True, help="Display name for the owner account")
+@click.option("--username", required=True, help="Sign-in username")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="Password (prompted for, hidden and confirmed, if not given)",
+)
+@click.option("--language", default="en", show_default=True, help="Language for the default areas")
+@click.option(
+    "--client-id",
+    default=None,
+    help="IndieAuth client id (default: the HA base URL). The auth code is bound to it.",
+)
+@click.pass_context
+def onboarding_create_user(ctx, name, username, password, language, client_id):
+    """Create the owner account. ONE SHOT — an instance can only do this once.
+
+    Returns an authorization code, not a token: redeem it within 10 minutes
+    with `auth exchange-code --code <code> --client-id <same client id>`.
+    `onboarding provision` does both in one step and is what you usually want.
+    """
+    emit(
+        ctx,
+        onboarding_core.create_user(
+            make_client(ctx),
+            name=name,
+            username=username,
+            password=password,
+            language=language,
+            client_id=client_id,
+        ),
+    )
+
+
+@onboarding.command("finish-step")
+@click.argument("step", type=click.Choice(onboarding_core.SIMPLE_STEPS))
+@click.pass_context
+def onboarding_finish_step(ctx, step):
+    """Complete the `core_config` or `analytics` step. Needs a token.
+
+    `ok: false` with `committed: true` is a normal outcome for `core_config` —
+    Home Assistant answers 500 when one of the integrations it starts cannot
+    import, having already marked the step done.
+    """
+    emit(ctx, onboarding_core.finish_step(make_client(ctx), step))
+
+
+@onboarding.command("finish-integration")
+@click.option("--client-id", default=None, help="IndieAuth client id (default: the HA base URL)")
+@click.option("--redirect-uri", default=None, help="Defaults to --client-id")
+@click.pass_context
+def onboarding_finish_integration(ctx, client_id, redirect_uri):
+    """Complete the `integration` step, returning a second auth code.
+
+    Needs a CREDENTIAL-BACKED token — one from `auth login`, not a long-lived
+    access token, which HA refuses here with "Credentials for user not
+    available" (and spends the step doing it).
+    """
+    emit(
+        ctx,
+        onboarding_core.finish_integration(
+            make_client(ctx), client_id=client_id, redirect_uri=redirect_uri
+        ),
+    )
+
+
+@onboarding.command("provision")
+@click.option("--name", required=True, help="Display name for the owner account")
+@click.option("--username", required=True, help="Sign-in username")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="Password (prompted for, hidden and confirmed, if not given)",
+)
+@click.option("--language", default="en", show_default=True, help="Language for the default areas")
+@click.option("--client-id", default=None, help="IndieAuth client id (default: the HA base URL)")
+@click.option("--redirect-uri", default=None, help="Defaults to --client-id")
+@click.option(
+    "--no-finish",
+    is_flag=True,
+    default=False,
+    help="Stop after the token: create the user, exchange the code, leave the other steps undone",
+)
+@click.option(
+    "--save",
+    is_flag=True,
+    default=False,
+    help="Write the resulting access token into the connection profile (mode 0600)",
+)
+@click.pass_context
+def onboarding_provision(ctx, name, username, password, language, client_id, redirect_uri,
+                          no_finish, save):
+    """Fresh instance → owner account → access token, in one call.
+
+    Creates the owner, redeems its authorization code for a token, then
+    finishes the remaining steps as that user. The steps that can fail run
+    LAST and never cost you the token: each is reported in `steps` and the run
+    carries on, because a refused step is already spent.
+
+    THE TOKEN IS SHORT-LIVED (`expires_in`, 1800s). For a durable credential,
+    follow up with `auth tokens create`:
+
+        eval "$(cli-anything-homeassistant onboarding provision \\
+            --name Agent --username agent --password s3cret --save)"
+        cli-anything-homeassistant auth tokens create my-agent
+    """
+    result = onboarding_core.provision(
+        make_client(ctx),
+        name=name,
+        username=username,
+        password=password,
+        language=language,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        finish=not no_finish,
+    )
+    if save:
+        path = project.save_config(
+            url=ctx.obj["url"],
+            token=result["access_token"],
+            verify_ssl=ctx.obj["verify_ssl"],
+            timeout=ctx.obj["timeout"],
+            config_path=ctx.obj.get("config_path"),
+        )
+        result = {**result, "saved_to": str(path)}
+    emit(ctx, result)
 
 
 # ──────────────────────────────────────────────────────── category
