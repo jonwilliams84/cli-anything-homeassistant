@@ -2643,9 +2643,81 @@ class TestTagHelper:
         assert fake_client.ws_calls[-1]["payload"] == {"tag_id": "abc-123"}
 
 
+# ── config-flow helpers ─────────────────────────────────────────────────
+# The sixteen config-entry-backed helpers (derivative, utility_meter,
+# template, group, …) are built by a REST config flow:
+#
+#   POST   /api/config/config_entries/flow            {"handler": <domain>}
+#   POST   /api/config/config_entries/flow/<flow_id>  <step user_input>
+#   DELETE /api/config/config_entries/entry/<entry_id>
+#
+# NOT by `config_entries/flow/init` / `config_entries/flow/configure` /
+# `config_entries/remove` over the websocket — those commands do not exist
+# (every one answers `unknown_command`), so the websocket fakes this section
+# used to install pinned a shape no Home Assistant ever served. The real
+# implementation lives in `core/helper_integrations.py`; the wrappers in
+# `core/helpers.py` exercised below are aliases for it.
+
+_FLOW_PATH = "config/config_entries/flow"
+
+
+def _cf_form(step_id="user", fields=None, flow_id="F", **extra):
+    """A `type: form` step descriptor shaped like HA's REST answer."""
+    out = {"type": "form", "flow_id": flow_id, "handler": "x", "step_id": step_id}
+    if fields is not None:
+        out["data_schema"] = fields
+    out.update(extra)
+    return out
+
+
+def _cf_menu(options, flow_id="F"):
+    """A `type: menu` first step (template / group / random)."""
+    return {
+        "type": "menu",
+        "flow_id": flow_id,
+        "handler": "x",
+        "step_id": "user",
+        "menu_options": list(options),
+    }
+
+
+def _cf_created(entry_id="E", title="T"):
+    return {
+        "type": "create_entry",
+        "flow_id": "F",
+        "title": title,
+        "result": {"entry_id": entry_id, "title": title, "state": "loaded"},
+    }
+
+
+def _cf_prime(client, first=None, *rest, entity="sensor.new"):
+    """Queue the init answer plus one answer per submitted step.
+
+    The last queued answer repeats (`set_seq`), so a lone `create_entry`
+    serves every step of a multi-step flow — these tests pin the payload the
+    wrapper BUILDS, not HA's per-step schema checking, which has its own
+    coverage in `tests/test_helper_integrations.py`.
+    """
+    client.set_seq("POST", _FLOW_PATH, first if first is not None else _cf_form())
+    client.set_seq("POST", f"{_FLOW_PATH}/F", *(rest or (_cf_created(),)))
+    client.set_ws(
+        "config/entity_registry/list",
+        [{"entity_id": entity, "config_entry_id": "E"}],
+    )
+    return client
+
+
+def _cf_steps(client):
+    """Every user_input POSTed to a flow step, in order."""
+    return [
+        c["payload"]
+        for c in client.calls
+        if c["verb"] == "POST" and c["path"].startswith(f"{_FLOW_PATH}/")
+    ]
+
+
 class TestConfigFlowHelpers:
-    """Helpers created via the config_entries flow API (template, derivative,
-    utility_meter, etc.)."""
+    """The generic flow primitives in `core/helpers.py` — all REST."""
 
     def test_config_entries_list_filter_by_domain(self, fake_client):
         fake_client.set_ws("config_entries/get", [
@@ -2663,71 +2735,113 @@ class TestConfigFlowHelpers:
         helpers_core.config_entries_list(fake_client, type_filter="helper")
         assert fake_client.ws_calls[-1]["payload"]["type_filter"] == "helper"
 
-    def test_config_entry_remove(self, fake_client):
-        fake_client.set_ws("config_entries/remove", {"ok": True})
+    def test_config_entries_list_is_the_one_websocket_call(self, fake_client):
+        """Listing IS a WS command — it is the exception, so pin it."""
+        fake_client.set_ws("config_entries/get", [])
+        helpers_core.config_entries_list(fake_client)
+        assert fake_client.ws_calls[-1]["type"] == "config_entries/get"
+
+    def test_config_entry_remove_uses_rest(self, fake_client):
         helpers_core.config_entry_remove(fake_client, "entry-1")
-        call = fake_client.ws_calls[-1]
-        assert call["type"] == "config_entries/remove"
-        assert call["payload"] == {"entry_id": "entry-1"}
+        call = fake_client.calls[-1]
+        assert call["verb"] == "DELETE"
+        assert call["path"] == "config/config_entries/entry/entry-1"
+        # and NOT the websocket command that does not exist
+        assert [c["type"] for c in fake_client.ws_calls] == []
+
+    def test_config_entry_remove_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.config_entry_remove(fake_client, "")
 
     def test_config_flow_init(self, fake_client):
-        fake_client.set_ws("config_entries/flow/init",
-                            {"flow_id": "F1", "type": "form"})
+        fake_client.set_seq("POST", _FLOW_PATH, _cf_form(flow_id="F1"))
         result = helpers_core.config_flow_init(fake_client, "derivative")
         assert result["flow_id"] == "F1"
-        call = fake_client.ws_calls[-1]
-        assert call["payload"] == {"handler": "derivative",
-                                     "show_advanced_options": False}
+        call = fake_client.calls[-1]
+        assert call["verb"] == "POST"
+        assert call["path"] == _FLOW_PATH
+        assert call["payload"] == {"handler": "derivative"}
+
+    def test_config_flow_init_advanced_options(self, fake_client):
+        fake_client.set_seq("POST", _FLOW_PATH, _cf_form(flow_id="F1"))
+        helpers_core.config_flow_init(fake_client, "template",
+                                      show_advanced_options=True)
+        assert fake_client.calls[-1]["payload"] == {
+            "handler": "template", "show_advanced_options": True}
+
+    def test_config_flow_init_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.config_flow_init(fake_client, "")
 
     def test_config_flow_configure(self, fake_client):
-        fake_client.set_ws("config_entries/flow/configure",
-                            {"type": "create_entry",
-                             "result": {"entry_id": "E1"}})
+        fake_client.set_seq("POST", f"{_FLOW_PATH}/F1", _cf_created(entry_id="E1"))
         result = helpers_core.config_flow_configure(
             fake_client, "F1", {"name": "x", "source": "sensor.y"})
         assert result["result"]["entry_id"] == "E1"
-        call = fake_client.ws_calls[-1]
-        assert call["payload"] == {"flow_id": "F1",
-                                     "user_input": {"name": "x",
-                                                     "source": "sensor.y"}}
+        call = fake_client.calls[-1]
+        assert call["verb"] == "POST"
+        # the step body is the user_input ITSELF — there is no envelope
+        assert call["path"] == f"{_FLOW_PATH}/F1"
+        assert call["payload"] == {"name": "x", "source": "sensor.y"}
+
+    def test_config_flow_configure_validates(self, fake_client):
+        with pytest.raises(ValueError):
+            helpers_core.config_flow_configure(fake_client, "", {})
+        with pytest.raises(ValueError):
+            helpers_core.config_flow_configure(fake_client, "F1", "not-a-dict")
 
     def test_config_flow_helper_create_does_two_calls(self, fake_client):
-        fake_client.set_ws("config_entries/flow/init", {"flow_id": "FX"})
-        fake_client.set_ws("config_entries/flow/configure",
-                            {"type": "create_entry",
-                             "result": {"entry_id": "E2"}})
+        fake_client.set_seq("POST", _FLOW_PATH, _cf_form(flow_id="FX"))
+        fake_client.set_seq("POST", f"{_FLOW_PATH}/FX", _cf_created(entry_id="E2"))
         result = helpers_core.config_flow_helper_create(
             fake_client, "derivative",
             {"name": "Watt rate", "source": "sensor.energy"})
         assert result["result"]["entry_id"] == "E2"
-        types = [c["type"] for c in fake_client.ws_calls]
-        assert types == ["config_entries/flow/init",
-                          "config_entries/flow/configure"]
+        assert [(c["verb"], c["path"]) for c in fake_client.calls] == [
+            ("POST", _FLOW_PATH),
+            ("POST", f"{_FLOW_PATH}/FX"),
+        ]
+
+    def test_config_flow_helper_create_returns_early_when_flow_finishes(self, fake_client):
+        """A handler that resolves at init has no flow_id — do not post a step."""
+        fake_client.set_seq("POST", _FLOW_PATH,
+                            {"type": "abort", "reason": "single_instance_allowed"})
+        out = helpers_core.config_flow_helper_create(fake_client, "derivative", {})
+        assert out["reason"] == "single_instance_allowed"
+        assert len(fake_client.calls) == 1
 
 
 class TestConfigFlowHelperWrappers:
-    """Per-domain wrappers: derivative, integration, utility_meter, etc."""
+    """Per-domain wrappers: derivative, integration, utility_meter, etc.
+
+    Each asserts the user_input actually POSTed to the flow step, and the
+    normalised result the wrapper returns.
+    """
 
     @pytest.fixture
     def primed(self, fake_client):
-        fake_client.set_ws("config_entries/flow/init", {"flow_id": "F"})
-        fake_client.set_ws("config_entries/flow/configure",
-                            {"type": "create_entry",
-                             "result": {"entry_id": "E"}})
-        return fake_client
+        return _cf_prime(fake_client)
 
     def test_derivative_create(self, primed):
-        helpers_core.derivative_create(primed, name="Watts",
-                                          source="sensor.energy",
-                                          unit_time="h", round=3,
-                                          time_window={"minutes": 5})
-        configure = primed.ws_calls[-1]
-        ui = configure["payload"]["user_input"]
+        out = helpers_core.derivative_create(primed, name="Watts",
+                                             source="sensor.energy",
+                                             unit_time="h", round=3,
+                                             time_window={"minutes": 5})
+        ui = _cf_steps(primed)[-1]
         assert ui["name"] == "Watts"
         assert ui["source"] == "sensor.energy"
         assert ui["unit_time"] == "h"
         assert ui["round"] == 3
         assert ui["time_window"] == {"minutes": 5}
+        assert out["created"] is True
+        assert out["entry_id"] == "E"
+        assert out["entities"] == ["sensor.new"]
+
+    def test_derivative_time_window_defaults_to_zero_not_omitted(self, primed):
+        """HA REQUIRES time_window; omitting it is a 400, so send a zero."""
+        helpers_core.derivative_create(primed, name="W", source="sensor.e")
+        assert _cf_steps(primed)[-1]["time_window"] == {
+            "hours": 0, "minutes": 0, "seconds": 0}
 
     def test_derivative_validates(self, fake_client):
         with pytest.raises(ValueError):
@@ -2738,218 +2852,311 @@ class TestConfigFlowHelperWrappers:
     def test_integration_create_validates_method(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.integration_create(fake_client, name="n",
-                                                source="sensor.s", method="bad")
+                                            source="sensor.s", method="bad")
 
     def test_integration_create_ok(self, primed):
         helpers_core.integration_create(primed, name="Wh", source="sensor.p",
-                                            method="trapezoidal")
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
+                                        method="trapezoidal")
+        ui = _cf_steps(primed)[-1]
         assert ui["method"] == "trapezoidal"
+        # HA's domain for the Riemann helper is `integration`
+        assert primed.calls[0]["payload"] == {"handler": "integration"}
 
     def test_utility_meter_create(self, primed):
         helpers_core.utility_meter_create(primed, name="DailyKWh",
-                                              source="sensor.energy",
-                                              cycle="daily",
-                                              tariffs=["peak", "offpeak"])
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
+                                          source="sensor.energy",
+                                          cycle="daily",
+                                          tariffs=["peak", "offpeak"])
+        ui = _cf_steps(primed)[-1]
         assert ui["cycle"] == "daily"
         assert ui["tariffs"] == ["peak", "offpeak"]
 
-    def test_utility_meter_validates_cycle(self, fake_client):
-        with pytest.raises(ValueError):
-            helpers_core.utility_meter_create(fake_client, name="n",
-                                                  source="sensor.s",
-                                                  cycle="fortnightly")
+    def test_utility_meter_no_tariffs_sends_empty_list(self, primed):
+        helpers_core.utility_meter_create(primed, name="m", source="sensor.e")
+        assert _cf_steps(primed)[-1]["tariffs"] == []
 
     def test_min_max_create(self, primed):
         helpers_core.min_max_create(primed, name="avg",
-                                       entity_ids=["sensor.a", "sensor.b"],
-                                       type="mean")
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
+                                    entity_ids=["sensor.a", "sensor.b"],
+                                    type="mean")
+        ui = _cf_steps(primed)[-1]
         assert ui["type"] == "mean"
         assert ui["entity_ids"] == ["sensor.a", "sensor.b"]
 
-    def test_min_max_validates(self, fake_client):
+    def test_min_max_validates_empty_entities(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.min_max_create(fake_client, name="n",
-                                           entity_ids=["s"], type="bogus")
-        with pytest.raises(ValueError):
+                                        entity_ids=[], type="mean")
+
+    def test_min_max_bad_type_is_named_by_the_form(self, fake_client):
+        """`type` is a select — the valid values come from HA's own form."""
+        _cf_prime(fake_client, _cf_form(fields=[
+            {"name": "name", "required": True},
+            {"name": "entity_ids", "required": True},
+            {"name": "round_digits", "required": True},
+            {"name": "type", "required": True,
+             "selector": {"select": {"options": ["min", "max", "mean"]}}},
+        ]))
+        with pytest.raises(ValueError, match="median|mean"):
             helpers_core.min_max_create(fake_client, name="n",
-                                           entity_ids=[], type="mean")
+                                        entity_ids=["sensor.a"], type="median")
 
     def test_threshold_create(self, primed):
         helpers_core.threshold_create(primed, name="warn",
-                                         entity_id="sensor.temp", upper=30)
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
+                                      entity_id="sensor.temp", upper=30)
+        ui = _cf_steps(primed)[-1]
         assert ui["upper"] == 30
         assert "lower" not in ui
 
     def test_threshold_validates(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.threshold_create(fake_client, name="n",
-                                             entity_id="sensor.s")
+                                          entity_id="sensor.s")
 
-    def test_trend_create(self, primed):
+    def test_trend_create_is_two_steps(self, primed):
+        """The config flow only carries name/entity_id then attribute/invert."""
         helpers_core.trend_create(primed, name="rising",
-                                     entity_id="sensor.temp", invert=False,
-                                     max_samples=10)
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["max_samples"] == 10
+                                  entity_id="sensor.temp", invert=False)
+        steps = _cf_steps(primed)
+        assert steps[0] == {"name": "rising", "entity_id": "sensor.temp"}
+        assert steps[1] == {"invert": False}
 
-    def test_statistics_create(self, primed):
+    def test_trend_tuning_goes_through_the_options_flow(self, primed):
+        """max_samples & co. exist ONLY in the options flow, not the config one."""
+        primed.set_seq("POST", "config/config_entries/options/flow",
+                       {"flow_id": "OF", "step_id": "init", "type": "form"})
+        primed.set_seq("POST", "config/config_entries/options/flow/OF",
+                       {"type": "create_entry", "result": {}})
+        out = helpers_core.trend_create(primed, name="rising",
+                                        entity_id="sensor.temp",
+                                        invert=False, max_samples=10)
+        assert "max_samples" not in _cf_steps(primed)[-1]
+        options = next(c for c in primed.calls
+                       if c["path"] == "config/config_entries/options/flow/OF")
+        assert options["payload"]["max_samples"] == 10
+        assert out["options_applied"] is True
+
+    def test_statistics_create_is_three_steps(self, primed):
         helpers_core.statistics_create(primed, name="stats",
-                                          entity_id="sensor.temp",
-                                          state_characteristic="mean")
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["state_characteristic"] == "mean"
+                                       entity_id="sensor.temp",
+                                       state_characteristic="mean")
+        steps = _cf_steps(primed)
+        assert steps[0] == {"name": "stats", "entity_id": "sensor.temp"}
+        assert steps[1] == {"state_characteristic": "mean"}
+        assert steps[2]["sampling_size"] == 20
 
     def test_history_stats_create_validates(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.history_stats_create(fake_client, name="n",
-                                                  entity_id="sensor.s",
-                                                  state="on", type="bogus")
+                                              entity_id="sensor.s",
+                                              state="on", type="bogus")
         with pytest.raises(ValueError):
             helpers_core.history_stats_create(fake_client, name="n",
-                                                  entity_id="sensor.s",
-                                                  state="on",
-                                                  start="x")  # only one bound
+                                              entity_id="sensor.s",
+                                              state="on",
+                                              start="x")  # only one bound
 
     def test_history_stats_create_ok(self, primed):
         helpers_core.history_stats_create(primed, name="UptimeToday",
-                                              entity_id="binary_sensor.up",
-                                              state="on",
-                                              start="{{ now().date() }}",
-                                              duration={"hours": 24})
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["state"] == "on"
-        assert ui["duration"] == {"hours": 24}
+                                          entity_id="binary_sensor.up",
+                                          state="on",
+                                          start="{{ now().date() }}",
+                                          duration={"hours": 24})
+        steps = _cf_steps(primed)
+        # `state` is a LIST on the wire even for one value
+        assert steps[0]["state"] == ["on"]
+        assert steps[0]["type"] == "time"
+        assert steps[1]["duration"] == {"hours": 24}
 
-    def test_filter_create_validates(self, fake_client):
+    def test_filter_has_no_config_flow_and_says_so(self, fake_client):
+        """`filter` is YAML-only on HA 2025.1.4 — refuse locally, name the way out."""
+        with pytest.raises(ValueError, match="YAML|raw"):
+            helpers_core.filter_create(fake_client, name="smooth",
+                                       entity_id="sensor.temp",
+                                       filters=[{"filter": "lowpass"}])
+        assert fake_client.calls == []
+
+    def test_filter_still_validates_its_arguments_first(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.filter_create(fake_client, name="n",
-                                          entity_id="sensor.s", filters=[])
-
-    def test_filter_create_ok(self, primed):
-        helpers_core.filter_create(primed, name="smooth",
-                                      entity_id="sensor.temp",
-                                      filters=[{"filter": "lowpass",
-                                                 "time_constant": 10}])
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["filters"][0]["filter"] == "lowpass"
+                                       entity_id="sensor.s", filters=[])
 
     def test_random_create_validates(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.random_create(fake_client, name="n",
-                                          minimum=10, maximum=5)
+                                       minimum=10, maximum=5)
 
-    def test_random_create_ok(self, primed):
-        helpers_core.random_create(primed, name="r", minimum=1, maximum=6)
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["minimum"] == 1
-        assert ui["maximum"] == 6
+    def test_random_create_ok(self, fake_client):
+        _cf_prime(fake_client, _cf_menu(["sensor", "binary_sensor"]))
+        helpers_core.random_create(fake_client, name="r", minimum=1, maximum=6)
+        steps = _cf_steps(fake_client)
+        assert steps[0] == {"next_step_id": "sensor"}
+        assert steps[1]["minimum"] == 1
+        assert steps[1]["maximum"] == 6
 
     def test_template_create_validates_type(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.template_create(fake_client, name="n",
-                                            template_type="bogus")
+                                         template_type="bogus")
 
     def test_template_create_validates_state_required(self, fake_client):
-        with pytest.raises(ValueError):
+        """`state` is required by the sensor form — HA's schema says so."""
+        _cf_prime(
+            fake_client,
+            _cf_menu(["sensor", "button"]),
+            _cf_form("sensor", [{"name": "name", "required": True},
+                                {"name": "state", "required": True}]),
+            _cf_created(),
+        )
+        with pytest.raises(ValueError, match="state"):
             helpers_core.template_create(fake_client, name="n",
-                                            template_type="sensor")
+                                         template_type="sensor")
 
-    def test_template_create_button_no_state(self, primed):
-        helpers_core.template_create(primed, name="press",
-                                        template_type="button")
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["template_type"] == "button"
-        assert "state" not in ui
+    def test_template_create_button_no_state(self, fake_client):
+        _cf_prime(fake_client, _cf_menu(["sensor", "button"]))
+        helpers_core.template_create(fake_client, name="press",
+                                     template_type="button")
+        steps = _cf_steps(fake_client)
+        assert steps[0] == {"next_step_id": "button"}
+        assert "state" not in steps[1]
 
-    def test_template_create_sensor(self, primed):
-        helpers_core.template_create(primed, name="kWh",
-                                        template_type="sensor",
-                                        state="{{ states('sensor.x') | float * 0.001 }}",
-                                        unit_of_measurement="kWh",
-                                        state_class="total_increasing")
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["template_type"] == "sensor"
+    def test_template_create_sensor(self, fake_client):
+        _cf_prime(fake_client, _cf_menu(["sensor"]))
+        helpers_core.template_create(
+            fake_client, name="kWh", template_type="sensor",
+            state="{{ states('sensor.x') | float * 0.001 }}",
+            unit_of_measurement="kWh", state_class="total_increasing")
+        ui = _cf_steps(fake_client)[-1]
         assert ui["unit_of_measurement"] == "kWh"
         assert ui["state_class"] == "total_increasing"
+
+    def test_template_unknown_variant_is_refused_before_the_menu(self, fake_client):
+        _cf_prime(fake_client, _cf_menu(["sensor"]))
+        with pytest.raises(ValueError):
+            helpers_core.template_create(fake_client, name="n",
+                                         template_type="climate")
+        assert fake_client.calls == []
 
     def test_group_create_validates(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.group_create(fake_client, name="g",
-                                         entities=["light.a"],
-                                         group_type="bogus")
+                                      entities=["light.a"],
+                                      group_type="bogus")
         with pytest.raises(ValueError):
             helpers_core.group_create(fake_client, name="g",
-                                         entities=[], group_type="light")
+                                      entities=[], group_type="light")
 
-    def test_group_create_ok(self, primed):
-        helpers_core.group_create(primed, name="kitchen-lights",
-                                     entities=["light.a", "light.b"],
-                                     group_type="light", all=True)
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["group_type"] == "light"
-        assert ui["entities"] == ["light.a", "light.b"]
-        assert ui["all"] is True
+    def test_group_create_ok(self, fake_client):
+        _cf_prime(fake_client, _cf_menu(["light", "binary_sensor"]))
+        helpers_core.group_create(fake_client, name="kitchen-lights",
+                                  entities=["light.a", "light.b"],
+                                  group_type="light")
+        steps = _cf_steps(fake_client)
+        assert steps[0] == {"next_step_id": "light"}
+        assert steps[1]["entities"] == ["light.a", "light.b"]
+        assert steps[1]["hide_members"] is False
+
+    def test_group_all_is_binary_sensor_only(self, fake_client):
+        """`all` is on the binary_sensor form alone; elsewhere HA 400s."""
+        _cf_prime(fake_client, _cf_menu(["binary_sensor"]))
+        helpers_core.group_create(fake_client, name="any-open",
+                                  entities=["binary_sensor.a"],
+                                  group_type="binary_sensor", all=True)
+        assert _cf_steps(fake_client)[-1]["all"] is True
+
+    def test_group_all_on_a_light_group_is_refused(self, fake_client):
+        _cf_prime(fake_client, _cf_menu(["light"]))
+        with pytest.raises(ValueError, match="binary_sensor"):
+            helpers_core.group_create(fake_client, name="g",
+                                      entities=["light.a"],
+                                      group_type="light", all=True)
 
     def test_generic_thermostat_create(self, primed):
         helpers_core.generic_thermostat_create(primed, name="t",
+                                               heater="switch.h",
+                                               target_sensor="sensor.t")
+        steps = _cf_steps(primed)
+        assert steps[0]["heater"] == "switch.h"
+        assert steps[0]["target_sensor"] == "sensor.t"
+        assert steps[0]["ac_mode"] is False
+        # second step is the (here empty) presets form
+        assert steps[1] == {}
+
+    def test_generic_thermostat_target_temp_is_not_a_flow_field(self, fake_client):
+        with pytest.raises(ValueError, match="climate set-temperature"):
+            helpers_core.generic_thermostat_create(fake_client, name="t",
                                                    heater="switch.h",
                                                    target_sensor="sensor.t",
                                                    target_temp=21.5)
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["heater"] == "switch.h"
-        assert ui["target_temp"] == 21.5
+        assert fake_client.calls == []
 
     def test_generic_hygrostat_validates(self, fake_client):
         with pytest.raises(ValueError):
             helpers_core.generic_hygrostat_create(fake_client, name="h",
-                                                      humidifier="switch.x",
-                                                      target_sensor="sensor.h",
-                                                      device_class="bogus")
+                                                  humidifier="switch.x",
+                                                  target_sensor="sensor.h",
+                                                  device_class="bogus")
 
     def test_generic_hygrostat_create(self, primed):
         helpers_core.generic_hygrostat_create(primed, name="h",
-                                                  humidifier="switch.x",
-                                                  target_sensor="sensor.h")
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
+                                              humidifier="switch.x",
+                                              target_sensor="sensor.h")
+        ui = _cf_steps(primed)[-1]
         assert ui["device_class"] == "humidifier"
+
+    def test_generic_hygrostat_humidity_limits_are_options_only(self, fake_client):
+        with pytest.raises(ValueError, match="set-options"):
+            helpers_core.generic_hygrostat_create(fake_client, name="h",
+                                                  humidifier="switch.x",
+                                                  target_sensor="sensor.h",
+                                                  target_humidity=55)
 
     def test_switch_as_x_validates_domain(self, fake_client):
         with pytest.raises(ValueError):
-            helpers_core.switch_as_x_create(fake_client, name="n",
-                                                entity_id="switch.x",
-                                                target_domain="bogus")
+            helpers_core.switch_as_x_create(fake_client,
+                                            entity_id="switch.x",
+                                            target_domain="")
 
     def test_switch_as_x_validates_entity(self, fake_client):
-        with pytest.raises(ValueError):
-            helpers_core.switch_as_x_create(fake_client, name="n",
-                                                entity_id="light.x",
-                                                target_domain="light")
+        with pytest.raises(ValueError, match="switch"):
+            helpers_core.switch_as_x_create(fake_client,
+                                            entity_id="light.x",
+                                            target_domain="light")
 
-    def test_switch_as_x_ok(self, primed):
-        helpers_core.switch_as_x_create(primed, name="fan",
+    def test_switch_as_x_has_no_name_field(self, fake_client):
+        with pytest.raises(ValueError, match="entity update"):
+            helpers_core.switch_as_x_create(fake_client, name="fan",
                                             entity_id="switch.fan",
                                             target_domain="fan")
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["target_domain"] == "fan"
 
-    def test_tod_create(self, primed):
+    def test_switch_as_x_ok(self, primed):
+        helpers_core.switch_as_x_create(primed, entity_id="switch.fan",
+                                        target_domain="fan")
+        ui = _cf_steps(primed)[-1]
+        assert ui == {"entity_id": "switch.fan", "target_domain": "fan",
+                      "invert": False}
+
+    def test_tod_create_renames_the_fields(self, primed):
+        """HA's fields are after_time/before_time, not after/before."""
         helpers_core.tod_create(primed, name="day",
-                                   after="sunrise", before="sunset")
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
-        assert ui["after"] == "sunrise"
-        assert ui["before"] == "sunset"
+                                after="06:00:00", before="22:00:00")
+        ui = _cf_steps(primed)[-1]
+        assert ui["after_time"] == "06:00:00"
+        assert ui["before_time"] == "22:00:00"
+
+    def test_tod_offsets_are_yaml_only(self, fake_client):
+        with pytest.raises(ValueError, match="YAML"):
+            helpers_core.tod_create(fake_client, name="day", after="06:00:00",
+                                    before="22:00:00",
+                                    after_offset={"minutes": 30})
 
     def test_mold_indicator_create(self, primed):
         helpers_core.mold_indicator_create(primed, name="mold",
-                                              indoor_temp_sensor="sensor.it",
-                                              indoor_humidity_sensor="sensor.ih",
-                                              outdoor_temp_sensor="sensor.ot",
-                                              calibration_factor=2.5)
-        ui = primed.ws_calls[-1]["payload"]["user_input"]
+                                           indoor_temp_sensor="sensor.it",
+                                           indoor_humidity_sensor="sensor.ih",
+                                           outdoor_temp_sensor="sensor.ot",
+                                           calibration_factor=2.5)
+        ui = _cf_steps(primed)[-1]
         assert ui["calibration_factor"] == 2.5
 
 

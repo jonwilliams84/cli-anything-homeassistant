@@ -22,11 +22,12 @@ def runner(monkeypatch, fake_client):
     return CliRunner()
 
 
-def _invoke(runner, *args, json_out=True):
+def _invoke(runner, *args, json_out=True, input=None):
     full = ["--json"] + list(args) if json_out else list(args)
     return runner.invoke(
         cli_mod.cli,
         full,
+        input=input,
         obj={
             "url": "http://x",
             "token": "t",
@@ -372,9 +373,19 @@ class TestLifecycleCli:
         assert r.exit_code != 0
 
     def test_delete_requires_confirmation(self, runner, fake_client):
-        r = _invoke(runner, "helpers", "delete", "E1")
-        assert r.exit_code == 0
+        # Answering the prompt "no" is a clean exit that touches nothing.
+        r = _invoke(runner, "helpers", "delete", "E1", input="n\n")
+        assert r.exit_code == 0, r.output
         assert "aborted" in r.output
+        assert fake_client.calls == []
+
+    def test_delete_with_no_stdin_aborts_rather_than_deleting(self, runner, fake_client):
+        """No tty and no --yes must NOT fall through to the delete.
+
+        Click raises Abort on EOF, which exits non-zero — the safe direction.
+        """
+        r = _invoke(runner, "helpers", "delete", "E1")
+        assert r.exit_code != 0
         assert fake_client.calls == []
 
     def test_delete_with_yes(self, runner, fake_client):
