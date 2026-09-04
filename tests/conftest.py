@@ -32,12 +32,228 @@ class FakeClient:
         # `service_calls` so tests can assert on the payload.
         self.service_responses: dict[str, Any] = {}
         self.service_calls: list[dict] = []
+        # WS failure recorder. `set_ws_error(type, code)` makes `ws_call` raise
+        # the same `HomeAssistantError` the real client raises for a
+        # `success: false` result — including HA's machine-readable `code`,
+        # which core modules branch on (cloud's `not_logged_in`, detect's
+        # `unknown_error`).
+        self.ws_errors: dict[str, tuple[str, str]] = {}
+        # `ws_ping` samples, in ms, popped in order; the last one repeats.
+        self.ping_samples: list[float] = [1.0]
+        self.ping_calls: int = 0
+        self.ping_error: Exception | None = None
+        # `ws_run_events` recorder — the ack-then-stream-to-completion shape.
+        # `set_run_events(*events)` queues what the next run streams back;
+        # every call is recorded in `run_event_calls`, and any binary frames
+        # the caller pushed through `on_ack` land in `binary_frames`.
+        self.run_event_calls: list[dict] = []
+        self.queued_run_events: list[Any] = []
+        self.binary_frames: list[bytes] = []
+        # Downloads: `download()` writes this payload and reports its size.
+        self.download_calls: list[dict] = []
+        self.download_payload: bytes = b"fake-audio"
+        # REST failure recorder — see `set_rest_error`.
+        self.rest_errors: dict[tuple[str, str], tuple[int, str]] = {}
+        # Root-path recorder — the `/auth/*` and `/.well-known/*` views, which
+        # live OUTSIDE `/api/` and so never reach `get`/`post`. Keyed by
+        # (VERB, path) and queued as a LIST, because the auth endpoints answer
+        # the same (verb, path) differently on consecutive calls: a login flow
+        # POSTs twice to `/auth/login_flow/{id}` and gets a form step then a
+        # create_entry, and `revoke --verify` POSTs to `/auth/token` expecting
+        # the refresh to now FAIL.
+        self.root_calls: list[dict] = []
+        self.root_responses: dict[tuple[str, str], list[tuple[int, Any]]] = {}
+        # Sequenced REST answers — see `set_seq`. Needed by anything that
+        # POSTs the SAME path repeatedly and expects different answers: a
+        # config flow submits every step to
+        # `config/config_entries/flow/<flow_id>`, so a single canned response
+        # per path would make a three-step helper flow look like a one-step
+        # one.
+        self.response_queues: dict[tuple[str, str], list[Any]] = {}
+
+    #: Whatever a core module derives a default client_id from. A real-looking
+    #: origin, since `validate_client_id` is applied to it for real.
+    base_url = "http://fake.local:8123"
+
+    def set_root(self, verb: str, path: str, status: int, body: Any = None) -> None:
+        """Queue one `(status, body)` answer for `verb path` on `root_request`.
+
+        Repeated calls QUEUE rather than overwrite; the last queued answer
+        repeats once the queue is drained.
+        """
+        self.root_responses.setdefault((verb.upper(), path), []).append((status, body))
+
+    def root_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: Any = None,
+        form: dict | None = None,
+        params: dict | None = None,
+        send_auth: bool = True,
+        auth_token: str | None = None,
+    ) -> tuple[int, Any]:
+        """Shim for the non-`/api/` transport. Returns `(status, body)`.
+
+        `send_auth`, `auth_token` and the json/form split are RECORDED, not
+        just accepted: which of the two encodings a call uses is the single
+        most consequential detail on these endpoints (`/auth/login_flow`
+        parses only JSON, `/auth/token` only a form body), and WHICH IDENTITY
+        a call is made under is the equivalent for onboarding — the three
+        authenticated steps must use the token minted by the unauthenticated
+        one, not the client's own (absent) bearer.
+        """
+        if auth_token and not send_auth:
+            raise ValueError("auth_token and send_auth=False are contradictory")
+        self.root_calls.append(
+            {
+                "method": method.upper(),
+                "path": path,
+                "json": json_payload,
+                "form": form,
+                "params": params,
+                "send_auth": send_auth,
+                "auth_token": auth_token,
+            }
+        )
+        queue = self.root_responses.get((method.upper(), path))
+        if not queue:
+            return 200, {}
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    def set_run_events(self, *events: Any) -> None:
+        """Queue the events the next `ws_run_events` call streams back."""
+        self.queued_run_events.extend(events)
+
+    def ws_run_events(
+        self,
+        msg_type: str,
+        payload: dict | None = None,
+        *,
+        is_terminal=None,
+        timeout: float | None = None,
+        on_ack=None,
+        on_event=None,
+    ) -> list[Any]:
+        """Shim for the run-to-completion websocket shape.
+
+        Reproduces the ORDERING the real client has, because that ordering is
+        what the audio path depends on: the ack lands first and starts
+        `on_ack` on its own thread, the events follow, and only a delivered
+        `run-start` can release a sender waiting for its handler id. A fake
+        that called `on_ack` after the events would make a deadlock look fine.
+        """
+        self.run_event_calls.append(
+            {"type": msg_type, "payload": payload, "timeout": timeout}
+        )
+        if msg_type in self.ws_errors:
+            from cli_anything.homeassistant.utils.homeassistant_backend import (
+                HomeAssistantError,
+            )
+
+            code, message = self.ws_errors[msg_type]
+            raise HomeAssistantError(
+                f"WS command {msg_type} failed: {code} {message}", code=code
+            )
+
+        sender_error: list[BaseException] = []
+        sender: threading.Thread | None = None
+        if on_ack is not None:
+
+            def _pump() -> None:
+                try:
+                    on_ack(self.binary_frames.append)
+                except BaseException as exc:  # noqa: BLE001
+                    sender_error.append(exc)
+
+            sender = threading.Thread(target=_pump, daemon=True)
+            sender.start()
+
+        delivered: list[Any] = []
+        for event in self.queued_run_events:
+            delivered.append(event)
+            if on_event is not None:
+                on_event(event)
+            if is_terminal is not None and is_terminal(event):
+                break
+        self.queued_run_events.clear()
+        if sender is not None:
+            sender.join(timeout=15.0)
+        if sender_error:
+            raise sender_error[0]
+        return delivered
+
+    def download(self, path: str, dest, params: Any = None, chunk_size: int = 0) -> dict:
+        path = path.lstrip("/")
+        self.download_calls.append({"path": path, "dest": str(dest), "params": params})
+        with open(dest, "wb") as fh:
+            fh.write(self.download_payload)
+        return {
+            "path": str(dest),
+            "bytes": len(self.download_payload),
+            "content_type": "audio/x-wav",
+            "declared_length": len(self.download_payload),
+            "size_matches": True,
+        }
+
+    def set_ws_error(self, msg_type: str, code: str, message: str = "") -> None:
+        self.ws_errors[msg_type] = (code, message)
+
+    def set_ping(self, *samples: float) -> None:
+        self.ping_samples = list(samples) or [1.0]
+
+    def ws_ping(self) -> float:
+        self.ping_calls += 1
+        if self.ping_error is not None:
+            raise self.ping_error
+        idx = min(self.ping_calls - 1, len(self.ping_samples) - 1)
+        return self.ping_samples[idx]
 
     def set_service(self, domain: str, service: str, response: Any) -> None:
         self.service_responses[f"{domain}.{service}"] = response
 
+    def set_rest_error(self, verb: str, path: str, status: int, body: str = "") -> None:
+        """Make `verb path` raise the same error the real client raises on a
+        non-ok REST response — INCLUDING the HTTP status.
+
+        The status is the whole point for `core/service_errors.py`: the
+        service endpoint answers a failure with a status and an empty body, so
+        400 ("HA never ran this") vs 500 ("HA ran it and the handler raised")
+        is the only signal the client gets.
+        """
+        self.rest_errors[(verb.upper(), path.lstrip("/"))] = (status, body)
+
+    def _maybe_rest_error(self, verb: str, path: str) -> None:
+        entry = self.rest_errors.get((verb.upper(), path.lstrip("/").split("?", 1)[0]))
+        if entry is None:
+            return
+        from cli_anything.homeassistant.utils.homeassistant_backend import (
+            HomeAssistantError,
+        )
+
+        status, body = entry
+        raise HomeAssistantError(
+            f"{verb.upper()} {path} -> {status}: {body}", status=status
+        )
+
     def set(self, verb: str, path: str, response: Any) -> None:
         self.responses[(verb.upper(), path.lstrip("/"))] = response
+
+    def set_seq(self, verb: str, path: str, *responses: Any) -> None:
+        """Queue successive answers for repeated calls to `verb path`.
+
+        The last queued answer repeats once the queue is drained (same rule
+        as `set_root`), so a test only has to enumerate the answers that
+        differ.
+        """
+        self.response_queues.setdefault((verb.upper(), path.lstrip("/")), []).extend(responses)
+
+    def _dequeue(self, verb: str, match_path: str) -> tuple[bool, Any]:
+        queue = self.response_queues.get((verb.upper(), match_path))
+        if not queue:
+            return False, None
+        return True, (queue.pop(0) if len(queue) > 1 else queue[0])
 
     def set_ws(self, msg_type: str, response: Any) -> None:
         self.ws_responses[msg_type] = response
@@ -47,6 +263,10 @@ class FakeClient:
         # Strip any querystring fragment for matching.
         match_path = path.split("?", 1)[0]
         self.calls.append({"verb": "GET", "path": path, "params": params})
+        self._maybe_rest_error("GET", path)
+        queued, response = self._dequeue("GET", match_path)
+        if queued:
+            return response
         return self.responses.get(("GET", match_path),
                                   self.responses.get(("GET", path), []))
 
@@ -58,6 +278,10 @@ class FakeClient:
         if params is not None:
             call["params"] = params
         self.calls.append(call)
+        self._maybe_rest_error("POST", path)
+        queued, response = self._dequeue("POST", match_path)
+        if queued:
+            return response
         # If this looks like services/<domain>/<svc>, also record it via the
         # service-call recorder so logger / mqtt tests can inspect.
         if match_path.startswith("services/"):
@@ -80,10 +304,23 @@ class FakeClient:
         if params is not None:
             call["params"] = params
         self.calls.append(call)
+        self._maybe_rest_error("DELETE", path)
+        queued, response = self._dequeue("DELETE", path.split("?", 1)[0])
+        if queued:
+            return response
         return self.responses.get(("DELETE", path), {})
 
     def ws_call(self, msg_type: str, payload: dict | None = None) -> Any:
         self.ws_calls.append({"type": msg_type, "payload": payload})
+        if msg_type in self.ws_errors:
+            from cli_anything.homeassistant.utils.homeassistant_backend import (
+                HomeAssistantError,
+            )
+
+            code, message = self.ws_errors[msg_type]
+            raise HomeAssistantError(
+                f"WS command {msg_type} failed: {code} {message}", code=code
+            )
         return self.ws_responses.get(msg_type, [])
 
 
@@ -223,10 +460,24 @@ def _create_long_lived_token(config_dir: Path, owner_username: str = "agent") ->
         )
         user = await manager.async_get_or_create_user(credentials)
         await manager.async_activate_user(user)
-        try:
-            await manager.async_update_user(user, is_owner=True)
-        except Exception:
-            pass
+        # OWNERSHIP IS SET ON THE MODEL, NOT THROUGH `async_update_user`.
+        #
+        # This used to be `await manager.async_update_user(user, is_owner=True)`
+        # inside a bare `except Exception: pass`. That method has no `is_owner`
+        # parameter — only name/is_active/group_ids/local_only — so every call
+        # raised `TypeError` and was swallowed, and the "owner user" this
+        # helper documents was a plain admin on every run since. Nothing
+        # noticed until a command that checks `user.is_owner` (the owner-only
+        # credential admin pair) was tested against it and came back
+        # `unauthorized`.
+        #
+        # `is_owner` is an attrs field on `auth.models.User` whose setter
+        # refreshes the permission policy, and `_data_to_save()` reads it back
+        # off the model, so assigning it directly both takes effect and
+        # persists. Asserted rather than tried, so a future HA that moves it
+        # fails loudly here instead of silently downgrading every e2e run.
+        user.is_owner = True
+        assert user.is_owner, "could not make the test user an owner"
         from datetime import timedelta
         refresh = await manager.async_create_refresh_token(
             user,
@@ -244,6 +495,84 @@ def _create_long_lived_token(config_dir: Path, owner_username: str = "agent") ->
         return token
 
     return asyncio.run(_create())
+
+
+def _write_hass_config(config_dir: Path, port: int, *, extra: str = "") -> None:
+    """The minimal `configuration.yaml` the e2e fixtures boot against."""
+    (config_dir / "configuration.yaml").write_text(
+        "homeassistant:\n"
+        "  name: cli-anything-test\n"
+        "  latitude: 52.3676\n"
+        "  longitude: 4.9041\n"
+        "  elevation: 0\n"
+        "  unit_system: metric\n"
+        "  time_zone: Etc/UTC\n"
+        "api:\n"
+        "auth:\n"
+        "config:\n"
+        + extra
+        + f"http:\n  server_port: {port}\n  server_host: 127.0.0.1\n"
+        "logger:\n  default: warning\n"
+    )
+
+
+@pytest.fixture
+def fresh_hass_instance() -> Iterator[dict]:
+    """Boot a real Home Assistant that has NEVER been onboarded.
+
+    FUNCTION-SCOPED ON PURPOSE, unlike `hass_instance`. Onboarding steps are
+    one-shot and are marked done before they can fail, so a test that touches
+    one has permanently changed the instance for every test after it. Sharing
+    this would make the suite order-dependent in the most confusing possible
+    way: the second test to run would see "already done" and have no way to
+    tell that from a bug.
+
+    Yields `{url, config_dir, proc}` — and deliberately NO token, because not
+    having one is the entire situation these endpoints exist for.
+    """
+    if not _hass_available():
+        pytest.skip(
+            "Real Home Assistant not installed. Install with: pip install homeassistant"
+        )
+
+    port = _free_port()
+    config_dir = Path(tempfile.mkdtemp(prefix="cli-hass-fresh-"))
+    # `onboarding` and `person` are pulled in by `default_config` on a normal
+    # install; named explicitly here because the e2e config is deliberately
+    # minimal. Without `onboarding` the /api/onboarding views are never
+    # registered at all and every request 404s.
+    _write_hass_config(config_dir, port, extra="onboarding:\nperson:\nanalytics:\n")
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "homeassistant", "--config", str(config_dir)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        _wait_for_http(base_url + "/api/", timeout=180)
+    except TimeoutError as exc:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+        shutil.rmtree(config_dir, ignore_errors=True)
+        pytest.skip(f"Home Assistant did not come up: {exc}\nLog:\n{out[-2000:]}")
+
+    yield {"url": base_url, "config_dir": str(config_dir), "proc": proc}
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    shutil.rmtree(config_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -270,6 +599,11 @@ def hass_instance() -> Iterator[dict]:
         "  time_zone: Etc/UTC\n"
         "api:\n"
         "auth:\n"
+        # `config:` registers the config_entries / config_flow / device- and
+        # entity-registry WS commands. Without it every `config_entries/flow/*`
+        # call answers `unknown_command` and the whole helper / integration
+        # setup surface is untestable against a real instance.
+        "config:\n"
         "logbook:\n"
         "history:\n"
         "persistent_notification:\n"

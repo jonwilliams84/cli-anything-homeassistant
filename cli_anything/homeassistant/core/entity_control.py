@@ -916,3 +916,409 @@ def notify_send(
         }
     )
     return _call(client, "notify", service, payload)
+
+
+# ──────────────────────────────────────────────────────────────────── switch
+
+
+def switch_turn_on(client, entity_id: str) -> Any:
+    _require_prefix(entity_id, "switch.")
+    return _call(client, "switch", "turn_on", {"entity_id": entity_id})
+
+
+def switch_turn_off(client, entity_id: str) -> Any:
+    _require_prefix(entity_id, "switch.")
+    return _call(client, "switch", "turn_off", {"entity_id": entity_id})
+
+
+def switch_toggle(client, entity_id: str) -> Any:
+    _require_prefix(entity_id, "switch.")
+    return _call(client, "switch", "toggle", {"entity_id": entity_id})
+
+
+# ─────────────────────────────────────────────────── date / time / datetime
+#
+# The three `set_value` services each parse their argument with a DIFFERENT
+# and mostly undocumented parser, and reject a bad one with a bare HTTP 400.
+# The validators below are the client-side copies of HA 2025.1.4's own, so the
+# refusal names the format instead of being a status code.
+
+
+def _validate_date(value: str) -> str:
+    """Accept exactly what `dt_util.parse_date` accepts: `YYYY-MM-DD`.
+
+    HA's own `date/services.yaml` gives `"2022/11/01"` as the example for this
+    field. That example is REJECTED: `parse_date` is
+    `datetime.strptime(dt_str, "%Y-%m-%d")`, so slashes are a 400 with no body.
+    """
+    import datetime as _dt
+    import re as _re
+
+    if not value:
+        raise ValueError("date is required")
+    # `date.fromisoformat` also accepts the basic form ("20221101"), which HA's
+    # `%Y-%m-%d` parser does not — so pin the shape first, then let the stdlib
+    # reject impossible dates. A date carries no timezone, so this stays clear
+    # of the naive-datetime rule the strptime form tripped (DTZ007).
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError(
+            f"date must be ISO `YYYY-MM-DD`, got {value!r} — note that HA's own "
+            f"services.yaml example ('2022/11/01') is not accepted by the parser"
+        )
+    try:
+        _dt.date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"date must be a real calendar date, got {value!r}") from None
+    return value
+
+
+def _validate_time(value: str) -> str:
+    """Accept what `dt_util.parse_time` accepts: `HH:MM` or `HH:MM:SS`.
+
+    HA splits on `:` and int()s the parts, so it needs at least two of them;
+    a bare `"22"` is a 400. The stored state is always normalised to
+    `HH:MM:SS`.
+    """
+    import datetime as _dt
+
+    if not value:
+        raise ValueError("time is required")
+    parts = str(value).split(":")
+    if len(parts) < 2:
+        raise ValueError(f"time must be `HH:MM` or `HH:MM:SS`, got {value!r}")
+    try:
+        _dt.time(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
+    except ValueError:
+        raise ValueError(f"time must be `HH:MM` or `HH:MM:SS`, got {value!r}") from None
+    return value
+
+
+def _validate_datetime(value: str) -> str:
+    """Accept an ISO-8601 datetime; report what HA will do with a loose one.
+
+    Two behaviours worth knowing, both measured against 2025.1.4:
+
+    * A DATE-ONLY string is accepted and silently becomes midnight —
+      `"2023-10-07"` stores `2023-10-07T00:00:00`. It is not an error, so
+      it is not refused here either.
+    * A NAIVE datetime is interpreted in **Home Assistant's** timezone, not
+      the caller's: `datetime/__init__.py` does
+      `value.replace(tzinfo=dt_util.get_default_time_zone())`. Pass an
+      explicit offset (or a trailing `Z`) when that matters.
+    """
+    import datetime as _dt
+
+    if not value:
+        raise ValueError("datetime is required")
+    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        _dt.datetime.fromisoformat(candidate)
+    except ValueError:
+        raise ValueError(
+            f"datetime must be ISO-8601 (e.g. `2023-10-07T21:35:22` or "
+            f"`2023-10-07T21:35:22+02:00`), got {value!r}"
+        ) from None
+    return value
+
+
+def date_set_value(client, entity_id: str, *, date: str) -> Any:
+    _require_prefix(entity_id, "date.")
+    return _call(
+        client, "date", "set_value", {"entity_id": entity_id, "date": _validate_date(date)}
+    )
+
+
+def time_set_value(client, entity_id: str, *, time: str) -> Any:
+    _require_prefix(entity_id, "time.")
+    return _call(
+        client, "time", "set_value", {"entity_id": entity_id, "time": _validate_time(time)}
+    )
+
+
+def datetime_set_value(client, entity_id: str, *, datetime: str) -> Any:
+    _require_prefix(entity_id, "datetime.")
+    return _call(
+        client,
+        "datetime",
+        "set_value",
+        {"entity_id": entity_id, "datetime": _validate_datetime(datetime)},
+    )
+
+
+# ──────────────────────────────────────────────────────────────────── camera
+#
+# These are the camera services that make the camera DO something, as opposed
+# to the proxy endpoints (`camera snapshot` / `capture`, v1.51.0) that stream
+# bytes back to this machine. `host_snapshot` and `record` write their output
+# on the HOME ASSISTANT HOST, not here — see the docstrings.
+
+
+def camera_turn_on(client, entity_id: str) -> Any:
+    _require_prefix(entity_id, "camera.")
+    return _call(client, "camera", "turn_on", {"entity_id": entity_id})
+
+
+def camera_turn_off(client, entity_id: str) -> Any:
+    """Turn a camera off.
+
+    A camera that is off answers `/api/camera_proxy/<entity_id>` with **503**:
+    `CameraView.get` checks `camera.is_on` before dispatching. That is the
+    same 503 `camera snapshot` reports.
+    """
+    _require_prefix(entity_id, "camera.")
+    return _call(client, "camera", "turn_off", {"entity_id": entity_id})
+
+
+def camera_enable_motion_detection(client, entity_id: str) -> Any:
+    _require_prefix(entity_id, "camera.")
+    return _call(client, "camera", "enable_motion_detection", {"entity_id": entity_id})
+
+
+def camera_disable_motion_detection(client, entity_id: str) -> Any:
+    _require_prefix(entity_id, "camera.")
+    return _call(client, "camera", "disable_motion_detection", {"entity_id": entity_id})
+
+
+def _validate_host_path(filename: str, *, what: str) -> str:
+    """Refuse a path HA is certain to reject, and say where the file lands.
+
+    `camera.snapshot` and `camera.record` write on the Home Assistant host and
+    both run the destination through `hass.config.is_allowed_path()`. A path
+    outside `allowlist_external_dirs` raises `HomeAssistantError` inside the
+    handler, which over REST is a **500 with an empty body** — so the one
+    check that can be made locally is worth making.
+
+    The field is a TEMPLATE (`cv.template`), so `{{ entity_id.name }}` is
+    rendered by HA; that is why a `{`/`}` is not treated as suspicious here.
+    """
+    if not filename:
+        raise ValueError(f"{what} filename is required")
+    if not filename.startswith("/"):
+        raise ValueError(
+            f"{what} filename must be an ABSOLUTE path on the Home Assistant "
+            f"host (not on this machine), got {filename!r}"
+        )
+    return filename
+
+
+def camera_host_snapshot(client, entity_id: str, *, filename: str) -> Any:
+    """`camera.snapshot` — write a still ON THE HOME ASSISTANT HOST.
+
+    Not to be confused with `camera snapshot`, the CLI command that downloads
+    a frame to THIS machine over `/api/camera_proxy`. This one hands the path
+    to HA and HA writes it, so the directory must be inside
+    `allowlist_external_dirs` in HA's `configuration.yaml`.
+
+    Returns nothing useful: the REST service endpoint returns the list of
+    states this call changed, and taking a snapshot changes none.
+    """
+    _require_prefix(entity_id, "camera.")
+    return _call(
+        client,
+        "camera",
+        "snapshot",
+        {
+            "entity_id": entity_id,
+            "filename": _validate_host_path(filename, what="snapshot"),
+        },
+    )
+
+
+def camera_record(
+    client,
+    entity_id: str,
+    *,
+    filename: str,
+    duration: int | None = None,
+    lookback: int | None = None,
+) -> Any:
+    """`camera.record` — record to a file ON THE HOME ASSISTANT HOST.
+
+    Needs the `stream` integration AND a camera that provides a stream source;
+    a camera without one raises `<entity_id> does not support record service`,
+    which arrives over REST as a bare 500.
+
+    `lookback` replays from the stream's already-buffered past, so it only
+    yields anything when `preload_stream` is on for that camera
+    (`camera prefs-set --preload-stream`).
+
+    The selector bounds `duration` to 1-3600 and `lookback` to 0-300 in the
+    UI; the voluptuous schema behind it is only `vol.Coerce(int)`, so those
+    are enforced here rather than by HA.
+    """
+    _require_prefix(entity_id, "camera.")
+    payload: dict[str, Any] = {
+        "entity_id": entity_id,
+        "filename": _validate_host_path(filename, what="record"),
+    }
+    if duration is not None:
+        if not 1 <= int(duration) <= 3600:
+            raise ValueError(f"duration must be 1-3600 seconds, got {duration}")
+        payload["duration"] = int(duration)
+    if lookback is not None:
+        if not 0 <= int(lookback) <= 300:
+            raise ValueError(f"lookback must be 0-300 seconds, got {lookback}")
+        payload["lookback"] = int(lookback)
+    return _call(client, "camera", "record", payload)
+
+
+def camera_play_stream(
+    client,
+    entity_id: str,
+    *,
+    media_player: str,
+    stream_format: str = "hls",
+) -> Any:
+    """`camera.play_stream` — cast a camera's live stream to a media player."""
+    _require_prefix(entity_id, "camera.")
+    if not media_player:
+        raise ValueError("media_player is required")
+    if not media_player.startswith("media_player."):
+        raise ValueError(f"expected media_player.* entity_id for the target, got {media_player!r}")
+    if stream_format not in ("hls",):
+        raise ValueError(f"format must be 'hls', got {stream_format!r}")
+    return _call(
+        client,
+        "camera",
+        "play_stream",
+        {
+            "entity_id": entity_id,
+            "media_player": media_player,
+            "format": stream_format,
+        },
+    )
+
+
+# ────────────────────────────────────────────── fill-ins on existing domains
+
+
+def climate_toggle(client, entity_id: str) -> Any:
+    _require_prefix(entity_id, "climate.")
+    return _call(client, "climate", "toggle", {"entity_id": entity_id})
+
+
+def climate_set_swing_horizontal_mode(client, entity_id: str, *, swing_horizontal_mode: str) -> Any:
+    """Set the HORIZONTAL swing mode — a separate service from `set_swing_mode`.
+
+    (`climate.set_aux_heat` is deliberately not wrapped: it is deprecated and
+    documented as unsupported from Home Assistant 2025.4.)
+    """
+    _require_prefix(entity_id, "climate.")
+    if not swing_horizontal_mode:
+        raise ValueError("swing_horizontal_mode is required")
+    return _call(
+        client,
+        "climate",
+        "set_swing_horizontal_mode",
+        {"entity_id": entity_id, "swing_horizontal_mode": swing_horizontal_mode},
+    )
+
+
+def cover_toggle_tilt(client, entity_id: str) -> Any:
+    _require_prefix(entity_id, "cover.")
+    return _call(client, "cover", "toggle_cover_tilt", {"entity_id": entity_id})
+
+
+def media_player_toggle(client, entity_id: str) -> Any:
+    _mp_require(entity_id)
+    return _call(client, "media_player", "toggle", {"entity_id": entity_id})
+
+
+def media_player_seek(client, entity_id: str, *, position: float) -> Any:
+    """Seek to `position` SECONDS from the start of the current item.
+
+    `seek_position` is `cv.positive_float`, so a negative value is refused by
+    HA with a bare 400 — refused here instead.
+    """
+    _mp_require(entity_id)
+    if position is None:
+        raise ValueError("position is required")
+    if float(position) < 0:
+        raise ValueError(f"position must be >= 0 seconds, got {position}")
+    return _call(
+        client,
+        "media_player",
+        "media_seek",
+        {"entity_id": entity_id, "seek_position": float(position)},
+    )
+
+
+def alarm_arm_custom_bypass(client, entity_id: str, *, code: str | None = None) -> Any:
+    if not entity_id.startswith("alarm_control_panel."):
+        raise ValueError(f"expected alarm_control_panel.* entity_id, got {entity_id!r}")
+    payload = _drop_none({"entity_id": entity_id, "code": code})
+    return _call(client, "alarm_control_panel", "alarm_arm_custom_bypass", payload)
+
+
+def alarm_trigger(client, entity_id: str, *, code: str | None = None) -> Any:
+    """Trigger the alarm — as if a sensor had fired. **This sounds the siren.**"""
+    if not entity_id.startswith("alarm_control_panel."):
+        raise ValueError(f"expected alarm_control_panel.* entity_id, got {entity_id!r}")
+    payload = _drop_none({"entity_id": entity_id, "code": code})
+    return _call(client, "alarm_control_panel", "alarm_trigger", payload)
+
+
+# ───────────────────────────────────────────────────────────── device_tracker
+
+
+def device_tracker_see(
+    client,
+    *,
+    dev_id: str | None = None,
+    mac: str | None = None,
+    host_name: str | None = None,
+    location_name: str | None = None,
+    gps: tuple[float, float] | list[float] | None = None,
+    gps_accuracy: int | None = None,
+    battery: int | None = None,
+) -> Any:
+    """`device_tracker.see` — report a device's position to HA.
+
+    This is the "manual tracker" entry point: it CREATES `device_tracker.<dev_id>`
+    on first use and persists it in `known_devices.yaml`.
+
+    At least one of `dev_id`/`mac` is required — with neither, HA has nothing
+    to key the device on and answers a bare 400.
+
+    `location_name` and `gps` are alternatives: `location_name` sets a zone by
+    name (`home`, `not_home`, or a zone's friendly name) and `gps` sets
+    coordinates that HA then resolves to a zone itself.
+    """
+    if not dev_id and not mac:
+        raise ValueError("device_tracker.see needs at least one of dev_id or mac")
+    if gps is not None:
+        if len(list(gps)) != 2:
+            raise ValueError("gps must be exactly [latitude, longitude]")
+        lat, lon = (float(v) for v in gps)
+        if not -90 <= lat <= 90:
+            raise ValueError(f"latitude must be between -90 and 90, got {lat}")
+        if not -180 <= lon <= 180:
+            raise ValueError(f"longitude must be between -180 and 180, got {lon}")
+        gps = [lat, lon]
+    if battery is not None and not 0 <= int(battery) <= 100:
+        raise ValueError(f"battery must be 0-100, got {battery}")
+    payload = _drop_none(
+        {
+            "dev_id": dev_id,
+            "mac": mac,
+            "host_name": host_name,
+            "location_name": location_name,
+            "gps": gps,
+            "gps_accuracy": gps_accuracy,
+            "battery": battery,
+        }
+    )
+    return _call(client, "device_tracker", "see", payload)
+
+
+# ─────────────────────────────────────────────────────────── image_processing
+
+
+def image_processing_scan(client, entity_id: str) -> Any:
+    """`image_processing.scan` — force a scan now instead of waiting for the poll.
+
+    The result is not returned: it lands on the `image_processing.*` entity's
+    own state and attributes, so read it back with `state get` afterwards.
+    """
+    _require_prefix(entity_id, "image_processing.")
+    return _call(client, "image_processing", "scan", {"entity_id": entity_id})

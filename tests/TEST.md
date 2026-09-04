@@ -1025,3 +1025,167 @@ the production 2026.8.1 instance, including a real 195MB backup download
 (opened with `tarfile`: `backup.json` + `homeassistant.tar.gz`), a real
 multipart file upload, and a real media upload that was removed again
 afterwards. A test that only skips is not evidence.
+
+---
+
+## v1.50.0 — `assist run` (`assist_pipeline/run`) and a third websocket shape
+
+### Scope
+
+Re-enumerated HA's websocket + REST surface from the installed source and
+diffed it against every string this harness sends. 23 websocket commands and
+37 REST views came back uncovered, and almost all of them belong to
+integrations this harness cannot reach (KNX, LCN, iOS, Nest, UniFi Protect,
+Plex, Reolink, hassio/supervisor, onboarding). **One core command was missing,
+and it was the one that makes a voice assistant do anything:**
+`assist_pipeline/run`.
+
+### What could not be tested live, stated plainly
+
+`assist_pipeline` requires `pyspeex-noise`, whose wheel does not build in this
+environment (`pymicro-vad` does; `pyspeex-noise` fails to compile). The e2e
+Home Assistant therefore never loads the integration, and `assist run` answers
+`unknown_command` against it. `tests/test_full_e2e.py::test_assist_run_live`
+**skips**, and the skip is the honest result — the alternative was a test that
+asserts nothing and reads as green.
+
+So the verification was moved to where it could be real.
+
+### `tests/test_ws_run_events.py` — a real server, not another fake
+
+The new transport is exercised against an **aiohttp websocket server that
+implements HA's protocol from the other side**: the `auth_required` handshake,
+an empty `result` ack, and binary frames decoded exactly as
+`components/websocket_api/http.py` does them —
+`handler = data[0]; payload = data[1:]`.
+
+A WAV goes in through `assist run --start-stage stt` and the server reassembles
+it and reports the byte count back through a `stt-end` event, which the test
+compares against the file. Wrong framing does not produce a subtly wrong
+assertion there — it hangs, or the handler byte is wrong, or the end-of-stream
+frame never arrives. That is the class of bug a `FakeClient` structurally
+cannot catch, because a fake built from the same misunderstanding agrees with
+it.
+
+Covered against the real socket: auth + command dispatch, terminal-event
+collection, a failed ack carrying HA's `code`, a run that never ends becoming
+an error rather than a hang, other subscription ids and server-sent binary
+being ignored, live `on_event` delivery, handler-byte framing, empty-payload
+termination, chunking of a 3-second file, and text runs sending no binary.
+
+### Bugs the tests found while being written
+
+- **The ack is not the start.** The first version read the binary handler id
+  straight out of the collected events inside `on_ack`, and found an empty
+  list every time: HA sends the empty `result` and only *then* emits
+  `run-start`. Against a fake that delivered events before the ack this would
+  have passed. The sender now waits on `run-start`.
+- **The collector raced HA's own timeout.** Passing `--timeout` to both the
+  pipeline and the transport meant the client gave up at the same instant the
+  server was composing its `error`/`timeout` answer, replacing a real
+  diagnosis with a local "did not finish". The transport now gets a 5s grace.
+- **The protocol server leaked pending tasks.** The deliberately-silent
+  behaviour left an awaiting task when the loop stopped, printing "Task was
+  destroyed but it is pending!" into every test session. Teardown now runs on
+  the loop's own thread after `run_forever` returns.
+
+### Results
+
+```
+before ......................... 3799 passed, 28 skipped
+after .......................... 3885 passed, 30 skipped   (+86, 0 regressions)
+
+test_assist_pipeline_run.py .... 50 passed   (payloads, framing, WAV, summary)
+test_ws_run_events.py .......... 12 passed   (real websocket server)
+test_cli_assist_run_wiring.py .. 18 passed   (options + clean-error contract)
+test_full_e2e.py ...............  6 added    (4 pass, 2 skip: no pipeline here)
+
+ruff check cli_anything/ ....... All checks passed
+```
+
+The 2 new skips are `test_assist_run_live` (no `assist_pipeline` on this
+build). The three local-refusal e2e tests — reversed stages, `stt` without
+audio, `run` in `--help` — pass on any build, because those checks are
+client-side by design.
+
+---
+
+## v1.51.0 — binary media proxy endpoints (`camera snapshot` / `capture`, `image capture`, `media-player artwork`)
+
+Scoped by re-enumerating the running version's surface (235 websocket
+commands, 88 REST views on 2025.1.4) and diffing it against every string the
+harness sends. Websocket coverage was already 204/235 with the remainder
+belonging to unreachable integrations (KNX, LCN, dynalite). The gap was on the
+REST side: four binary GET views that nothing called — the ones that return
+pixels.
+
+### Why a FakeClient was not enough here
+
+Every other command in this harness sends JSON and reads JSON, so a fake that
+records the call proves the call. These commands implement a **wire format**:
+multipart streams framed by Home Assistant's own writers. A fixture written by
+the author of the parser encodes the same reading of the protocol twice and
+agrees with itself.
+
+`tests/test_media_proxy_stream.py` therefore serves the camera route by
+calling `homeassistant.components.camera.async_get_still_stream` — the actual
+function behind `/api/camera_proxy_stream` — over a real TCP socket, and
+builds the image route from the image component's own `FRAME_SEPARATOR` /
+`FRAME_BOUNDARY` constants. The client reads it with the same `requests`
+session it uses in production.
+
+### Bugs the tests found while being written
+
+- **A stalled stream was a traceback, not a deadline.** `_iter_parts` checked
+  its deadline only *between* socket reads, so a camera that stops sending
+  (the normal state of a static entity — HA writes only when the image
+  CHANGES) blocked until the socket read timeout and then let
+  `requests.exceptions.ConnectionError` escape. Note the type: a read timeout
+  surfaces as `ConnectionError` wrapping urllib3's `ReadTimeoutError`, *not*
+  as `Timeout`, so catching `Timeout` alone would have left the bug in place.
+  Now the stall ends the capture and the result says `complete: false`.
+- **A wire failure was a traceback from every entry point.** The core
+  functions raised bare `RuntimeError`, which `_HandledGroup` does not catch —
+  so a 404/503/500 from a proxy view printed a stack trace instead of
+  `error: …`. Caught by the live e2e test, not by review. They now raise
+  `HomeAssistantError` (which subclasses `RuntimeError`, so no assertion
+  changed), and `_HandledGroup` also presents `FileExistsError` — refusing to
+  clobber a file is a normal outcome of every command that writes one,
+  including the pre-existing `image snapshot`.
+- **One test was wrong, not the code.** The image stream doubles every frame,
+  so 3 images are 6 parts on the wire — but only 5 are READ, because the third
+  distinct frame satisfies the budget and the capture stops before pulling its
+  duplicate. `duplicates_skipped` is 2, not 3.
+
+### What the framing tests pin
+
+- The two views declare **incompatible boundaries**. Camera declares
+  `boundary=--frameboundary` — dashes baked into the value — and writes
+  `--frameboundary`; image declares `boundary=frame-boundary` and writes
+  `\r\n--frame-boundary\r\n`. An RFC 2046 parser that prepends `--` to the
+  declared value reads one and hangs forever on the other. The parser is
+  length-driven instead, and a test asserts the trap still exists upstream.
+- HA's **deliberate duplicate frames** (first frame twice for camera, every
+  frame twice for image, both to work around Chrome rendering the n-1 frame)
+  are collapsed rather than written twice.
+- An endless stream is cut off by the deadline in seconds, not blocked on.
+
+### Results
+
+```
+before ......................... 3885 passed, 30 skipped
+after .......................... 3984 passed, 30 skipped   (+99, 0 regressions)
+
+test_media_proxy.py ............ 50 passed   (URLs, params, signed/bearer,
+                                              every bodyless status, refusals)
+test_media_proxy_stream.py ..... 10 passed   (HA's OWN writer, real socket)
+test_cli_media_proxy_wiring.py . 24 passed   (options + clean-error contract)
+test_full_e2e.py ............... 15 added    (all pass against a real HA)
+```
+
+The e2e class states plainly what it cannot prove: the throwaway instance
+loads no camera platform, so there is no entity whose bytes could be fetched.
+What it proves for real is a genuinely HA-minted signed URL (`auth/sign_path`
+is a core websocket command needing no camera integration), named 404s, and
+that every client-side refusal stops before the wire. The framing is proven in
+`test_media_proxy_stream.py`, which is the stronger test.

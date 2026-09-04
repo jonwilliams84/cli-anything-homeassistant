@@ -26,7 +26,7 @@ more API calls against a running HA instance.
 
 ### Authentication
 
-All requests require a **Long-Lived Access Token** (Bearer):
+Almost every request carries a **Long-Lived Access Token** (Bearer):
 
 1. Start Home Assistant.
 2. Sign in to the UI, open your profile (bottom-left avatar).
@@ -34,7 +34,37 @@ All requests require a **Long-Lived Access Token** (Bearer):
 4. Save it to the harness with `cli-anything-homeassistant config set --token <token>`
    or expose it via the `HASS_TOKEN` environment variable.
 
+**Or get one without the UI (v1.52.0+).** The `auth login` / `providers` /
+`login-flow` / `refresh` / `revoke` / `oauth-metadata` commands need no
+existing token — they wrap the views Home Assistant mounts at the server root,
+outside `/api/`:
+
+```bash
+HASS_URL=http://ha.local:8123 cli-anything-homeassistant \
+  auth login --username agent --save     # password prompted, hidden
+cli-anything-homeassistant auth tokens create my-agent   # make it durable
+```
+
+The access token from `auth login` lasts `expires_in` seconds (1800 by
+default); `auth tokens create` converts it into a long-lived one. See
+`core/auth_login.py` for the encoding and status-code traps — the two halves of
+the flow disagree about body encoding, and a wrong password is an HTTP 200.
+
 ### Reference Endpoints
+
+Root-mounted (NOT under `/api/`, so `client.get()`/`post()` cannot reach them —
+they go through `client.root_request()`):
+
+| Endpoint                                       | Purpose                                  |
+|------------------------------------------------|------------------------------------------|
+| `GET /.well-known/oauth-authorization-server`   | RFC 8414 metadata (no auth)              |
+| `GET /auth/providers`                           | Configured auth providers (no auth)      |
+| `POST /auth/login_flow`                         | Open a login flow — **JSON body**        |
+| `POST|DELETE /auth/login_flow/{flow_id}`        | Advance / abort a flow — **JSON body**   |
+| `POST /auth/token`                              | Code or refresh grant — **FORM body**    |
+| `POST /auth/revoke`                             | Revoke a refresh token — **FORM body**   |
+| `POST /auth/link_user`                          | Link a credential — JSON, **needs auth** |
+
 
 | Endpoint                              | Purpose                                  |
 |---------------------------------------|------------------------------------------|
@@ -58,6 +88,11 @@ All requests require a **Long-Lived Access Token** (Bearer):
 | `POST /api/backup/upload`             | Push a backup back (`?agent_id=`, repeatable) |
 | `POST /api/file_upload`               | Stage a file, returns `file_id`          |
 | `POST /api/media_source/local_source/upload` | Into the media library (image/video/audio ONLY) |
+| `GET /api/camera_proxy/<entity_id>`   | Camera still (`?width=&height=`, JPEG-only rescale) |
+| `GET /api/camera_proxy_stream/<entity_id>` | Camera MJPEG stream (`?interval=`, NEVER ends) |
+| `GET /api/image_proxy/<entity_id>`    | Image entity still                       |
+| `GET /api/image_proxy_stream/<entity_id>` | Image entity still-stream (NEVER ends) |
+| `GET /api/media_player_proxy/<entity_id>` | Cover art; `/browse_media/<type>/<id>` for a thumb |
 | `POST /api/image/upload`              | image_upload integration                 |
 | `POST /api/tts_get_url`               | Synthesise and return a playable URL     |
 | `POST /api/intent/handle`             | Fire an intent by name, no sentence parsing |
@@ -146,13 +181,15 @@ stderr and return a non-zero exit code.
 | `lock`       | `lock.*` shortcuts (`lock`/`unlock`/`open`)                         |
 | `alarm`      | `alarm_control_panel.*` arm/disarm shortcuts                        |
 | `search`     | `search/related` — find entities/devices/areas tied to an item      |
-| `camera`     | `camera.*` — capabilities / stream URL / prefs / WebRTC config      |
+| `camera`     | `camera.*` — capabilities / stream URL / prefs / WebRTC + `snapshot` / `capture` / `proxy-url` |
 | `device-automation` | List a device's available triggers/conditions/actions        |
 | `assist-satellite` | `assist_satellite.*` — wake-word config + test-connection     |
+| `assist run`  | Run a pipeline END TO END (`assist_pipeline/run`) — its own STT, agent and TTS, not just the conversation agent. `--audio` streams a 16-bit mono WAV as binary frames |
 | `mobile-app` | Companion app push delivery receipts                                |
 | `media`      | `media_source` browse / resolve / remove                            |
 | `category`   | Category registry CRUD (scope-bound tags for automations/scripts/…) |
 | `auth` (extensions) | `me`, `sign-path`, refresh token CRUD, full user admin       |
+| `auth` (pre-auth)   | `login` (username+password → token, NO existing token needed), `providers`, `refresh`, `revoke`, `exchange-code`, `link-user`, `login-flow start/step/abort`, `oauth-metadata` |
 | `logger` (extensions) | WS-side per-component log levels (`info-ws`/`level-get`/`level-set`) |
 | `system` (extensions) | manifest / analytics / app-credentials / issue / usb-scan / zha-permit-join / hardware-info / log |
 | `light`        | `light.*` ergonomic shortcuts (brightness/kelvin/rgb/effect/transition) |
@@ -237,10 +274,21 @@ is fetched on demand. This means:
 | Find everything tied to a light       | `search entity light.kitchen --json`                             |
 | Hide an entity from Alexa             | `entity expose set --assistant cloud.alexa --entity light.bedroom --hide` |
 | Grab an HLS URL for a camera          | `camera stream camera.front_door --json`                         |
+| See what the camera sees right now    | `camera snapshot camera.front_door front.jpg`                    |
+| Record a few frames off the stream    | `camera capture camera.front_door ./frames --frames 5 --interval 1.0` |
+| Embed a camera still with no auth header | `camera proxy-url camera.front_door --expires 300 --json`     |
+| Save the album art that's on screen   | `media-player artwork media_player.lounge art.jpg`               |
 | What triggers/conditions/actions does a device expose? | `device-automation summary <device_id> --json` |
 | How would Assist parse a sentence?    | `assist debug "turn off the lights"`                             |
+| Does the voice pipeline actually work? | `assist run "turn on the kitchen light" --json`                 |
+| Transcribe a WAV and act on it        | `assist run --start-stage stt --audio cmd.wav --save-tts reply.mp3` |
 | Switch a satellite's wake word        | `assist-satellite wake-words-set assist_satellite.kitchen okay_nabu` |
 | Browse the media library              | `media browse --json`                                            |
+| Get a token with no token             | `auth login --username agent --save --json`                      |
+| What logins does this instance accept | `auth providers --json`                                          |
+| Renew a short-lived access token      | `auth refresh --refresh-token <rt> --client-id <cid> --save`     |
+| Revoke a refresh token, and prove it  | `auth revoke --token <rt> --verify --yes`                        |
+| Log in to a 2FA account               | `auth login --username u --password p --mfa-code 123456`         |
 | Who am I right now                    | `auth me --json`                                                 |
 | Audit & revoke refresh tokens         | `auth tokens list --json` / `auth tokens delete <id> --yes`      |
 | Sign a one-shot URL for download      | `auth sign-path /api/camera_proxy/camera.front --expires 300`    |
@@ -274,6 +322,14 @@ is fetched on demand. This means:
 - **CLI subprocess tests** (`TestCLISubprocess`) — invoke
   `cli-anything-homeassistant` via the installed entry point with
   `_resolve_cli("cli-anything-homeassistant")`.
+- **Real-counterparty tests** — where the harness implements a WIRE FORMAT
+  rather than a JSON call, a `FakeClient` is not evidence: a fixture written
+  from the same reading of the protocol as the client agrees with the client
+  whether or not either is right. Two suites therefore run against a genuine
+  second implementation: `test_ws_run_events.py` (an aiohttp server speaking
+  HA's websocket framing) and `test_media_proxy_stream.py` (multipart frames
+  produced by Home Assistant's OWN `async_get_still_stream`, read over a real
+  socket). The latter caught two client bugs on first run.
 
 The tests must NOT skip when `homeassistant` is not installed — Home
 Assistant is a hard dependency.

@@ -20,7 +20,9 @@ pip install -e .
 cli-anything-homeassistant --help
 ```
 
-External dep: a running Home Assistant with a long-lived access token.
+External dep: a running Home Assistant. A long-lived access token if you have
+one; if you don't, `auth login` will get you one — and if the instance is so
+new it has no accounts yet, `onboarding provision` will create one (see below).
 
 ## First-time setup
 
@@ -30,6 +32,51 @@ cli-anything-homeassistant \
   --token "<long-lived-token>" \
   config save
 ```
+
+### Brand-new Home Assistant, no account at all? (v1.53+)
+
+`onboarding provision` creates the first account and hands back a working
+token, in one call — the step before `auth login` is even possible:
+
+```bash
+cli-anything-homeassistant --url http://homeassistant.local:8123 \
+  onboarding provision --name Agent --username agent --save
+```
+
+Onboarding steps are **one-shot and commit before they can fail**: Home
+Assistant marks each done at the top of its handler, so a step that errors is
+still finished and retrying it answers "already done". Every command here
+reports `ok` and `committed` separately and nothing retries. `provision` runs
+the fallible steps last, so a refused one never costs you the token.
+
+Also: `onboarding status` (which steps are done — no token needed),
+`onboarding installation-type` (readable *only* before the first step),
+`onboarding create-user`, `onboarding finish-step`, `onboarding
+finish-integration`.
+
+### No token yet? (v1.52+)
+
+`auth login` drives Home Assistant's IndieAuth flow — it needs no existing
+credential, because getting one is the point:
+
+```bash
+# Username + password → access token, written straight into the profile.
+cli-anything-homeassistant --url http://homeassistant.local:8123 \
+  auth login --username agent --save          # prompts for the password, hidden
+
+# That token expires in 30 minutes. Trade it for a durable one:
+cli-anything-homeassistant auth tokens create my-agent
+cli-anything-homeassistant config set --token "<the long-lived token>"
+```
+
+Useful companions: `auth providers` (what this instance accepts, no token
+needed), `auth refresh --refresh-token …` (new access token; pass the SAME
+`--client-id` `login` reported), `auth revoke --token … --verify`, and
+`auth login-flow start/step/abort` when a provider asks for fields `login`
+doesn't know about. `auth login --mfa-code` handles two-factor accounts.
+
+> A wrong password counts toward Home Assistant's IP-ban tracker, so don't
+> script a retry loop around `auth login`.
 
 Profile is stored at `~/.config/cli-anything-homeassistant.json` (mode 0600).
 Per-key env overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL` (`0` to
@@ -58,11 +105,12 @@ disable), `HASS_TIMEOUT` (seconds).
 | `statistics` | Long-term recorder stats: list / metadata / **series** (chart data) / update-metadata / clear |
 | `diagnostics` | Per-integration + per-device JSON downloads (same as UI's "Download diagnostics") |
 | `blueprint` | List / import / save / delete / substitute (dry-run render) |
-| `assist` | Send text to HA's conversation pipeline; list Assist pipelines |
+| `assist` | Send text to HA's conversation pipeline; list Assist pipelines; **run one end to end** (`assist run`) |
 | `updates` | List, install, skip, clear-skipped on `update.*` entities |
 | `logger` | Runtime log-level control without restart |
 | `group` | List members of light/switch/sensor groups |
-| `auth` | Users, long-lived tokens, whoami |
+| `auth` | Users, long-lived tokens, whoami — plus **`login` (username + password → token, no existing token needed)**, `providers`, `refresh`, `revoke`, `exchange-code`, `link-user`, `login-flow start/step/abort`, `oauth-metadata` |
+| `onboarding` | **Set up a brand-new instance**: `provision` (nothing → owner account → access token in one call), `status`, `installation-type`, `create-user`, `finish-step`, `finish-integration` |
 | `event subscribe` / `state watch` | Live tails — agent-friendly until-state-X loops |
 | `entity-references` | Find every UI-managed automation/template/lovelace that mentions an entity_id |
 | `scene` | List, activate (with `--transition`), apply ad-hoc states, snapshot to a new scene, reload |
@@ -73,14 +121,15 @@ disable), `HASS_TIMEOUT` (seconds).
 | `alarm` | `alarm_control_panel.*` — `arm-away` / `arm-home` / `arm-night` / `arm-vacation` / `disarm` |
 | `search` | `search/related` — every automation/scene/script/dashboard tied to an entity, device, area, … |
 | `entity expose` | Per-assistant expose flags + new-entity defaults (cloud.alexa / cloud.google_assistant) |
-| `camera` | `camera.*` capabilities, HLS stream URL, prefs, WebRTC client config |
+| `camera` | `camera.*` capabilities, HLS stream URL, prefs, WebRTC client config, **stills and stream frames** (`snapshot` / `capture` / `proxy-url`) |
 | `device-automation` | List a device's available triggers, conditions, actions — what the HA UI's automation editor shows |
 | `assist agents` / `sentences` / `debug` / `satellites` / `languages` | Conversation pipeline introspection + sentence-matching debugger |
+| `assist run` | **Run a pipeline end to end** (WS `assist_pipeline/run`) — the pipeline's own STT → agent → TTS, not just the conversation agent. `--start-stage stt --audio cmd.wav` transcribes a 16-bit mono WAV (streamed as binary frames) and acts on it; `--save-tts` writes the spoken reply to a file; `--stream` tails events live |
 | `assist-satellite` | `assist_satellite.*` — current config, set wake words, test connection |
 | `mobile-app` | Companion app push delivery receipts |
 | `media` | media_source browse / resolve to URL / local file remove |
 | `light` | `light.*` — `on` (brightness/kelvin/rgb/effect/transition) / `off` / `toggle` |
-| `media-player` | `media_player.*` — play/pause/stop/next/prev, volume/mute, source, play-media, shuffle, repeat, join/unjoin |
+| `media-player` | `media_player.*` — play/pause/stop/next/prev, volume/mute, source, play-media, shuffle, repeat, join/unjoin, `artwork` (cover art / browse-media thumbnails) |
 | `climate` | `climate.*` — set-temperature, set-hvac-mode, set-fan-mode, set-preset, set-humidity, set-swing |
 | `cover` | `cover.*` — open/close/stop/toggle, set-position, set-tilt + tilt open/close/stop |
 | `fan` | `fan.*` — turn-on (percentage/preset), set-percentage, set-preset, set-direction, oscillate, increase/decrease |
@@ -139,6 +188,15 @@ cli-anything-homeassistant state watch person.jon \
   --until-state home --duration 1800
 && cli-anything-homeassistant service call notify.mobile_app_jon \
    --data 'title=Welcome' --data 'message=Coffee on?'
+
+# Does the voice pipeline I just wired up actually work, end to end?
+cli-anything-homeassistant --json assist run "turn on the kitchen light" \
+  | jq '{completed, speech, error}'
+
+# Transcribe a recording and let the pipeline act on it, then keep the reply
+cli-anything-homeassistant --json assist run \
+  --start-stage stt --audio command.wav --save-tts reply.mp3 \
+  | jq '{stt_text, speech, saved_tts}'
 
 # Find dead entity references after renaming a sensor
 cli-anything-homeassistant entity-references sensor.old_name
@@ -216,6 +274,34 @@ cli-anything-homeassistant --json action run \
 # Who actually provides this entity? (and what's an orphan)
 cli-anything-homeassistant --json entity source light.kitchen
 cli-anything-homeassistant --json entity source --by-integration | jq 'map_values(length)'
+
+# Get the BYTES an entity is showing, not a description of them (v1.51+)
+# A still from a camera. --width and --height must be given TOGETHER: HA only
+# rescales when both are present, and only for JPEG cameras (`resized` in the
+# JSON says whether it actually happened).
+cli-anything-homeassistant camera snapshot camera.front_door front.jpg
+cli-anything-homeassistant --json camera snapshot camera.front_door small.jpg \
+    --width 640 --height 480 | jq .resized
+
+# Frames off the MJPEG stream. The stream NEVER ENDS, so a capture is bounded
+# by both a frame budget and a deadline. --interval makes HA compose the
+# stream from stills instead of using the camera's native MJPEG (which not
+# every platform has). HA deliberately sends the first frame twice; duplicates
+# are collapsed and counted.
+cli-anything-homeassistant --json camera capture camera.front_door ./frames \
+    --frames 5 --interval 1.0 --timeout 30 | jq '.frames, .duplicates_skipped'
+
+# Frames from an image entity (no interval — HA pushes on change; a static
+# entity yields one frame and reports complete:false at the timeout)
+cli-anything-homeassistant --json image capture image.doorbell ./frames --frames 3
+
+# A URL a browser or curl can fetch with no Authorization header
+cli-anything-homeassistant --json camera proxy-url camera.front_door --expires 300 | jq -r .url
+
+# Cover art for what's playing, or a thumbnail from the browse tree
+cli-anything-homeassistant media-player artwork media_player.lounge art.jpg
+cli-anything-homeassistant media-player artwork media_player.lounge thumb.jpg \
+    --content-type album --content-id 'library/albums/17'
 ```
 
 ## Agent / `--json` mode
@@ -250,7 +336,8 @@ cli_anything/homeassistant/
 │   ├── backup.py, control.py, repairs.py, notifications.py
 │   ├── diagnostics.py, statistics.py, assist.py, updates.py, inspect.py
 │   ├── logger.py, groups.py, mqtt.py, mqtt_discovery.py, watch.py
-│   └── system.py, references.py, recorder.py, template.py
+│   ├── system.py, references.py, recorder.py, template.py
+│   └── media_proxy.py   # binary GETs: camera/image stills + MJPEG, artwork
 └── utils/
     ├── homeassistant_backend.py   # requests Session + WS client
     └── repl_skin.py
@@ -270,6 +357,13 @@ python3 -m pytest tests/ -v
 Tests use a FakeClient that records every call — over 200 unit tests cover
 every core module against synthetic payloads. End-to-end tests boot a real
 Home Assistant in a temp config dir (requires `pip install homeassistant`).
+
+Two suites deliberately do NOT use a fake, because a fixture written by the
+author of the parser encodes the same assumption twice and agrees with itself:
+`tests/test_ws_run_events.py` runs the websocket client against a server that
+implements HA's protocol from the other side, and
+`tests/test_media_proxy_stream.py` parses multipart frames produced by Home
+Assistant's *own* `async_get_still_stream` over a real socket.
 
 ## Sibling projects
 

@@ -13,11 +13,14 @@ Home Assistant exposes helpers via two completely different mechanisms:
      - schedule                      tag
      - person                        zone
 
-2. **Config-flow helpers** (17+ types) — created by *initiating a config
-   flow* against an integration that registers a helper handler. The
-   flow API is generic: ``config_entries/flow/init`` →
-   ``config_entries/flow/configure``. The created entry lives in
-   ``.storage/core.config_entries``. Helpers in this family:
+2. **Config-flow helpers** (16 types) — created by *initiating a config
+   flow* against an integration that registers a helper handler. That flow
+   is REST-only (``POST /api/config/config_entries/flow`` → ``POST
+   /api/config/config_entries/flow/<flow_id>`` per step); the matching
+   websocket commands do not exist. The created entry lives in
+   ``.storage/core.config_entries``. See ``core/helper_integrations.py``,
+   which owns this family — the wrappers here are aliases for it. Helpers
+   in this family:
 
      - derivative           integration (Riemann sum)
      - utility_meter        min_max (combine sensors)
@@ -1033,19 +1036,29 @@ def tag_delete(client, tag_id: str) -> dict:
 # ════════════════════════════════════════════════════════════════════════
 # Config-flow helpers — derivative, utility_meter, template, group, etc.
 # ════════════════════════════════════════════════════════════════════════
-# These don't have a per-domain storage-collection API. Instead, HA exposes
-# helpers as config-flow integrations: you initiate a flow, walk through
-# the steps (usually just "user"), and it creates a ConfigEntry that lives
-# in `.storage/core.config_entries`.
+# These have no storage-collection API. They are config ENTRIES built by a
+# config flow, and that flow is REST-only:
 #
-# WS APIs used here:
-#   config_entries/flow/init      { handler, show_advanced_options }
-#   config_entries/flow/configure { flow_id, user_input }
-#   config_entries/get            (list all config entries)
-#   config_entries/remove         { entry_id }
+#   POST   /api/config/config_entries/flow            {"handler": <domain>}
+#   POST   /api/config/config_entries/flow/<flow_id>  <step user_input>
+#   DELETE /api/config/config_entries/entry/<entry_id>
 #
-# REST fallback (when WS is awkward) — same shape under /api/config/...
-# but we stick to WS for consistency with the rest of this module.
+# The websocket commands this section used to call — `config_entries/flow/
+# init`, `config_entries/flow/configure`, `config_entries/remove` — DO NOT
+# EXIST (measured against HA 2025.1.4: every one answers `unknown_command`),
+# so none of these wrappers ever worked against a real instance. Listing is
+# the exception: `config_entries/get` IS a websocket command.
+#
+# The real implementation, including the multi-step and menu flow shapes and
+# the corrected per-domain field names, now lives in
+# `core/helper_integrations.py`. Everything below is a thin, still-supported
+# alias for it; new code should call that module (or the `helpers create …`
+# CLI group) directly.
+
+from cli_anything.homeassistant.core import (  # noqa: E402
+    config_entries as _config_entries,
+    helper_integrations as _hi,
+)
 
 CONFIG_FLOW_HELPER_DOMAINS = (
     "derivative",
@@ -1071,12 +1084,10 @@ CONFIG_FLOW_HELPER_DOMAINS = (
 def config_entries_list(
     client, *, domain: str | None = None, type_filter: str | None = None
 ) -> list[dict]:
-    """List config entries.
+    """List config entries (`config_entries/get`).
 
-    `type_filter` — pass ``"helper"`` to get only helper integrations
-    (recommended for inspecting created helpers). Pass ``"integration"``
-    for normal integrations, or omit for everything.
-
+    `type_filter` — pass ``"helper"`` for helper integrations only,
+    ``"integration"`` for normal ones, or omit for everything.
     `domain` — further filter by integration domain (e.g. ``"derivative"``).
     """
     payload: dict = {}
@@ -1093,81 +1104,58 @@ def config_entries_list(
 
 
 def config_entry_remove(client, entry_id: str) -> dict:
-    """Remove a config entry (works for both integrations and helpers)."""
+    """Remove a config entry (helper or integration).
+
+    REST — there is no `config_entries/remove` websocket command.
+    """
     if not entry_id:
         raise ValueError("entry_id required")
-    return _ws_collection(client, "config_entries", "remove", payload={"entry_id": entry_id})
+    return _config_entries.delete_entry(client, entry_id)
 
 
 def config_flow_init(client, handler: str, *, show_advanced_options: bool = False) -> dict:
-    """Start a new config-entry flow for `handler` (e.g. ``"derivative"``).
+    """Start a config-entry flow for `handler` (e.g. ``"derivative"``).
 
-    Returns the flow descriptor including ``flow_id`` and either
-    ``data_schema`` (more steps needed) or a created ``result``.
+    Returns the first form descriptor: ``flow_id`` plus either ``data_schema``
+    (a form), ``menu_options`` (a menu) or a finished ``result``.
     """
     if not handler:
         raise ValueError("handler required")
-    return _ws_collection(
-        client,
-        "config_entries/flow",
-        "init",
-        payload={"handler": handler, "show_advanced_options": show_advanced_options},
-    )
+    return _config_entries.flow_init(client, handler, show_advanced_options=show_advanced_options)
 
 
 def config_flow_configure(client, flow_id: str, user_input: dict) -> dict:
-    """Submit user_input for an in-progress flow step.
-
-    Returns either the next step's descriptor or the final ``create_entry``
-    result with the new entry's ``result.entry_id``.
-    """
+    """Submit user_input to the current step of an in-progress flow."""
     if not flow_id:
         raise ValueError("flow_id required")
     if not isinstance(user_input, dict):
         raise ValueError("user_input must be a dict")
-    return _ws_collection(
-        client,
-        "config_entries/flow",
-        "configure",
-        payload={"flow_id": flow_id, "user_input": user_input},
-    )
+    return _config_entries.flow_configure(client, flow_id, user_input)
 
 
 def config_flow_helper_create(
     client, domain: str, user_input: dict, *, show_advanced_options: bool = False
 ) -> dict:
-    """Convenience: create a helper by initiating its flow and submitting
-    `user_input` in one shot. Works for any single-step helper flow (the
-    common case — most helpers only have a ``user`` step).
+    """Create a helper by initiating its flow and submitting `user_input`.
 
-    Multi-step flows can call ``config_flow_init`` / ``config_flow_configure``
-    directly to walk each step.
-
-    Returns the final flow result. The created entry_id is at
-    ``result["result"]["entry_id"]`` (when type == "create_entry").
+    Single-step flows only. For the multi-step ones (trend, statistics,
+    history_stats, generic_thermostat) and the menu ones (template, group,
+    random) use `helper_integrations.walk_flow` / the typed creators, which
+    know each flow's shape.
     """
-    if domain not in CONFIG_FLOW_HELPER_DOMAINS:
-        # Allow unknown domains too (HA may add more), just warn via ValueError
-        # caller can pass any domain; we only validate against the known list
-        # for typo protection. Disabling here so future helpers keep working.
-        pass
     flow = config_flow_init(client, domain, show_advanced_options=show_advanced_options)
     flow_id = flow.get("flow_id")
     if not flow_id:
-        # Already finished? (some single-shot handlers may resolve in init)
         return flow
     return config_flow_configure(client, flow_id, user_input)
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Per-domain convenience wrappers (validate the required fields HA expects
-# for each helper integration's user_input). All return the create_entry
-# flow result.
+# Per-domain wrappers. Thin aliases for `core.helper_integrations`, kept for
+# callers that predate it. Arguments HA's flow has no field for are refused
+# here by name rather than being dropped or sent (HA answers an extra key
+# with `extra keys not allowed`, and a dropped one would silently not apply).
 # ────────────────────────────────────────────────────────────────────────
-
-
-def _create_helper(client, domain: str, data: dict) -> dict:
-    return config_flow_helper_create(client, domain, data)
 
 
 def derivative_create(
@@ -1180,19 +1168,16 @@ def derivative_create(
     unit_time: str = "h",
     round: int = 2,
 ) -> dict:
-    """Create a Derivative sensor (d/dt of a source sensor).
-
-    `time_window` — e.g. ``{"hours": 0, "minutes": 5, "seconds": 0}``.
-    `unit_prefix` — None|k|M|G|...   `unit_time` — s|min|h|d
-    """
-    if not name or not source:
-        raise ValueError("name and source required")
-    data: dict = {"name": name, "source": source, "unit_time": unit_time, "round": round}
-    if time_window is not None:
-        data["time_window"] = time_window
-    if unit_prefix is not None:
-        data["unit_prefix"] = unit_prefix
-    return _create_helper(client, "derivative", data)
+    """Create a Derivative sensor (d/dt of a source sensor)."""
+    return _hi.create_derivative(
+        client,
+        name=name,
+        source=source,
+        time_window=time_window,
+        unit_time=unit_time,
+        round_digits=round,
+        unit_prefix=unit_prefix,
+    )
 
 
 def integration_create(
@@ -1204,23 +1189,21 @@ def integration_create(
     round: int = 2,
     unit_prefix: str | None = None,
     unit_time: str = "h",
+    max_sub_interval: dict | None = None,
 ) -> dict:
-    """Create a Riemann-sum Integral sensor.
-
-    `method` — left | right | trapezoidal
-    """
+    """Create a Riemann-sum Integral sensor. `method` — left|right|trapezoidal."""
     if method not in ("left", "right", "trapezoidal"):
         raise ValueError("method must be left|right|trapezoidal")
-    data: dict = {
-        "name": name,
-        "source": source,
-        "method": method,
-        "round": round,
-        "unit_time": unit_time,
-    }
-    if unit_prefix is not None:
-        data["unit_prefix"] = unit_prefix
-    return _create_helper(client, "integration", data)
+    return _hi.create_riemann(
+        client,
+        name=name,
+        source=source,
+        method=method,
+        unit_time=unit_time,
+        round_digits=round,
+        unit_prefix=unit_prefix,
+        max_sub_interval=max_sub_interval,
+    )
 
 
 def utility_meter_create(
@@ -1234,57 +1217,30 @@ def utility_meter_create(
     delta_values: bool = False,
     periodically_resetting: bool = True,
     tariffs: list[str] | None = None,
+    always_available: bool | None = None,
 ) -> dict:
-    """Create a Utility Meter (totaliser with optional cycle resets).
-
-    `cycle` — none | quarter-hourly | hourly | daily | weekly | monthly |
-              bimonthly | quarterly | yearly
-    """
-    valid_cycles = {
-        "none",
-        "quarter-hourly",
-        "hourly",
-        "daily",
-        "weekly",
-        "monthly",
-        "bimonthly",
-        "quarterly",
-        "yearly",
-    }
-    if cycle not in valid_cycles:
-        raise ValueError(f"cycle must be one of {sorted(valid_cycles)}")
-    data: dict = {
-        "name": name,
-        "source": source,
-        "cycle": cycle,
-        "offset": offset,
-        "net_consumption": net_consumption,
-        "delta_values": delta_values,
-        "periodically_resetting": periodically_resetting,
-        "tariffs": list(tariffs or []),
-    }
-    return _create_helper(client, "utility_meter", data)
+    """Create a Utility Meter (totaliser with optional cycle resets)."""
+    return _hi.create_utility_meter(
+        client,
+        name=name,
+        source=source,
+        cycle=cycle,
+        offset=offset,
+        tariffs=tariffs,
+        net_consumption=net_consumption,
+        delta_values=delta_values,
+        periodically_resetting=periodically_resetting,
+        always_available=always_available,
+    )
 
 
 def min_max_create(
     client, *, name: str, entity_ids: list[str], type: str = "mean", round_digits: int = 2
 ) -> dict:
-    """Combine the state of several sensors.
-
-    `type` — min | max | mean | median | last | range | sum
-    """
-    valid = {"min", "max", "mean", "median", "last", "range", "sum"}
-    if type not in valid:
-        raise ValueError(f"type must be one of {sorted(valid)}")
-    if not entity_ids:
-        raise ValueError("entity_ids must be non-empty")
-    data = {
-        "name": name,
-        "entity_ids": list(entity_ids),
-        "type": type,
-        "round_digits": round_digits,
-    }
-    return _create_helper(client, "min_max", data)
+    """Combine the state of several sensors (min|max|mean|median|last|range|sum)."""
+    return _hi.create_min_max(
+        client, name=name, entity_ids=entity_ids, type=type, round_digits=round_digits
+    )
 
 
 def threshold_create(
@@ -1297,14 +1253,14 @@ def threshold_create(
     upper: float | None = None,
 ) -> dict:
     """Threshold binary sensor — on when source crosses lower/upper."""
-    if lower is None and upper is None:
-        raise ValueError("at least one of lower/upper required")
-    data: dict = {"name": name, "entity_id": entity_id, "hysteresis": hysteresis}
-    if lower is not None:
-        data["lower"] = lower
-    if upper is not None:
-        data["upper"] = upper
-    return _create_helper(client, "threshold", data)
+    return _hi.create_threshold(
+        client,
+        name=name,
+        entity_id=entity_id,
+        lower=lower,
+        upper=upper,
+        hysteresis=hysteresis,
+    )
 
 
 def trend_create(
@@ -1314,22 +1270,27 @@ def trend_create(
     entity_id: str,
     attribute: str | None = None,
     invert: bool = False,
-    max_samples: int = 2,
-    min_gradient: float = 0.0,
-    sample_duration: int = 0,
+    max_samples: int | None = None,
+    min_samples: int | None = None,
+    min_gradient: float | None = None,
+    sample_duration: int | None = None,
 ) -> dict:
-    """Trend binary sensor — on when source is rising (or falling, inverted)."""
-    data: dict = {
-        "name": name,
-        "entity_id": entity_id,
-        "invert": invert,
-        "max_samples": max_samples,
-        "min_gradient": min_gradient,
-        "sample_duration": sample_duration,
-    }
-    if attribute is not None:
-        data["attribute"] = attribute
-    return _create_helper(client, "trend", data)
+    """Trend binary sensor — on when source is rising (or falling, inverted).
+
+    The sample-window arguments are applied through the OPTIONS flow after
+    creation; HA's config flow has no field for them.
+    """
+    return _hi.create_trend(
+        client,
+        name=name,
+        entity_id=entity_id,
+        attribute=attribute,
+        invert=invert,
+        max_samples=max_samples,
+        min_samples=min_samples,
+        min_gradient=min_gradient,
+        sample_duration=sample_duration,
+    )
 
 
 def statistics_create(
@@ -1345,18 +1306,17 @@ def statistics_create(
     percentile: int = 50,
 ) -> dict:
     """Statistics sensor — rolling stats over a window of samples."""
-    data: dict = {
-        "name": name,
-        "entity_id": entity_id,
-        "state_characteristic": state_characteristic,
-        "sampling_size": sampling_size,
-        "precision": precision,
-        "keep_last_sample": keep_last_sample,
-        "percentile": percentile,
-    }
-    if max_age is not None:
-        data["max_age"] = max_age
-    return _create_helper(client, "statistics", data)
+    return _hi.create_statistics(
+        client,
+        name=name,
+        entity_id=entity_id,
+        state_characteristic=state_characteristic,
+        sampling_size=sampling_size,
+        max_age=max_age,
+        keep_last_sample=keep_last_sample,
+        percentile=percentile,
+        precision=precision,
+    )
 
 
 def history_stats_create(
@@ -1364,50 +1324,51 @@ def history_stats_create(
     *,
     name: str,
     entity_id: str,
-    state: str,
+    state: str | list[str],
     type: str = "time",
     start: str | None = None,
     end: str | None = None,
     duration: dict | None = None,
 ) -> dict:
-    """History stats — count/duration/ratio of `entity_id` in `state` over
-    a period defined by (start, end) or (start, duration) or (end, duration).
+    """History stats — count/duration/ratio of `entity_id` in `state`.
 
-    `type` — time | ratio | count
-    `state` — the value to count (e.g. ``"on"``).
+    Exactly two of start/end/duration. `state` goes on the wire as a list.
     """
     if type not in ("time", "ratio", "count"):
         raise ValueError("type must be time|ratio|count")
-    bounds = sum(x is not None for x in (start, end, duration))
-    if bounds != 2:
-        raise ValueError("provide exactly two of start/end/duration")
-    data: dict = {"name": name, "entity_id": entity_id, "state": state, "type": type}
-    if start is not None:
-        data["start"] = start
-    if end is not None:
-        data["end"] = end
-    if duration is not None:
-        data["duration"] = duration
-    return _create_helper(client, "history_stats", data)
+    return _hi.create_history_stats(
+        client,
+        name=name,
+        entity_id=entity_id,
+        state=state,
+        type=type,
+        start=start,
+        end=end,
+        duration=duration,
+    )
 
 
 def filter_create(client, *, name: str, entity_id: str, filters: list[dict]) -> dict:
-    """Filter sensor — apply low-pass/outlier/range/etc. to a source.
+    """Filter sensor — NOT creatable through a config flow on HA 2025.1.4.
 
-    `filters` — list of filter descriptors, e.g.
-       ``[{"filter": "lowpass", "time_constant": 10}]``
+    `filter` is a YAML-only helper there (its flow handler was added later);
+    HA answers the flow init with 404 "Invalid handler specified". On a build
+    that does have it, drive it with
+    `helper_integrations.create_raw(client, "filter", [ ... ])` once its form
+    has been inspected with `config-flow init filter`.
     """
     if not filters:
         raise ValueError("filters list required")
-    data = {"name": name, "entity_id": entity_id, "filters": list(filters)}
-    return _create_helper(client, "filter", data)
+    raise ValueError(
+        "filter has no config flow on HA 2025.1.4 — configure it in YAML, or on a "
+        "newer build inspect `config-flow init filter` and use `helpers create raw "
+        "--domain filter`"
+    )
 
 
 def random_create(client, *, name: str, minimum: int = 0, maximum: int = 20) -> dict:
-    """Random integer sensor (re-rolled on demand or schedule)."""
-    if maximum <= minimum:
-        raise ValueError("maximum must be > minimum")
-    return _create_helper(client, "random", {"name": name, "minimum": minimum, "maximum": maximum})
+    """Random integer sensor."""
+    return _hi.create_random(client, name=name, minimum=minimum, maximum=maximum)
 
 
 def template_create(
@@ -1421,32 +1382,17 @@ def template_create(
     state_class: str | None = None,
     **extra,
 ) -> dict:
-    """Template helper.
-
-    `template_type` — sensor | binary_sensor | button | switch | image |
-                      number | select
-    `state` — the Jinja template for the entity's state. Required for
-    most types except button.
-
-    Extra type-specific fields can be passed as kwargs (e.g.
-    ``picture="..."`` for image, ``min=0, max=100`` for number).
-    """
-    valid_types = {"sensor", "binary_sensor", "button", "switch", "image", "number", "select"}
-    if template_type not in valid_types:
-        raise ValueError(f"template_type must be one of {sorted(valid_types)}")
-    if template_type != "button" and not state:
-        raise ValueError(f"state template required for template_type={template_type!r}")
-    data: dict = {"name": name, "template_type": template_type}
-    if state is not None:
-        data["state"] = state
-    if device_class is not None:
-        data["device_class"] = device_class
-    if unit_of_measurement is not None:
-        data["unit_of_measurement"] = unit_of_measurement
-    if state_class is not None:
-        data["state_class"] = state_class
-    data.update(extra)
-    return _create_helper(client, "template", data)
+    """Template helper. `template_type` picks the menu branch of the flow."""
+    return _hi.create_template(
+        client,
+        name=name,
+        variant=template_type,
+        state=state,
+        device_class=device_class,
+        unit_of_measurement=unit_of_measurement,
+        state_class=state_class,
+        fields=extra or None,
+    )
 
 
 def group_create(
@@ -1460,35 +1406,16 @@ def group_create(
 ) -> dict:
     """Group helper — combine multiple entities of the same domain.
 
-    `group_type` — light | switch | binary_sensor | sensor | cover |
-                   fan | media_player | lock | notify | event
-    `all` — if True, group is on only when all members are on
-            (default: any member on)
+    `all` is a binary_sensor-only field (HA refuses it on the other forms).
     """
-    valid = {
-        "light",
-        "switch",
-        "binary_sensor",
-        "sensor",
-        "cover",
-        "fan",
-        "media_player",
-        "lock",
-        "notify",
-        "event",
-    }
-    if group_type not in valid:
-        raise ValueError(f"group_type must be one of {sorted(valid)}")
-    if not entities:
-        raise ValueError("entities required")
-    data = {
-        "name": name,
-        "group_type": group_type,
-        "entities": list(entities),
-        "all": all,
-        "hide_members": hide_members,
-    }
-    return _create_helper(client, "group", data)
+    return _hi.create_group(
+        client,
+        name=name,
+        entities=entities,
+        variant=group_type,
+        hide_members=hide_members,
+        all=all if group_type == "binary_sensor" else (True if all else None),
+    )
 
 
 def generic_thermostat_create(
@@ -1500,24 +1427,29 @@ def generic_thermostat_create(
     ac_mode: bool = False,
     cold_tolerance: float = 0.3,
     hot_tolerance: float = 0.3,
-    min_temp: float = 7.0,
-    max_temp: float = 35.0,
-    target_temp: float = 20.0,
+    min_temp: float | None = None,
+    max_temp: float | None = None,
+    target_temp: float | None = None,
+    presets: dict | None = None,
 ) -> dict:
-    """Generic thermostat — wraps a switch + temperature sensor into a
-    climate entity."""
-    data = {
-        "name": name,
-        "heater": heater,
-        "target_sensor": target_sensor,
-        "ac_mode": ac_mode,
-        "cold_tolerance": cold_tolerance,
-        "hot_tolerance": hot_tolerance,
-        "min_temp": min_temp,
-        "max_temp": max_temp,
-        "target_temp": target_temp,
-    }
-    return _create_helper(client, "generic_thermostat", data)
+    """Generic thermostat — switch + temperature sensor → climate entity."""
+    if target_temp is not None:
+        raise ValueError(
+            "generic_thermostat's config flow has no target_temp field — create the "
+            "helper, then set it with `climate set-temperature`"
+        )
+    return _hi.create_generic_thermostat(
+        client,
+        name=name,
+        heater=heater,
+        target_sensor=target_sensor,
+        ac_mode=ac_mode,
+        cold_tolerance=cold_tolerance,
+        hot_tolerance=hot_tolerance,
+        min_temp=min_temp,
+        max_temp=max_temp,
+        presets=presets,
+    )
 
 
 def generic_hygrostat_create(
@@ -1529,42 +1461,52 @@ def generic_hygrostat_create(
     device_class: str = "humidifier",
     dry_tolerance: float = 3.0,
     wet_tolerance: float = 3.0,
-    min_humidity: int = 30,
-    max_humidity: int = 99,
-    target_humidity: int = 50,
+    min_humidity: int | None = None,
+    max_humidity: int | None = None,
+    target_humidity: int | None = None,
 ) -> dict:
-    """Generic hygrostat — wraps a switch + humidity sensor into a
-    humidifier entity. `device_class` is humidifier|dehumidifier."""
+    """Generic hygrostat — switch + humidity sensor → humidifier entity."""
     if device_class not in ("humidifier", "dehumidifier"):
         raise ValueError("device_class must be humidifier|dehumidifier")
-    data = {
-        "name": name,
-        "humidifier": humidifier,
-        "target_sensor": target_sensor,
-        "device_class": device_class,
-        "dry_tolerance": dry_tolerance,
-        "wet_tolerance": wet_tolerance,
-        "min_humidity": min_humidity,
-        "max_humidity": max_humidity,
-        "target_humidity": target_humidity,
-    }
-    return _create_helper(client, "generic_hygrostat", data)
-
-
-def switch_as_x_create(client, *, name: str, entity_id: str, target_domain: str) -> dict:
-    """Re-expose a switch as another domain.
-
-    `target_domain` — light | fan | lock | cover | siren | valve
-    """
-    valid = {"light", "fan", "lock", "cover", "siren", "valve"}
-    if target_domain not in valid:
-        raise ValueError(f"target_domain must be one of {sorted(valid)}")
-    if not entity_id.startswith("switch."):
-        raise ValueError("entity_id must be a switch.* entity_id")
-    return _create_helper(
+    unsupported = [
+        n
+        for n, v in (
+            ("min_humidity", min_humidity),
+            ("max_humidity", max_humidity),
+            ("target_humidity", target_humidity),
+        )
+        if v is not None
+    ]
+    if unsupported:
+        raise ValueError(
+            f"generic_hygrostat's config flow has no {', '.join(unsupported)} field — "
+            "create the helper, then apply them with `helpers set-options`"
+        )
+    return _hi.create_generic_hygrostat(
         client,
-        "switch_as_x",
-        {"name": name, "entity_id": entity_id, "target_domain": target_domain},
+        name=name,
+        humidifier=humidifier,
+        target_sensor=target_sensor,
+        device_class=device_class,
+        dry_tolerance=dry_tolerance,
+        wet_tolerance=wet_tolerance,
+    )
+
+
+def switch_as_x_create(
+    client, *, entity_id: str, target_domain: str, name: str | None = None, invert: bool = False
+) -> dict:
+    """Re-expose a switch as another domain (light|fan|lock|cover|siren|valve).
+
+    There is no name field — the new entity inherits the switch's name.
+    """
+    if name is not None:
+        raise ValueError(
+            "switch_as_x takes no name — the new entity inherits the source switch's "
+            "name; rename it afterwards with `entity update`"
+        )
+    return _hi.create_switch_as_x(
+        client, entity_id=entity_id, target_domain=target_domain, invert=invert
     )
 
 
@@ -1579,14 +1521,11 @@ def tod_create(
 ) -> dict:
     """Times-of-the-Day binary sensor — on during [after, before].
 
-    `after`/`before` — ``"sunrise"``, ``"sunset"``, or ``"HH:MM:SS"``.
+    HA's fields are `after_time`/`before_time`; the offsets are YAML-only.
     """
-    data: dict = {"name": name, "after": after, "before": before}
-    if after_offset is not None:
-        data["after_offset"] = after_offset
-    if before_offset is not None:
-        data["before_offset"] = before_offset
-    return _create_helper(client, "tod", data)
+    if after_offset is not None or before_offset is not None:
+        raise ValueError("tod's config flow has no offset fields — they are YAML-only")
+    return _hi.create_tod(client, name=name, after_time=after, before_time=before)
 
 
 def mold_indicator_create(
@@ -1598,16 +1537,15 @@ def mold_indicator_create(
     outdoor_temp_sensor: str,
     calibration_factor: float = 2.0,
 ) -> dict:
-    """Mould Indicator — predicts wall surface mould risk from indoor +
-    outdoor conditions."""
-    data = {
-        "name": name,
-        "indoor_temp_sensor": indoor_temp_sensor,
-        "indoor_humidity_sensor": indoor_humidity_sensor,
-        "outdoor_temp_sensor": outdoor_temp_sensor,
-        "calibration_factor": calibration_factor,
-    }
-    return _create_helper(client, "mold_indicator", data)
+    """Mould Indicator — surface-humidity risk from indoor + outdoor climate."""
+    return _hi.create_mold_indicator(
+        client,
+        name=name,
+        indoor_temp_sensor=indoor_temp_sensor,
+        indoor_humidity_sensor=indoor_humidity_sensor,
+        outdoor_temp_sensor=outdoor_temp_sensor,
+        calibration_factor=calibration_factor,
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════

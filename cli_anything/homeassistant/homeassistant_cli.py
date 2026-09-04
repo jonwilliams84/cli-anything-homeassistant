@@ -34,10 +34,12 @@ from cli_anything.homeassistant.core import config_entries as config_entries_cor
 from cli_anything.homeassistant.core import domain as domain_core
 from cli_anything.homeassistant.core import events as events_core
 from cli_anything.homeassistant.core import helpers as helpers_core
+from cli_anything.homeassistant.core import helper_integrations as helper_integrations_core
 from cli_anything.homeassistant.core import history as history_core
 from cli_anything.homeassistant.core import lovelace as lovelace_core
 from cli_anything.homeassistant.core import areas as areas_core
 from cli_anything.homeassistant.core import assist as assist_core
+from cli_anything.homeassistant.core import assist_pipeline_run as assist_run_core
 from cli_anything.homeassistant.core import backup as backup_core
 from cli_anything.homeassistant.core import blueprints as blueprints_core
 from cli_anything.homeassistant.core import calendars as calendars_core
@@ -50,6 +52,7 @@ from cli_anything.homeassistant.core import labs as labs_core
 from cli_anything.homeassistant.core import preferences as preferences_core
 from cli_anything.homeassistant.core import device_links as device_links_core
 from cli_anything.homeassistant.core import intents as intents_core
+from cli_anything.homeassistant.core import cloud as cloud_core
 from cli_anything.homeassistant.core import control as control_core
 from cli_anything.homeassistant.core import diagnostics as diagnostics_core
 from cli_anything.homeassistant.core import floors as floors_core
@@ -97,6 +100,7 @@ from cli_anything.homeassistant.core import recorder as recorder_core
 from cli_anything.homeassistant.core import scenes as scenes_core
 from cli_anything.homeassistant.core import service_shortcuts as service_shortcuts_core
 from cli_anything.homeassistant.core import entity_control as entity_control_core
+from cli_anything.homeassistant.core import service_errors as service_errors_core
 from cli_anything.homeassistant.core import powercalc as powercalc_core
 from cli_anything.homeassistant.core import powercalc_calibration as powercalc_calibration_core
 from cli_anything.homeassistant.core import powercalc_regression as powercalc_regression_core
@@ -114,6 +118,7 @@ from cli_anything.homeassistant.core import weather_advanced as weather_advanced
 from cli_anything.homeassistant.core import zone as zone_core
 from cli_anything.homeassistant.core import webhook as webhook_core
 from cli_anything.homeassistant.core import image as image_core
+from cli_anything.homeassistant.core import media_proxy as media_proxy_core
 from cli_anything.homeassistant.core import profiler as profiler_core
 from cli_anything.homeassistant.core import backup_advanced as backup_advanced_core
 from cli_anything.homeassistant.core import calendar_ws as calendar_ws_core
@@ -137,7 +142,11 @@ from cli_anything.homeassistant.core import device_class_units as device_class_u
 from cli_anything.homeassistant.core import trace_debug as trace_debug_core
 from cli_anything.homeassistant.core import trace_debugger as trace_debugger_core
 from cli_anything.homeassistant.core import core_config as core_config_core
+from cli_anything.homeassistant.core import thread_network as thread_network_core
+from cli_anything.homeassistant.core import otbr as otbr_core
 from cli_anything.homeassistant.core import voice as voice_core
+from cli_anything.homeassistant.core import auth_login as auth_login_core
+from cli_anything.homeassistant.core import onboarding as onboarding_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
     HomeAssistantError,
@@ -298,12 +307,21 @@ class _HandledGroup(click.Group):
     rather than of how it was launched. `main()` keeps its own handler for
     anything raised before the group is entered (config loading, argv
     hoisting).
+
+    `FileExistsError` is in the list because refusing to clobber a file is a
+    NORMAL outcome of every command that writes one (`image snapshot`,
+    `camera snapshot`, `camera capture`, `media-player artwork`). It carries
+    its own remedy in the message — "pass --overwrite" — and a message that
+    ends in a stack trace reads as a crash rather than as the safety check it
+    is. `HomeAssistantError` subclasses `RuntimeError`, so a core module that
+    raises it for a wire failure is presented here too; a bare `RuntimeError`
+    is NOT, which is why core functions must raise one of these three.
     """
 
     def invoke(self, ctx):
         try:
             return super().invoke(ctx)
-        except (HomeAssistantError, ValueError) as exc:
+        except (HomeAssistantError, ValueError, FileExistsError) as exc:
             _abort(str(exc))
 
 
@@ -342,35 +360,100 @@ def cli(ctx, url, token, verify_ssl, timeout, config_path, as_json):
         ctx.invoke(repl)
 
 
+#: Root options that consume the next argv token. Their VALUES must not be
+#: mistaken for subcommand names while resolving what the user asked for.
+_ROOT_VALUE_FLAGS = frozenset({"--url", "--token", "--timeout", "--config"})
+
+
+def _subcommand_option_names(argv: list[str]) -> set[str]:
+    """Every option spelling declared by the subcommand `argv` selects.
+
+    Used by :func:`main` to decide what NOT to hoist. Resolution stops at the
+    first token that is not a command name, so arguments and option values
+    never steer it.
+    """
+    if not isinstance(cli, click.Group):  # pragma: no cover — defensive
+        return set()
+    cmd: click.Command = cli
+    names: set[str] = set()
+    ctx = click.Context(cli)
+    started = False
+    skip_next = False
+    for tok in argv[1:]:
+        if skip_next:
+            # The value of a root option that takes one — `--url http://x`.
+            # Without this, the URL is tried as a command name and resolution
+            # gives up before it ever reaches the real subcommand.
+            skip_next = False
+            continue
+        if tok.startswith("-"):
+            skip_next = tok in _ROOT_VALUE_FLAGS
+            continue
+        if not isinstance(cmd, click.Group):
+            break
+        try:
+            nxt = cmd.get_command(ctx, tok)
+        except Exception:  # pragma: no cover — a broken lazy group
+            break
+        if nxt is None:
+            # Before the subcommand this is some other option's value; after
+            # it, it is an argument and there is nothing deeper to resolve.
+            if started:
+                break
+            continue
+        started = True
+        cmd = nxt
+        names = {
+            opt
+            for param in cmd.params
+            for opt in list(getattr(param, "opts", ())) + list(getattr(param, "secondary_opts", ()))
+        }
+    return names
+
+
+def hoist_global_flags(argv: list[str]) -> list[str]:
+    """Move global flags to the front of `argv` so they work in any position.
+
+    Click parses options strictly before subcommands; shifting these means
+    `cmd subcmd --json` and `cmd --json subcmd` both work.
+
+    A FLAG THE SUBCOMMAND ALSO DECLARES IS NOT GLOBAL.
+        Hoisting used to be unconditional, so `mqtt discover --timeout 5.0`,
+        `template-ws render --timeout 2.5` and anything else carrying its own
+        `--timeout` had the value stolen by the ROOT `--timeout` (the HTTP
+        timeout, an int): a float died with "'2.5' is not a valid integer" and
+        an int silently shortened the HTTP timeout while the subcommand kept
+        its default, with nothing said. The subcommand's own option list
+        decides now — only flags it does NOT declare are hoisted, which keeps
+        `cmd subcmd --json` working and ends the collision.
+    """
+    if len(argv) <= 1:
+        return list(argv)
+    owned = _subcommand_option_names(argv)
+    flags = {"--json"} - owned
+    value_flags = {"--url", "--token", "--timeout", "--config"} - owned
+    bool_flags = {"--verify-ssl", "--no-verify-ssl"} - owned
+    rest, hoist = [argv[0]], []
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in flags or tok in bool_flags:
+            hoist.append(tok)
+            i += 1
+        elif tok in value_flags and i + 1 < len(argv):
+            hoist.extend([tok, argv[i + 1]])
+            i += 2
+        elif any(tok.startswith(f"{flag}=") for flag in value_flags):
+            hoist.append(tok)
+            i += 1
+        else:
+            rest.append(tok)
+            i += 1
+    return [rest[0], *hoist, *rest[1:]]
+
+
 def main():
-    # Move global flags to the front of argv so they work in any position.
-    # Click parses options strictly before subcommands; shifting these here
-    # means `cmd subcmd --json` and `cmd --json subcmd` both work.
-    GLOBAL_FLAGS = {"--json"}
-    GLOBAL_FLAGS_WITH_VALUE = {"--url", "--token", "--timeout", "--config"}
-    if len(sys.argv) > 1:
-        rest, hoist = [sys.argv[0]], []
-        i = 1
-        argv = sys.argv
-        while i < len(argv):
-            tok = argv[i]
-            if tok in GLOBAL_FLAGS:
-                hoist.append(tok)
-                i += 1
-            elif tok in GLOBAL_FLAGS_WITH_VALUE and i + 1 < len(argv):
-                hoist.extend([tok, argv[i + 1]])
-                i += 2
-            elif any(tok.startswith(f"{f}=") for f in GLOBAL_FLAGS_WITH_VALUE):
-                hoist.append(tok)
-                i += 1
-            elif tok in {"--verify-ssl", "--no-verify-ssl"}:
-                hoist.append(tok)
-                i += 1
-            else:
-                rest.append(tok)
-                i += 1
-        # Inject hoisted flags after argv[0]
-        sys.argv = [rest[0], *hoist, *rest[1:]]
+    sys.argv = hoist_global_flags(sys.argv)
     try:
         cli(obj={})
     except (HomeAssistantError, ValueError) as exc:
@@ -537,6 +620,27 @@ def system():
 def system_info(ctx):
     """Return /api/ status (auth check)."""
     emit(ctx, system_core.status(make_client(ctx)))
+
+
+@system.command("ping")
+@click.option(
+    "--count",
+    default=1,
+    show_default=True,
+    type=int,
+    help="Samples to take. Above 1 reports min/avg/max — one sample cannot "
+    "tell a slow link from a single slow handshake.",
+)
+@click.pass_context
+def system_ping(ctx, count):
+    """Round-trip the WEBSOCKET and report latency.
+
+    `system info` proves REST works; this proves the websocket does. They fail
+    independently — a proxy that forwards `/api/` without upgrading
+    `/api/websocket` leaves `system info` green while every registry command
+    hangs. Run this first when some commands work and others do not.
+    """
+    emit(ctx, system_core.ping(make_client(ctx), count=count))
 
 
 @system.command("config")
@@ -1060,6 +1164,67 @@ def service_call(ctx, domain_arg, service_arg, data, target, return_response, dr
         return_response=return_response,
     )
     emit(ctx, result if result else {"called": f"{domain_arg}.{service_arg}"})
+
+
+@service.command("explain")
+@click.argument("domain_arg")
+@click.argument("service_arg")
+@click.option(
+    "--data", "-D", multiple=True, help="Service data key=value (JSON values supported, repeatable)"
+)
+@click.pass_context
+def service_explain(ctx, domain_arg, service_arg, data):
+    """Why did that service call fail? Ask over the WEBSOCKET.
+
+    `POST /api/services/<domain>/<service>` throws away the reason: a service
+    that is not registered, or arguments that fail its schema, come back as a
+    bare `400 Bad Request`, and a handler that raises comes back as a bare
+    `500 Server got itself in trouble`. The sentence goes to HA's log only.
+
+    The websocket `call_service` command keeps it, with HA's own
+    machine-readable code — `not_found`, `invalid_format`,
+    `service_validation_error`, `home_assistant_error`.
+
+    **This CALLS THE SERVICE.** It is a second attempt, not a dry run; use
+    `service call --dry-run` if you only want to see the payload.
+    """
+    sd = parse_kv_pairs(data) if data else None
+    emit(
+        ctx,
+        service_errors_core.explain(
+            make_client(ctx),
+            domain_arg,
+            service_arg,
+            service_data=sd,
+        ),
+    )
+
+
+@service.command("registered")
+@click.argument("domain_arg")
+@click.argument("service_arg")
+@click.pass_context
+def service_registered(ctx, domain_arg, service_arg):
+    """Is DOMAIN.SERVICE actually callable on THIS instance?
+
+    A domain's `services.yaml` is documentation, not the registry — on
+    2025.1.4 `vacuum/services.yaml` documents `turn_on`, `turn_off`, `toggle`
+    and `start_pause` and none of the four is registered. This reads
+    `/api/services`, which is the registry, and costs one GET with no side
+    effects.
+    """
+    client = make_client(ctx)
+    registry = service_errors_core.registered_services(client)
+    available = registry.get(domain_arg, [])
+    emit(
+        ctx,
+        {
+            "service": f"{domain_arg}.{service_arg}",
+            "registered": service_arg in available,
+            "domain_loaded": domain_arg in registry,
+            "domain_provides": available,
+        },
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────── event
@@ -2545,6 +2710,71 @@ def group_expand(ctx, entity_id, no_state):
         emit(ctx, groups_core.expand(make_client(ctx), entity_id))
 
 
+@group.command("set")
+@click.argument("object_id")
+@click.option("--name", default=None, help="Friendly name")
+@click.option("--icon", default=None, help="mdi: icon")
+@click.option(
+    "--entity",
+    "entities",
+    multiple=True,
+    help="REPLACE the membership with these (repeatable)",
+)
+@click.option("--add", "add_entities", multiple=True, help="Add a member (repeatable)")
+@click.option("--remove", "remove_entities", multiple=True, help="Remove a member (repeatable)")
+@click.option(
+    "--all/--any",
+    "all_must_be_on",
+    default=None,
+    help="--all: the group is on only while EVERY member is on. "
+    "--any (HA's default): on while any member is on.",
+)
+@click.pass_context
+def group_set(ctx, object_id, name, icon, entities, add_entities, remove_entities, all_must_be_on):
+    """Create or edit a group at runtime — no YAML, no restart.
+
+    OBJECT_ID is the bare id (`kitchen`), not the entity id; `group.kitchen`
+    is accepted and unwrapped.
+
+    --entity replaces the whole membership, --add/--remove edit it. Mixing
+    the two is refused rather than silently ordered.
+    """
+    emit(
+        ctx,
+        groups_core.set_group(
+            make_client(ctx),
+            object_id,
+            name=name,
+            icon=icon,
+            entities=list(entities) if entities else None,
+            add_entities=list(add_entities),
+            remove_entities=list(remove_entities),
+            all_must_be_on=all_must_be_on,
+        ),
+    )
+
+
+@group.command("remove")
+@click.argument("object_id")
+@click.confirmation_option(prompt="Remove this group?")
+@click.pass_context
+def group_remove(ctx, object_id):
+    """Delete a runtime group.
+
+    A group that came from configuration.yaml returns on the next reload;
+    only one created by `group set` stays gone.
+    """
+    emit(ctx, groups_core.remove_group(make_client(ctx), object_id))
+
+
+@group.command("reload")
+@click.confirmation_option(prompt="Reload groups from configuration.yaml?")
+@click.pass_context
+def group_reload(ctx):
+    """Re-read the `group:` section of configuration.yaml."""
+    emit(ctx, groups_core.reload_groups(make_client(ctx)))
+
+
 @cli.group("mqtt-discovery")
 def mqtt_discovery():
     """HA MQTT-discovery topic management."""
@@ -2597,7 +2827,11 @@ def mqtt_discovery_republish(ctx):
 
 @cli.group()
 def auth():
-    """Auth operations (users, long-lived tokens)."""
+    """Auth operations — log in, users, long-lived tokens.
+
+    `login` / `providers` / `login-flow` need NO existing token: they wrap the
+    endpoints Home Assistant mounts outside `/api/` and are how you get one.
+    """
 
 
 @auth.command("users")
@@ -4856,6 +5090,903 @@ def helpers_list_all(ctx, no_config_flow):
     )
 
 
+# ─────────────────────────────────────────────── helpers — config-flow helpers
+# The other half of the Helpers page: entries built by a config flow
+# (derivative, utility meter, template, group, …). REST-only; see
+# core/helper_integrations.py.
+
+
+def _parse_duration(value: str | None, field: str) -> dict | None:
+    """Parse a CLI duration into HA's duration dict.
+
+    Accepts ``90`` (seconds), ``5m`` / ``2h`` / ``1d`` / ``30s``,
+    ``HH:MM:SS``, or a JSON object like ``{"minutes": 5}``.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(f"{field}: not valid JSON ({exc})")
+        if not isinstance(parsed, dict):
+            raise click.BadParameter(f"{field}: JSON must be an object")
+        return parsed
+    if ":" in text:
+        parts = text.split(":")
+        if len(parts) != 3:
+            raise click.BadParameter(f"{field}: expected HH:MM:SS, got {text!r}")
+        try:
+            hours, minutes, seconds = (int(p) for p in parts)
+        except ValueError:
+            raise click.BadParameter(f"{field}: expected HH:MM:SS, got {text!r}")
+        return {"hours": hours, "minutes": minutes, "seconds": seconds}
+    units = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+    suffix = text[-1:].lower()
+    if suffix in units:
+        try:
+            amount = float(text[:-1])
+        except ValueError:
+            raise click.BadParameter(f"{field}: expected e.g. 30s / 5m / 2h, got {text!r}")
+        return {units[suffix]: int(amount) if amount.is_integer() else amount}
+    try:
+        return {"hours": 0, "minutes": 0, "seconds": float(text) if "." in text else int(text)}
+    except ValueError:
+        raise click.BadParameter(
+            f"{field}: expected seconds, 30s/5m/2h/1d, HH:MM:SS or a JSON object, got {text!r}"
+        )
+
+
+def _resolve_options(f):
+    """--no-resolve / --wait, shared by every `helpers create` subcommand."""
+    f = click.option(
+        "--wait",
+        type=float,
+        default=5.0,
+        show_default=True,
+        help="Seconds to wait for the new entity to appear in the registry",
+    )(f)
+    f = click.option(
+        "--no-resolve",
+        is_flag=True,
+        default=False,
+        help="Skip the entity-registry lookup (just report the entry_id)",
+    )(f)
+    return f
+
+
+@helpers.command("kinds")
+@click.argument("kind", required=False)
+@click.pass_context
+def helpers_kinds(ctx, kind):
+    """List config-flow helper kinds (or describe one).
+
+    These are the helpers `helpers create <kind>` can build: derivative,
+    riemann, utility-meter, min-max, threshold, trend, statistics,
+    history-stats, random, template, group, generic-thermostat,
+    generic-hygrostat, switch-as-x, tod, mold-indicator.
+    """
+    if kind:
+        emit(ctx, helper_integrations_core.describe_kind(kind))
+        return
+    emit(ctx, {"kinds": helper_integrations_core.list_kinds()})
+
+
+@helpers.command("entries")
+@click.option("--domain", default=None, help="Only helpers of this integration domain")
+@click.pass_context
+def helpers_entries(ctx, domain):
+    """List every config-entry-backed helper on this instance."""
+    for entry in helper_integrations_core.list_helpers(make_client(ctx), domain=domain):
+        emit(ctx, entry)
+
+
+@helpers.command("show")
+@click.argument("entry_id")
+@click.pass_context
+def helpers_show(ctx, entry_id):
+    """Show one helper config entry plus the entities it owns."""
+    client = make_client(ctx)
+    entry = helper_integrations_core.get_helper(client, entry_id)
+    if entry is None:
+        _abort(f"no helper config entry with id {entry_id}")
+    emit(
+        ctx,
+        {
+            **entry,
+            "entities": helper_integrations_core.helper_entities(client, entry_id, wait=0),
+        },
+    )
+
+
+@helpers.command("entities")
+@click.argument("entry_id")
+@click.option("--wait", type=float, default=0.0, show_default=True, help="Seconds to poll")
+@click.pass_context
+def helpers_entities_cmd(ctx, entry_id, wait):
+    """List the entity ids a helper config entry produced."""
+    emit(
+        ctx,
+        {
+            "entry_id": entry_id,
+            "entities": helper_integrations_core.helper_entities(
+                make_client(ctx), entry_id, wait=wait
+            ),
+        },
+    )
+
+
+@helpers.command("set-options")
+@click.argument("entry_id")
+@click.option("--set", "set_pairs", multiple=True, help="option as key=value (JSON-aware)")
+@click.option(
+    "--from-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the full options dict from a JSON file",
+)
+@click.pass_context
+def helpers_set_options(ctx, entry_id, set_pairs, from_file):
+    """Run a helper's options flow — the only way to reach fields its
+    CREATE form does not have (trend's sample window, generic_hygrostat's
+    humidity limits, …).
+
+    The options flow REPLACES the stored options, so pass every field you
+    want to keep. Inspect the form first with `config-entry options-init`.
+    """
+    user_input: dict = {}
+    if from_file:
+        user_input.update(json.loads(Path(from_file).read_text()))
+    if set_pairs:
+        user_input.update(parse_kv_pairs(set_pairs))
+    if not user_input:
+        raise click.UsageError("Provide --set key=value and/or --from-file")
+    emit(ctx, helper_integrations_core.set_helper_options(make_client(ctx), entry_id, user_input))
+
+
+@helpers.command("delete")
+@click.argument("entry_id")
+@click.option("--yes", is_flag=True, default=False, help="Skip confirmation")
+@click.pass_context
+def helpers_delete(ctx, entry_id, yes):
+    """Delete a config-flow helper. Destructive — requires --yes."""
+    if not yes:
+        if not click.confirm(f"Delete helper config entry {entry_id}?", default=False):
+            click.echo("aborted")
+            return
+    emit(
+        ctx,
+        {
+            "deleted": entry_id,
+            "result": helper_integrations_core.delete_helper(make_client(ctx), entry_id),
+        },
+    )
+
+
+@helpers.group("create")
+def helpers_create():
+    """Create a config-flow helper (derivative, utility meter, group, …).
+
+    Run `helpers kinds` for the catalogue. Every subcommand walks the real
+    config flow, then reports the new entry_id and the entity it produced.
+    """
+
+
+@helpers_create.command("derivative")
+@click.option("--name", required=True, help="Display name (drives the entity slug)")
+@click.option("--source", required=True, help="Source sensor entity_id")
+@click.option(
+    "--time-window",
+    default=None,
+    help="Smoothing window (e.g. 5m, 00:05:00). Default: none (instantaneous)",
+)
+@click.option(
+    "--unit-time",
+    default="h",
+    show_default=True,
+    type=click.Choice(["s", "min", "h", "d"]),
+    help="Denominator of the rate",
+)
+@click.option("--round", "round_digits", type=int, default=2, show_default=True)
+@click.option("--unit-prefix", default=None, help="n|µ|m|k|M|G|T|P — scales the result")
+@_resolve_options
+@click.pass_context
+def helpers_create_derivative(
+    ctx, name, source, time_window, unit_time, round_digits, unit_prefix, no_resolve, wait
+):
+    """Derivative sensor — the rate of change of a source sensor."""
+    emit(
+        ctx,
+        helper_integrations_core.create_derivative(
+            make_client(ctx),
+            name=name,
+            source=source,
+            time_window=_parse_duration(time_window, "--time-window"),
+            unit_time=unit_time,
+            round_digits=round_digits,
+            unit_prefix=unit_prefix,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("riemann")
+@click.option("--name", required=True)
+@click.option("--source", required=True, help="Source sensor entity_id (e.g. a power sensor)")
+@click.option(
+    "--method",
+    default="trapezoidal",
+    show_default=True,
+    type=click.Choice(["trapezoidal", "left", "right"]),
+)
+@click.option(
+    "--unit-time", default="h", show_default=True, type=click.Choice(["s", "min", "h", "d"])
+)
+@click.option("--round", "round_digits", type=int, default=2, show_default=True)
+@click.option("--unit-prefix", default=None, help="k|M|G|T")
+@click.option("--max-sub-interval", default=None, help="Force a sample at least this often")
+@_resolve_options
+@click.pass_context
+def helpers_create_riemann(
+    ctx,
+    name,
+    source,
+    method,
+    unit_time,
+    round_digits,
+    unit_prefix,
+    max_sub_interval,
+    no_resolve,
+    wait,
+):
+    """Riemann-sum integral sensor (HA's `integration` helper) — power → energy."""
+    emit(
+        ctx,
+        helper_integrations_core.create_riemann(
+            make_client(ctx),
+            name=name,
+            source=source,
+            method=method,
+            unit_time=unit_time,
+            round_digits=round_digits,
+            unit_prefix=unit_prefix,
+            max_sub_interval=_parse_duration(max_sub_interval, "--max-sub-interval"),
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("utility-meter")
+@click.option("--name", required=True)
+@click.option("--source", required=True, help="Source sensor entity_id (a total, e.g. energy)")
+@click.option(
+    "--cycle",
+    default="none",
+    show_default=True,
+    type=click.Choice(
+        [
+            "none",
+            "quarter-hourly",
+            "hourly",
+            "daily",
+            "weekly",
+            "monthly",
+            "bimonthly",
+            "quarterly",
+            "yearly",
+        ]
+    ),
+    help="When the meter resets",
+)
+@click.option("--offset", type=int, default=0, show_default=True, help="Days offset of the cycle")
+@click.option("--tariff", "tariffs", multiple=True, help="Tariff name (repeatable)")
+@click.option("--net-consumption/--no-net-consumption", default=False, show_default=True)
+@click.option("--delta-values/--no-delta-values", default=False, show_default=True)
+@click.option(
+    "--periodically-resetting/--no-periodically-resetting", default=True, show_default=True
+)
+@click.option("--always-available/--no-always-available", "always_available", default=None)
+@_resolve_options
+@click.pass_context
+def helpers_create_utility_meter(
+    ctx,
+    name,
+    source,
+    cycle,
+    offset,
+    tariffs,
+    net_consumption,
+    delta_values,
+    periodically_resetting,
+    always_available,
+    no_resolve,
+    wait,
+):
+    """Utility meter — a totaliser that resets on a cycle, with tariffs."""
+    emit(
+        ctx,
+        helper_integrations_core.create_utility_meter(
+            make_client(ctx),
+            name=name,
+            source=source,
+            cycle=cycle,
+            offset=offset,
+            tariffs=list(tariffs),
+            net_consumption=net_consumption,
+            delta_values=delta_values,
+            periodically_resetting=periodically_resetting,
+            always_available=always_available,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("min-max")
+@click.option("--name", required=True)
+@click.option(
+    "--entity", "entities", multiple=True, required=True, help="Source entity (repeatable)"
+)
+@click.option(
+    "--type",
+    "combine_type",
+    default="mean",
+    show_default=True,
+    type=click.Choice(["min", "max", "mean", "median", "last", "range", "sum"]),
+)
+@click.option("--round-digits", type=int, default=2, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_min_max(ctx, name, entities, combine_type, round_digits, no_resolve, wait):
+    """Min/max/mean/median/last/range/sum across several sensors."""
+    emit(
+        ctx,
+        helper_integrations_core.create_min_max(
+            make_client(ctx),
+            name=name,
+            entity_ids=list(entities),
+            type=combine_type,
+            round_digits=round_digits,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("threshold")
+@click.option("--name", required=True)
+@click.option("--entity-id", required=True, help="Source sensor entity_id")
+@click.option("--lower", type=float, default=None, help="On below this value")
+@click.option("--upper", type=float, default=None, help="On above this value")
+@click.option("--hysteresis", type=float, default=0.0, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_threshold(ctx, name, entity_id, lower, upper, hysteresis, no_resolve, wait):
+    """Threshold binary sensor — on while a source is past a bound."""
+    emit(
+        ctx,
+        helper_integrations_core.create_threshold(
+            make_client(ctx),
+            name=name,
+            entity_id=entity_id,
+            lower=lower,
+            upper=upper,
+            hysteresis=hysteresis,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("trend")
+@click.option("--name", required=True)
+@click.option("--entity-id", required=True, help="Source sensor entity_id")
+@click.option("--attribute", default=None, help="Track this attribute instead of the state")
+@click.option("--invert/--no-invert", default=False, show_default=True, help="On when FALLING")
+@click.option(
+    "--max-samples", type=int, default=None, help="Options-flow field (applied after create)"
+)
+@click.option("--min-samples", type=int, default=None, help="Options-flow field")
+@click.option("--min-gradient", type=float, default=None, help="Options-flow field")
+@click.option("--sample-duration", type=int, default=None, help="Options-flow field (seconds)")
+@_resolve_options
+@click.pass_context
+def helpers_create_trend(
+    ctx,
+    name,
+    entity_id,
+    attribute,
+    invert,
+    max_samples,
+    min_samples,
+    min_gradient,
+    sample_duration,
+    no_resolve,
+    wait,
+):
+    """Trend binary sensor — on while the source is rising.
+
+    HA's create form only carries --attribute/--invert; the sample-window
+    options are applied through the options flow right after creation.
+    """
+    emit(
+        ctx,
+        helper_integrations_core.create_trend(
+            make_client(ctx),
+            name=name,
+            entity_id=entity_id,
+            attribute=attribute,
+            invert=invert,
+            max_samples=max_samples,
+            min_samples=min_samples,
+            min_gradient=min_gradient,
+            sample_duration=sample_duration,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("statistics")
+@click.option("--name", required=True)
+@click.option("--entity-id", required=True, help="Source entity_id")
+@click.option(
+    "--characteristic",
+    "state_characteristic",
+    default="mean",
+    show_default=True,
+    help="mean / median / count / change / … (valid set depends on the source's domain)",
+)
+@click.option("--sampling-size", type=int, default=20, show_default=True)
+@click.option("--max-age", default=None, help="Only keep samples newer than this (e.g. 24h)")
+@click.option("--keep-last-sample/--no-keep-last-sample", default=None)
+@click.option("--percentile", type=int, default=None, help="Only for --characteristic percentile")
+@click.option("--precision", type=int, default=2, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_statistics(
+    ctx,
+    name,
+    entity_id,
+    state_characteristic,
+    sampling_size,
+    max_age,
+    keep_last_sample,
+    percentile,
+    precision,
+    no_resolve,
+    wait,
+):
+    """Statistics sensor — a rolling characteristic over a source's samples."""
+    emit(
+        ctx,
+        helper_integrations_core.create_statistics(
+            make_client(ctx),
+            name=name,
+            entity_id=entity_id,
+            state_characteristic=state_characteristic,
+            sampling_size=sampling_size,
+            max_age=_parse_duration(max_age, "--max-age"),
+            keep_last_sample=keep_last_sample,
+            percentile=percentile,
+            precision=precision,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("history-stats")
+@click.option("--name", required=True)
+@click.option("--entity-id", required=True, help="Source entity_id")
+@click.option("--state", "states", multiple=True, required=True, help="State to count (repeatable)")
+@click.option(
+    "--type",
+    "stat_type",
+    default="time",
+    show_default=True,
+    type=click.Choice(["time", "ratio", "count"]),
+)
+@click.option(
+    "--start", default=None, help="Template for the period start (e.g. '{{ today_at() }}')"
+)
+@click.option("--end", default=None, help="Template for the period end")
+@click.option("--duration", default=None, help="Period length (e.g. 24h) — give exactly two bounds")
+@_resolve_options
+@click.pass_context
+def helpers_create_history_stats(
+    ctx, name, entity_id, states, stat_type, start, end, duration, no_resolve, wait
+):
+    """History-stats sensor — time/ratio/count a source spent in a state."""
+    emit(
+        ctx,
+        helper_integrations_core.create_history_stats(
+            make_client(ctx),
+            name=name,
+            entity_id=entity_id,
+            state=list(states),
+            type=stat_type,
+            start=start,
+            end=end,
+            duration=_parse_duration(duration, "--duration"),
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("random")
+@click.option("--name", required=True)
+@click.option(
+    "--variant", default="sensor", show_default=True, type=click.Choice(["sensor", "binary_sensor"])
+)
+@click.option("--minimum", type=int, default=None, help="sensor variant only")
+@click.option("--maximum", type=int, default=None, help="sensor variant only")
+@click.option("--device-class", default=None)
+@click.option("--unit-of-measurement", default=None, help="sensor variant only")
+@_resolve_options
+@click.pass_context
+def helpers_create_random(
+    ctx, name, variant, minimum, maximum, device_class, unit_of_measurement, no_resolve, wait
+):
+    """Random sensor / binary_sensor — useful for testing dashboards."""
+    emit(
+        ctx,
+        helper_integrations_core.create_random(
+            make_client(ctx),
+            name=name,
+            variant=variant,
+            minimum=minimum,
+            maximum=maximum,
+            device_class=device_class,
+            unit_of_measurement=unit_of_measurement,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("template")
+@click.option("--name", required=True)
+@click.option(
+    "--variant",
+    default="sensor",
+    show_default=True,
+    type=click.Choice(
+        [
+            "alarm_control_panel",
+            "binary_sensor",
+            "button",
+            "image",
+            "number",
+            "select",
+            "sensor",
+            "switch",
+        ]
+    ),
+)
+@click.option("--state", default=None, help="Jinja template for the state")
+@click.option("--unit-of-measurement", default=None)
+@click.option("--device-class", default=None)
+@click.option("--state-class", default=None)
+@click.option(
+    "--set",
+    "set_pairs",
+    multiple=True,
+    help="Any other field this variant's form offers, as key=value (JSON-aware)",
+)
+@_resolve_options
+@click.pass_context
+def helpers_create_template(
+    ctx,
+    name,
+    variant,
+    state,
+    unit_of_measurement,
+    device_class,
+    state_class,
+    set_pairs,
+    no_resolve,
+    wait,
+):
+    """Template helper — a template-backed entity of any supported type."""
+    emit(
+        ctx,
+        helper_integrations_core.create_template(
+            make_client(ctx),
+            name=name,
+            variant=variant,
+            state=state,
+            unit_of_measurement=unit_of_measurement,
+            device_class=device_class,
+            state_class=state_class,
+            fields=parse_kv_pairs(set_pairs) if set_pairs else None,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("group")
+@click.option("--name", required=True)
+@click.option(
+    "--entity", "entities", multiple=True, required=True, help="Member entity (repeatable)"
+)
+@click.option(
+    "--variant",
+    default="light",
+    show_default=True,
+    type=click.Choice(
+        [
+            "binary_sensor",
+            "button",
+            "cover",
+            "event",
+            "fan",
+            "light",
+            "lock",
+            "media_player",
+            "notify",
+            "sensor",
+            "switch",
+        ]
+    ),
+)
+@click.option("--hide-members/--show-members", default=False, show_default=True)
+@click.option(
+    "--all/--any", "require_all", default=None, help="binary_sensor only: on when ALL are on"
+)
+@click.option("--type", "aggregation", default=None, help="sensor only: mean|sum|min|max|…")
+@_resolve_options
+@click.pass_context
+def helpers_create_group(
+    ctx, name, entities, variant, hide_members, require_all, aggregation, no_resolve, wait
+):
+    """Group helper — one entity that fronts several of the same domain."""
+    emit(
+        ctx,
+        helper_integrations_core.create_group(
+            make_client(ctx),
+            name=name,
+            entities=list(entities),
+            variant=variant,
+            hide_members=hide_members,
+            all=require_all,
+            type=aggregation,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("generic-thermostat")
+@click.option("--name", required=True)
+@click.option("--heater", required=True, help="switch.* that drives the heater (or A/C)")
+@click.option("--target-sensor", required=True, help="temperature sensor entity_id")
+@click.option("--ac-mode/--heat-mode", default=False, show_default=True)
+@click.option("--cold-tolerance", type=float, default=0.3, show_default=True)
+@click.option("--hot-tolerance", type=float, default=0.3, show_default=True)
+@click.option("--min-cycle-duration", default=None, help="Minimum on/off time (e.g. 5m)")
+@click.option("--min-temp", type=float, default=None)
+@click.option("--max-temp", type=float, default=None)
+@click.option(
+    "--preset",
+    "presets",
+    multiple=True,
+    help="Preset temperature as name=value (away, comfort, eco, home, sleep, activity)",
+)
+@_resolve_options
+@click.pass_context
+def helpers_create_generic_thermostat(
+    ctx,
+    name,
+    heater,
+    target_sensor,
+    ac_mode,
+    cold_tolerance,
+    hot_tolerance,
+    min_cycle_duration,
+    min_temp,
+    max_temp,
+    presets,
+    no_resolve,
+    wait,
+):
+    """Generic thermostat — switch + temperature sensor → a climate entity."""
+    preset_input = {}
+    for key, value in (parse_kv_pairs(presets) if presets else {}).items():
+        preset_input[key if key.endswith("_temp") else f"{key}_temp"] = value
+    emit(
+        ctx,
+        helper_integrations_core.create_generic_thermostat(
+            make_client(ctx),
+            name=name,
+            heater=heater,
+            target_sensor=target_sensor,
+            ac_mode=ac_mode,
+            cold_tolerance=cold_tolerance,
+            hot_tolerance=hot_tolerance,
+            min_cycle_duration=_parse_duration(min_cycle_duration, "--min-cycle-duration"),
+            min_temp=min_temp,
+            max_temp=max_temp,
+            presets=preset_input or None,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("generic-hygrostat")
+@click.option("--name", required=True)
+@click.option("--humidifier", required=True, help="switch.* that drives the humidifier")
+@click.option("--target-sensor", required=True, help="humidity sensor entity_id")
+@click.option(
+    "--device-class",
+    default="humidifier",
+    show_default=True,
+    type=click.Choice(["humidifier", "dehumidifier"]),
+)
+@click.option("--dry-tolerance", type=float, default=3.0, show_default=True)
+@click.option("--wet-tolerance", type=float, default=3.0, show_default=True)
+@click.option("--min-cycle-duration", default=None, help="Minimum on/off time (e.g. 5m)")
+@_resolve_options
+@click.pass_context
+def helpers_create_generic_hygrostat(
+    ctx,
+    name,
+    humidifier,
+    target_sensor,
+    device_class,
+    dry_tolerance,
+    wet_tolerance,
+    min_cycle_duration,
+    no_resolve,
+    wait,
+):
+    """Generic hygrostat — switch + humidity sensor → a humidifier entity.
+
+    The humidity limits are options-flow only: follow up with
+    `helpers set-options <entry_id> --set target_humidity=55`.
+    """
+    emit(
+        ctx,
+        helper_integrations_core.create_generic_hygrostat(
+            make_client(ctx),
+            name=name,
+            humidifier=humidifier,
+            target_sensor=target_sensor,
+            device_class=device_class,
+            dry_tolerance=dry_tolerance,
+            wet_tolerance=wet_tolerance,
+            min_cycle_duration=_parse_duration(min_cycle_duration, "--min-cycle-duration"),
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("switch-as-x")
+@click.option("--entity-id", required=True, help="The switch.* entity to re-expose")
+@click.option(
+    "--target-domain",
+    required=True,
+    type=click.Choice(["cover", "fan", "light", "lock", "siren", "valve"]),
+)
+@click.option("--invert/--no-invert", default=False, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_switch_as_x(ctx, entity_id, target_domain, invert, no_resolve, wait):
+    """Re-expose a switch as a light / cover / lock / fan / siren / valve.
+
+    There is no --name: the new entity inherits the switch's name and object
+    id (and the switch itself is hidden).
+    """
+    emit(
+        ctx,
+        helper_integrations_core.create_switch_as_x(
+            make_client(ctx),
+            entity_id=entity_id,
+            target_domain=target_domain,
+            invert=invert,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("tod")
+@click.option("--name", required=True)
+@click.option("--after", "after_time", required=True, help="HH:MM:SS the sensor turns on")
+@click.option("--before", "before_time", required=True, help="HH:MM:SS the sensor turns off")
+@_resolve_options
+@click.pass_context
+def helpers_create_tod(ctx, name, after_time, before_time, no_resolve, wait):
+    """Times-of-day binary sensor — on between two times."""
+    emit(
+        ctx,
+        helper_integrations_core.create_tod(
+            make_client(ctx),
+            name=name,
+            after_time=after_time,
+            before_time=before_time,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("mold-indicator")
+@click.option("--name", required=True)
+@click.option("--indoor-temp-sensor", required=True)
+@click.option("--indoor-humidity-sensor", required=True)
+@click.option("--outdoor-temp-sensor", required=True)
+@click.option("--calibration-factor", type=float, default=2.0, show_default=True)
+@_resolve_options
+@click.pass_context
+def helpers_create_mold_indicator(
+    ctx,
+    name,
+    indoor_temp_sensor,
+    indoor_humidity_sensor,
+    outdoor_temp_sensor,
+    calibration_factor,
+    no_resolve,
+    wait,
+):
+    """Mould indicator — estimated wall-surface humidity / mould risk."""
+    emit(
+        ctx,
+        helper_integrations_core.create_mold_indicator(
+            make_client(ctx),
+            name=name,
+            indoor_temp_sensor=indoor_temp_sensor,
+            indoor_humidity_sensor=indoor_humidity_sensor,
+            outdoor_temp_sensor=outdoor_temp_sensor,
+            calibration_factor=calibration_factor,
+            resolve=not no_resolve,
+            wait=wait,
+        ),
+    )
+
+
+@helpers_create.command("raw")
+@click.option("--domain", required=True, help="Helper integration domain (e.g. filter)")
+@click.option(
+    "--step",
+    "steps",
+    multiple=True,
+    required=True,
+    help="JSON user_input for one step, in order (repeatable). A menu step is "
+    '\'{"next_step_id": "sensor"}\'',
+)
+@_resolve_options
+@click.pass_context
+def helpers_create_raw(ctx, domain, steps, no_resolve, wait):
+    """Drive any helper config flow with explicit per-step JSON.
+
+    The escape hatch for helpers this harness has no typed command for —
+    inspect the form first with `config-flow init <domain>`.
+    """
+    parsed = []
+    for raw in steps:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(f"--step is not valid JSON: {exc}")
+        if not isinstance(value, dict):
+            raise click.BadParameter("each --step must be a JSON object")
+        parsed.append(value)
+    emit(
+        ctx,
+        helper_integrations_core.create_raw(
+            make_client(ctx), domain, parsed, resolve=not no_resolve, wait=wait
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────── lovelace backup / diff
 
 
@@ -5147,6 +6278,72 @@ def system_reload_core(ctx):
 def system_reload_all(ctx):
     """Reload automations, scripts, scenes, groups, templates, helpers, customize — without restart."""
     emit(ctx, {"reloaded": "all", "result": control_core.reload_all(make_client(ctx))})
+
+
+@system.command("reload-templates")
+@click.confirmation_option(prompt="Reload custom Jinja templates?")
+@click.pass_context
+def system_reload_templates(ctx):
+    """Re-read `custom_templates/*.jinja` (the shared macro files).
+
+    NOT template entities — those are `system reload-all`.
+    """
+    emit(
+        ctx,
+        {
+            "reloaded": "custom_templates",
+            "result": control_core.reload_custom_templates(make_client(ctx)),
+        },
+    )
+
+
+@system.command("save-states")
+@click.pass_context
+def system_save_states(ctx):
+    """Flush restore-state to disk now (`homeassistant.save_persistent_states`).
+
+    HA writes `.storage/core.restore_state` on a timer and at shutdown. Call
+    this before cutting power to the host, or before a backup that has to
+    contain current values.
+    """
+    emit(
+        ctx,
+        {
+            "saved": "persistent_states",
+            "result": control_core.save_persistent_states(make_client(ctx)),
+        },
+    )
+
+
+@system.command("set-location")
+@click.argument("latitude", type=float)
+@click.argument("longitude", type=float)
+@click.option("--elevation", type=float, default=None, help="Metres above sea level")
+@click.confirmation_option(
+    prompt="Move this instance's home location? Every zone test, sun.sun and "
+    "zone-triggered automation is evaluated against it."
+)
+@click.pass_context
+def system_set_location(ctx, latitude, longitude, elevation):
+    """Set the instance's home coordinates (admin only).
+
+    Persists in `.storage/core.config` and overrides configuration.yaml.
+    Elevation is left as-is when not given.
+    """
+    emit(
+        ctx,
+        {
+            "latitude": latitude,
+            "longitude": longitude,
+            "elevation": elevation,
+            "result": control_core.set_location(
+                make_client(ctx),
+                latitude=latitude,
+                longitude=longitude,
+                elevation=elevation,
+            ),
+        },
+    )
 
 
 @system.command("safe-restart")
@@ -5617,6 +6814,117 @@ def assist_pipelines(ctx):
 @click.pass_context
 def assist_pipeline_get(ctx, pipeline_id):
     emit(ctx, assist_core.pipeline_get(make_client(ctx), pipeline_id))
+
+
+@assist.command("run")
+@click.argument("text", required=False)
+@click.option(
+    "--start-stage",
+    type=click.Choice(assist_run_core.STAGES),
+    default="intent",
+    show_default=True,
+    help="First stage to execute. wake_word/stt read --audio; intent/tts read TEXT.",
+)
+@click.option(
+    "--end-stage",
+    type=click.Choice(assist_run_core.STAGES),
+    default="tts",
+    show_default=True,
+    help="Last stage to execute. Must not come before --start-stage.",
+)
+@click.option(
+    "--audio",
+    "audio_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="16-bit mono PCM WAV to feed a wake_word/stt run",
+)
+@click.option(
+    "--sample-rate",
+    default=None,
+    type=int,
+    help="Override the rate declared to HA (default: the WAV's own; HA resamples)",
+)
+@click.option("--pipeline", default=None, help="Pipeline id (default: the preferred one)")
+@click.option("--conversation-id", default=None, help="Continue an existing conversation")
+@click.option("--device-id", default=None, help="Attribute the run to a device")
+@click.option(
+    "--wake-word-phrase",
+    default=None,
+    help="Wake word already detected upstream (--start-stage stt only)",
+)
+@click.option("--timeout", "run_timeout", default=None, type=float, help="Pipeline timeout (s)")
+@click.option("--events", is_flag=True, default=False, help="Include the raw event stream")
+@click.option(
+    "--stream",
+    is_flag=True,
+    default=False,
+    help="Print each event as it arrives (to stderr, so --json stays parseable)",
+)
+@click.option(
+    "--save-tts",
+    "save_tts",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Download the audio the tts stage produced to this file",
+)
+@click.pass_context
+def assist_run(
+    ctx,
+    text,
+    start_stage,
+    end_stage,
+    audio_path,
+    sample_rate,
+    pipeline,
+    conversation_id,
+    device_id,
+    wake_word_phrase,
+    run_timeout,
+    events,
+    stream,
+    save_tts,
+):
+    """Run an Assist pipeline end to end and report what each stage produced.
+
+    `assist ask` reaches the conversation agent; this runs the PIPELINE — its
+    own STT, its own agent, its own TTS engine — which is the only way to find
+    out whether the thing you wired together actually works.
+
+    \b
+      assist run "turn on the kitchen light"        # intent -> tts
+      assist run "hello" --end-stage intent         # skip speech synthesis
+      assist run --start-stage stt --audio cmd.wav  # transcribe, then act
+      assist run "hello" --start-stage tts --save-tts hello.wav
+
+    A run that reached `run-end` reports `completed: true`; a stage that failed
+    leaves its diagnosis in `error` and still completes.
+    """
+    client = make_client(ctx)
+    on_event = None
+    if stream:
+
+        def on_event(event):  # noqa: F811
+            click.echo(json.dumps(event, default=str), err=True)
+
+    result = assist_run_core.run(
+        client,
+        text=text,
+        audio_path=audio_path,
+        start_stage=start_stage,
+        end_stage=end_stage,
+        pipeline=pipeline,
+        conversation_id=conversation_id,
+        device_id=device_id,
+        wake_word_phrase=wake_word_phrase,
+        sample_rate=sample_rate,
+        timeout=run_timeout,
+        include_events=events,
+        on_event=on_event,
+    )
+    if save_tts:
+        result["saved_tts"] = assist_run_core.save_tts(client, result.get("tts_url"), save_tts)
+    emit(ctx, result)
 
 
 @assist.command("prepare")
@@ -7185,6 +8493,36 @@ def entity_disable(ctx, entity_id):
     emit(ctx, registry_core.update_entity(make_client(ctx), entity_id, disabled_by="user"))
 
 
+@entity.command("refresh")
+@click.argument("entity_ids", nargs=-1, required=True)
+@click.option(
+    "--no-verify",
+    is_flag=True,
+    default=False,
+    help="Skip the before/after last_updated check and just fire the service",
+)
+@click.pass_context
+def entity_refresh(ctx, entity_ids, no_verify):
+    """Force a poll of ENTITY_IDS now (`homeassistant.update_entity`).
+
+    The raw service tells you nothing: it returns HTTP 200 and `[]` whether
+    the entity refreshed, could not, or DOES NOT EXIST — a typo is a silent
+    success. So each entity's `last_updated` is read before and after and
+    reported as `refreshed`, `unchanged` (normal for a non-polling entity) or
+    `missing`.
+
+    `all` is not accepted — HA's schema is `cv.entity_ids`, which rejects it.
+    """
+    emit(
+        ctx,
+        control_core.update_entity(
+            make_client(ctx),
+            list(entity_ids),
+            verify=not no_verify,
+        ),
+    )
+
+
 @entity.command("enable")
 @click.argument("entity_id")
 @click.pass_context
@@ -7725,6 +9063,41 @@ def alarm_disarm(ctx, entity_id, code):
     emit(
         ctx,
         service_shortcuts_core.alarm_disarm(
+            make_client(ctx),
+            entity_id,
+            code=code,
+        ),
+    )
+
+
+@alarm.command("arm-custom-bypass")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.pass_context
+def alarm_arm_custom_bypass(ctx, entity_id, code):
+    """Arm with the panel's configured zones bypassed."""
+    emit(
+        ctx,
+        entity_control_core.alarm_arm_custom_bypass(
+            make_client(ctx),
+            entity_id,
+            code=code,
+        ),
+    )
+
+
+@alarm.command("trigger")
+@click.argument("entity_id")
+@click.option("--code", default=None)
+@click.confirmation_option(
+    prompt="Trigger the alarm? This sounds the siren and fires every automation watching for it."
+)
+@click.pass_context
+def alarm_trigger_cmd(ctx, entity_id, code):
+    """Trigger the alarm, as if a sensor had fired."""
+    emit(
+        ctx,
+        entity_control_core.alarm_trigger(
             make_client(ctx),
             entity_id,
             code=code,
@@ -8277,7 +9650,12 @@ def entity_expose_new_set(ctx, assistant, expose_new):
 
 @cli.group()
 def camera():
-    """camera.* entities — stream URLs, capabilities, prefs, WebRTC config."""
+    """camera.* entities — power, motion detection, stills, streams, recording.
+
+    Two different things write files. `snapshot` / `capture` pull bytes over
+    `/api/camera_proxy` to THIS machine; `host-snapshot` / `record` ask HA to
+    write on the HOME ASSISTANT HOST, inside `allowlist_external_dirs`.
+    """
 
 
 @camera.command("capabilities")
@@ -8346,6 +9724,254 @@ def camera_webrtc_config(ctx, entity_id):
         camera_ws_core.webrtc_get_client_config(
             make_client(ctx),
             entity_id=entity_id,
+        ),
+    )
+
+
+@camera.command("snapshot")
+@click.argument("entity_id")
+@click.argument("output_path", type=click.Path(dir_okay=False, writable=True))
+@click.option(
+    "--overwrite/--no-overwrite", default=False, help="Replace OUTPUT_PATH if it already exists"
+)
+@click.option(
+    "--width",
+    type=int,
+    default=None,
+    help="Rescale width. MUST be given with --height: HA only rescales when both "
+    "are present, and only for JPEG cameras.",
+)
+@click.option("--height", type=int, default=None, help="Rescale height (see --width)")
+@click.option(
+    "--signed/--direct",
+    default=False,
+    help="Use auth/sign_path to mint a one-shot URL, then fetch unauthenticated",
+)
+@click.option(
+    "--expires", type=int, default=30, help="If --signed, seconds the signed URL is valid for"
+)
+@click.pass_context
+def camera_snapshot(ctx, entity_id, output_path, overwrite, width, height, signed, expires):
+    """Download the current frame from a camera to OUTPUT_PATH.
+
+    A camera that is switched off answers 503 with no body; the error names
+    `camera turn-on` rather than repeating the bare status.
+    """
+    emit(
+        ctx,
+        media_proxy_core.camera_snapshot(
+            make_client(ctx),
+            entity_id=entity_id,
+            output_path=output_path,
+            overwrite=overwrite,
+            width=width,
+            height=height,
+            signed=signed,
+            expires=expires,
+        ),
+    )
+
+
+@camera.command("capture")
+@click.argument("entity_id")
+@click.argument("output_dir", type=click.Path(file_okay=False))
+@click.option("--frames", type=int, default=1, show_default=True, help="Distinct frames to keep")
+@click.option(
+    "--interval",
+    type=float,
+    default=None,
+    help="Compose the stream from stills this many seconds apart (>= 0.5). "
+    "Omit to use the camera's native MJPEG stream, which not every platform has.",
+)
+@click.option(
+    "--timeout",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Give up after N seconds — the stream itself never ends",
+)
+@click.option("--prefix", default="frame", show_default=True, help="Output filename prefix")
+@click.option("--overwrite/--no-overwrite", default=False, help="Replace existing frame files")
+@click.option("--signed/--direct", default=False, help="Fetch through a signed one-shot URL")
+@click.option("--expires", type=int, default=30, help="If --signed, seconds the URL is valid for")
+@click.pass_context
+def camera_capture(
+    ctx, entity_id, output_dir, frames, interval, timeout, prefix, overwrite, signed, expires
+):
+    """Capture N distinct frames from a camera's MJPEG stream into OUTPUT_DIR.
+
+    Home Assistant deliberately sends the first frame twice (browsers render
+    the n-1 frame of a multipart stream); consecutive duplicates are collapsed
+    and reported as `duplicates_skipped`.
+    """
+    emit(
+        ctx,
+        media_proxy_core.camera_capture(
+            make_client(ctx),
+            entity_id=entity_id,
+            output_dir=output_dir,
+            frames=frames,
+            interval=interval,
+            timeout=timeout,
+            prefix=prefix,
+            overwrite=overwrite,
+            signed=signed,
+            expires=expires,
+        ),
+    )
+
+
+@camera.command("proxy-url")
+@click.argument("entity_id")
+@click.option(
+    "--signed/--unsigned",
+    default=True,
+    help="Sign the URL so it works without an Authorization header (default: signed)",
+)
+@click.option("--stream/--still", default=False, help="Point at the MJPEG stream view instead")
+@click.option("--expires", type=int, default=30, show_default=True)
+@click.pass_context
+def camera_proxy_url(ctx, entity_id, signed, stream, expires):
+    """Return the `/api/camera_proxy/<entity_id>` URL (signed by default)."""
+    emit(
+        ctx,
+        media_proxy_core.proxy_url(
+            make_client(ctx),
+            entity_id=entity_id,
+            signed=signed,
+            expires=expires,
+            stream=stream,
+        ),
+    )
+
+
+@camera.command("on")
+@click.argument("entity_id")
+@click.pass_context
+def camera_on(ctx, entity_id):
+    """Turn a camera on."""
+    emit(ctx, entity_control_core.camera_turn_on(make_client(ctx), entity_id))
+
+
+@camera.command("off")
+@click.argument("entity_id")
+@click.pass_context
+def camera_off(ctx, entity_id):
+    """Turn a camera off.
+
+    While off, `camera snapshot` / `capture` answer 503 — HA checks
+    `camera.is_on` before it will serve the proxy.
+    """
+    emit(ctx, entity_control_core.camera_turn_off(make_client(ctx), entity_id))
+
+
+@camera.command("motion-on")
+@click.argument("entity_id")
+@click.pass_context
+def camera_motion_on(ctx, entity_id):
+    """Enable motion detection on a camera."""
+    emit(
+        ctx,
+        entity_control_core.camera_enable_motion_detection(make_client(ctx), entity_id),
+    )
+
+
+@camera.command("motion-off")
+@click.argument("entity_id")
+@click.pass_context
+def camera_motion_off(ctx, entity_id):
+    """Disable motion detection on a camera."""
+    emit(
+        ctx,
+        entity_control_core.camera_disable_motion_detection(make_client(ctx), entity_id),
+    )
+
+
+@camera.command("host-snapshot")
+@click.argument("entity_id")
+@click.argument("filename")
+@click.pass_context
+def camera_host_snapshot(ctx, entity_id, filename):
+    """Write a still to FILENAME **on the Home Assistant host**.
+
+    This is not `camera snapshot`, which downloads a frame to THIS machine.
+    Here HA does the writing, so FILENAME must be an absolute path inside
+    `allowlist_external_dirs` in HA's configuration.yaml — otherwise the call
+    comes back as a bare HTTP 500.
+
+    FILENAME is a Jinja template on HA's side, so `{{ entity_id.name }}` works.
+    """
+    client = make_client(ctx)
+    entity_control_core.camera_host_snapshot(client, entity_id, filename=filename)
+    emit(
+        ctx,
+        {
+            "entity_id": entity_id,
+            "written_on": "home-assistant-host",
+            "filename": filename,
+        },
+    )
+
+
+@camera.command("record")
+@click.argument("entity_id")
+@click.argument("filename")
+@click.option(
+    "--duration",
+    type=int,
+    default=None,
+    help="Seconds to record, 1-3600 (HA's default is 30)",
+)
+@click.option(
+    "--lookback",
+    type=int,
+    default=None,
+    help="Seconds of already-buffered past to prepend, 0-300. Only yields "
+    "anything when the camera has --preload-stream on.",
+)
+@click.pass_context
+def camera_record_cmd(ctx, entity_id, filename, duration, lookback):
+    """Record to FILENAME **on the Home Assistant host**.
+
+    Needs the `stream` integration and a camera that provides a stream source;
+    one that does not answers a bare HTTP 500 whose real message
+    ("does not support record service") is only in HA's log. FILENAME follows
+    the same allowlist rule as `host-snapshot`.
+    """
+    client = make_client(ctx)
+    entity_control_core.camera_record(
+        client,
+        entity_id,
+        filename=filename,
+        duration=duration,
+        lookback=lookback,
+    )
+    emit(
+        ctx,
+        {
+            "entity_id": entity_id,
+            "written_on": "home-assistant-host",
+            "filename": filename,
+            "duration": duration if duration is not None else 30,
+            "lookback": lookback if lookback is not None else 0,
+        },
+    )
+
+
+@camera.command("play-stream")
+@click.argument("entity_id")
+@click.argument("media_player")
+@click.option("--format", "stream_format", default="hls", type=click.Choice(["hls"]))
+@click.pass_context
+def camera_play_stream(ctx, entity_id, media_player, stream_format):
+    """Cast a camera's live stream to MEDIA_PLAYER."""
+    emit(
+        ctx,
+        entity_control_core.camera_play_stream(
+            make_client(ctx),
+            entity_id,
+            media_player=media_player,
+            stream_format=stream_format,
         ),
     )
 
@@ -8822,6 +10448,512 @@ def auth_user_change_password(ctx, current_password, new_password):
             new_password=new_password,
         ),
     )
+
+
+@auth_user.command("reset-password")
+@click.argument("user_id")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="The new password. Prompted for (hidden) when not given, so it stays "
+    "out of shell history and `ps`.",
+)
+@click.pass_context
+def auth_user_reset_password(ctx, user_id, password):
+    """Reset ANOTHER user's password by user_id. OWNER-only.
+
+    Unlike `change-password` this needs no current password — it is the
+    locked-out-user remedy. Existing sessions and long-lived tokens survive
+    it; revoke those with `auth token delete`.
+    """
+    emit(
+        ctx,
+        user_admin_core.admin_change_password(
+            make_client(ctx),
+            user_id=user_id,
+            password=password,
+        ),
+    )
+
+
+@auth_user.command("rename-login")
+@click.argument("user_id")
+@click.argument("username")
+@click.confirmation_option(
+    prompt="Change this user's sign-in username? They must use the new one to log in."
+)
+@click.pass_context
+def auth_user_rename_login(ctx, user_id, username):
+    """Change ANOTHER user's sign-in username. OWNER-only.
+
+    This is the LOGIN, not the display name — `user update --name` is that.
+    The password is unaffected.
+    """
+    emit(
+        ctx,
+        user_admin_core.admin_change_username(
+            make_client(ctx),
+            user_id=user_id,
+            username=username,
+        ),
+    )
+
+
+# ────────────────────────────────────────── auth: getting a token in the first place
+#
+# Everything above needs a token already. These wrap the endpoints Home
+# Assistant mounts OUTSIDE `/api/` — `/auth/login_flow`, `/auth/token`,
+# `/auth/revoke`, `/auth/providers` — which are how a token is obtained.
+# See `core/auth_login.py` for the encoding and status-code traps.
+
+
+@auth.command("providers")
+@click.pass_context
+def auth_providers(ctx):
+    """List the auth providers this instance offers (no token needed).
+
+    The `type`/`id` pair of a provider is the `handler` for `auth login` and
+    `auth login-flow start`. A `trusted_networks` provider is hidden by HA
+    unless THIS host's IP is one it trusts.
+    """
+    emit(ctx, auth_login_core.list_providers(make_client(ctx)))
+
+
+@auth.command("oauth-metadata")
+@click.pass_context
+def auth_oauth_metadata(ctx):
+    """Show the RFC 8414 authorization-server metadata (no token needed)."""
+    emit(ctx, auth_login_core.oauth_metadata(make_client(ctx)))
+
+
+@auth.command("login")
+@click.option("--username", required=True, help="Sign-in username")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    help="Password (prompted for, hidden, if not given)",
+)
+@click.option("--mfa-code", default=None, help="Multi-factor code, if the account needs one")
+@click.option(
+    "--client-id",
+    default=None,
+    help="IndieAuth client id (default: the HA base URL). Keep it — `auth refresh` needs the same value.",
+)
+@click.option(
+    "--redirect-uri",
+    default=None,
+    help="Defaults to --client-id. A different origin makes HA fetch the client_id URL over the network.",
+)
+@click.option("--provider-type", default=None, help="Auth provider type (default: homeassistant)")
+@click.option("--provider-id", default=None, help="Auth provider id, for a provider that has one")
+@click.option(
+    "--save",
+    is_flag=True,
+    default=False,
+    help="Write the access token into the connection profile (mode 0600)",
+)
+@click.pass_context
+def auth_login(
+    ctx,
+    username,
+    password,
+    mfa_code,
+    client_id,
+    redirect_uri,
+    provider_type,
+    provider_id,
+    save,
+):
+    """Exchange a username + password for an access token.
+
+    Drives the whole IndieAuth flow — providers, login flow, credentials,
+    optional MFA, authorization code, token — so this works on an instance you
+    have no token for yet.
+
+    THE TOKEN IS SHORT-LIVED (`expires_in`, 1800s by default). For a durable
+    credential, follow up with `auth tokens create <name>` using it:
+
+        eval "$(cli-anything-homeassistant auth login --username u --password p --save)"
+        cli-anything-homeassistant auth tokens create my-agent
+
+    A wrong password counts toward Home Assistant's IP ban, so do not script a
+    retry loop around this.
+    """
+    result = auth_login_core.login(
+        make_client(ctx),
+        username=username,
+        password=password,
+        mfa_code=mfa_code,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        provider_type=provider_type,
+        provider_id=provider_id,
+    )
+    if save:
+        path = project.save_config(
+            url=ctx.obj["url"],
+            token=result["access_token"],
+            verify_ssl=ctx.obj["verify_ssl"],
+            timeout=ctx.obj["timeout"],
+            config_path=ctx.obj.get("config_path"),
+        )
+        result = {**result, "saved_to": str(path)}
+    emit(ctx, result)
+
+
+@auth.command("refresh")
+@click.option("--refresh-token", required=True, help="Refresh token from `auth login`")
+@click.option(
+    "--client-id",
+    default=None,
+    help="MUST match the client_id the refresh token was issued to (default: the HA base URL)",
+)
+@click.option(
+    "--save", is_flag=True, default=False, help="Write the new access token into the profile"
+)
+@click.pass_context
+def auth_refresh(ctx, refresh_token, client_id, save):
+    """Mint a fresh access token from a refresh token.
+
+    No new refresh token comes back — only `access_token`, `token_type` and
+    `expires_in`. Run twice inside one second the access token is byte-identical,
+    because the JWT's only varying claims are `iat`/`exp`.
+    """
+    result = auth_login_core.refresh_access_token(
+        make_client(ctx), refresh_token=refresh_token, client_id=client_id
+    )
+    if save:
+        path = project.save_config(
+            url=ctx.obj["url"],
+            token=result["access_token"],
+            verify_ssl=ctx.obj["verify_ssl"],
+            timeout=ctx.obj["timeout"],
+            config_path=ctx.obj.get("config_path"),
+        )
+        result = {**result, "saved_to": str(path)}
+    emit(ctx, result)
+
+
+@auth.command("revoke")
+@click.option("--token", "token_value", required=True, help="The REFRESH token to revoke")
+@click.option(
+    "--verify/--no-verify",
+    default=False,
+    help="Prove the revocation by re-trying the refresh grant (it must fail)",
+)
+@click.option("--client-id", default=None, help="client_id the token was issued to (for --verify)")
+@click.confirmation_option(prompt="Revoke this refresh token?")
+@click.pass_context
+def auth_revoke(ctx, token_value, verify, client_id):
+    """Revoke a refresh token via the OAuth revocation endpoint.
+
+    `/auth/revoke` answers 200 with an empty body for a valid token, an invalid
+    token and a missing one alike (RFC 7009 §2.2), so the response alone proves
+    nothing — pass `--verify` to have it confirmed.
+    """
+    emit(
+        ctx,
+        auth_login_core.revoke_token(
+            make_client(ctx), token=token_value, verify=verify, client_id=client_id
+        ),
+    )
+
+
+@auth.command("exchange-code")
+@click.argument("code")
+@click.option("--client-id", default=None, help="Must match the client_id that started the flow")
+@click.pass_context
+def auth_exchange_code(ctx, code, client_id):
+    """Trade an authorization code from `auth login-flow step` for tokens.
+
+    Codes are single-use and expire in minutes.
+    """
+    emit(ctx, auth_login_core.exchange_code(make_client(ctx), code=code, client_id=client_id))
+
+
+@auth.command("link-user")
+@click.argument("code")
+@click.option("--client-id", default=None, help="Must match the client_id that started the flow")
+@click.pass_context
+def auth_link_user(ctx, code, client_id):
+    """Link the credential behind an authorization code to the ACTIVE user.
+
+    The one endpoint in this section that REQUIRES an existing token. The code
+    must come from `auth login-flow start --type link_user`.
+    """
+    emit(ctx, auth_login_core.link_user(make_client(ctx), code=code, client_id=client_id))
+
+
+@auth.group("login-flow")
+def auth_login_flow():
+    """Drive the login flow step by step (for MFA or a non-standard provider).
+
+    `auth login` is the one-shot version and is what you usually want. Use
+    these when a provider asks for fields `auth login` does not know about.
+    """
+
+
+@auth_login_flow.command("start")
+@click.option("--provider-type", default=None, help="Auth provider type (default: homeassistant)")
+@click.option("--provider-id", default=None, help="Auth provider id, for a provider that has one")
+@click.option("--client-id", default=None, help="IndieAuth client id (default: the HA base URL)")
+@click.option("--redirect-uri", default=None, help="Defaults to --client-id")
+@click.option(
+    "--type",
+    "flow_type",
+    type=click.Choice(auth_login_core.FLOW_TYPES),
+    default="authorize",
+    help="'authorize' to log in, 'link_user' to produce a code for `auth link-user`",
+)
+@click.pass_context
+def auth_login_flow_start(ctx, provider_type, provider_id, client_id, redirect_uri, flow_type):
+    """Open a login flow and print its first step.
+
+    `data_schema` in the output names the fields to pass to `step --field`.
+    """
+    client = make_client(ctx)
+    handler = auth_login_core.resolve_handler(
+        client, provider_type=provider_type, provider_id=provider_id
+    )
+    emit(
+        ctx,
+        auth_login_core.start_login_flow(
+            client,
+            handler=handler,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            flow_type=flow_type,
+        ),
+    )
+
+
+@auth_login_flow.command("step")
+@click.argument("flow_id")
+@click.option(
+    "--field",
+    "fields",
+    multiple=True,
+    metavar="NAME=VALUE",
+    help="A field from the step's data_schema. Repeatable (e.g. --field username=x --field password=y).",
+)
+@click.option("--client-id", default=None, help="Must match the client_id that started the flow")
+@click.pass_context
+def auth_login_flow_step(ctx, flow_id, fields, client_id):
+    """Submit one step of a login flow.
+
+    On the final step the output is `type: create_entry` and `result` holds the
+    authorization code — feed it to `auth exchange-code`.
+    """
+    step_data = {}
+    for item in fields:
+        if "=" not in item:
+            raise click.BadParameter(f"--field must be NAME=VALUE, got {item!r}")
+        name, value = item.split("=", 1)
+        step_data[name] = value
+    emit(
+        ctx,
+        auth_login_core.advance_login_flow(
+            make_client(ctx), flow_id=flow_id, step_data=step_data, client_id=client_id
+        ),
+    )
+
+
+@auth_login_flow.command("abort")
+@click.argument("flow_id")
+@click.pass_context
+def auth_login_flow_abort(ctx, flow_id):
+    """Cancel a login flow that was started and never finished."""
+    emit(ctx, auth_login_core.abort_login_flow(make_client(ctx), flow_id=flow_id))
+
+
+# ─────────────────────────────────────────────── onboarding: a brand-new instance
+#
+# `auth login` needs an account to log in as. On a Home Assistant that has just
+# started for the first time there is none, and `/auth/providers` says so with
+# `400 onboarding_required`. These wrap `/api/onboarding/*`, which is how the
+# first account is created. See `core/onboarding.py` — every step commits
+# BEFORE it can fail, which is the fact that shapes all of it.
+
+
+@cli.group()
+def onboarding():
+    """Set up a brand-new Home Assistant (create the first account).
+
+    ONBOARDING STEPS ARE ONE-SHOT AND COMMIT BEFORE THEY CAN FAIL. Home
+    Assistant marks each step done at the top of its handler, ahead of the
+    work and ahead of every check, so a step that errors is still finished and
+    retrying it answers "already done". Nothing here retries; `ok` and
+    `committed` are reported separately.
+
+    The usual call is one command:
+
+        cli-anything-homeassistant --url http://ha:8123 onboarding provision \\
+            --name Agent --username agent --password 's3cret' --save
+    """
+
+
+@onboarding.command("status")
+@click.pass_context
+def onboarding_status(ctx):
+    """Which onboarding steps are done. No token needed.
+
+    `onboarded: true` is the condition that unblocks `/auth/providers` and the
+    rest of the API — until then `auth login` cannot work.
+    """
+    emit(ctx, onboarding_core.status(make_client(ctx)))
+
+
+@onboarding.command("installation-type")
+@click.pass_context
+def onboarding_installation_type(ctx):
+    """How this instance was installed (OS / Container / Core / Supervised).
+
+    Only readable on an instance where NO step has been done yet — Home
+    Assistant refuses it from the first step onward. Use `system info` after
+    that.
+    """
+    emit(ctx, onboarding_core.installation_type(make_client(ctx)))
+
+
+@onboarding.command("create-user")
+@click.option("--name", required=True, help="Display name for the owner account")
+@click.option("--username", required=True, help="Sign-in username")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="Password (prompted for, hidden and confirmed, if not given)",
+)
+@click.option("--language", default="en", show_default=True, help="Language for the default areas")
+@click.option(
+    "--client-id",
+    default=None,
+    help="IndieAuth client id (default: the HA base URL). The auth code is bound to it.",
+)
+@click.pass_context
+def onboarding_create_user(ctx, name, username, password, language, client_id):
+    """Create the owner account. ONE SHOT — an instance can only do this once.
+
+    Returns an authorization code, not a token: redeem it within 10 minutes
+    with `auth exchange-code --code <code> --client-id <same client id>`.
+    `onboarding provision` does both in one step and is what you usually want.
+    """
+    emit(
+        ctx,
+        onboarding_core.create_user(
+            make_client(ctx),
+            name=name,
+            username=username,
+            password=password,
+            language=language,
+            client_id=client_id,
+        ),
+    )
+
+
+@onboarding.command("finish-step")
+@click.argument("step", type=click.Choice(onboarding_core.SIMPLE_STEPS))
+@click.pass_context
+def onboarding_finish_step(ctx, step):
+    """Complete the `core_config` or `analytics` step. Needs a token.
+
+    `ok: false` with `committed: true` is a normal outcome for `core_config` —
+    Home Assistant answers 500 when one of the integrations it starts cannot
+    import, having already marked the step done.
+    """
+    emit(ctx, onboarding_core.finish_step(make_client(ctx), step))
+
+
+@onboarding.command("finish-integration")
+@click.option("--client-id", default=None, help="IndieAuth client id (default: the HA base URL)")
+@click.option("--redirect-uri", default=None, help="Defaults to --client-id")
+@click.pass_context
+def onboarding_finish_integration(ctx, client_id, redirect_uri):
+    """Complete the `integration` step, returning a second auth code.
+
+    Needs a CREDENTIAL-BACKED token — one from `auth login`, not a long-lived
+    access token, which HA refuses here with "Credentials for user not
+    available" (and spends the step doing it).
+    """
+    emit(
+        ctx,
+        onboarding_core.finish_integration(
+            make_client(ctx), client_id=client_id, redirect_uri=redirect_uri
+        ),
+    )
+
+
+@onboarding.command("provision")
+@click.option("--name", required=True, help="Display name for the owner account")
+@click.option("--username", required=True, help="Sign-in username")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="Password (prompted for, hidden and confirmed, if not given)",
+)
+@click.option("--language", default="en", show_default=True, help="Language for the default areas")
+@click.option("--client-id", default=None, help="IndieAuth client id (default: the HA base URL)")
+@click.option("--redirect-uri", default=None, help="Defaults to --client-id")
+@click.option(
+    "--no-finish",
+    is_flag=True,
+    default=False,
+    help="Stop after the token: create the user, exchange the code, leave the other steps undone",
+)
+@click.option(
+    "--save",
+    is_flag=True,
+    default=False,
+    help="Write the resulting access token into the connection profile (mode 0600)",
+)
+@click.pass_context
+def onboarding_provision(
+    ctx, name, username, password, language, client_id, redirect_uri, no_finish, save
+):
+    """Fresh instance → owner account → access token, in one call.
+
+    Creates the owner, redeems its authorization code for a token, then
+    finishes the remaining steps as that user. The steps that can fail run
+    LAST and never cost you the token: each is reported in `steps` and the run
+    carries on, because a refused step is already spent.
+
+    THE TOKEN IS SHORT-LIVED (`expires_in`, 1800s). For a durable credential,
+    follow up with `auth tokens create`:
+
+        eval "$(cli-anything-homeassistant onboarding provision \\
+            --name Agent --username agent --password s3cret --save)"
+        cli-anything-homeassistant auth tokens create my-agent
+    """
+    result = onboarding_core.provision(
+        make_client(ctx),
+        name=name,
+        username=username,
+        password=password,
+        language=language,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        finish=not no_finish,
+    )
+    if save:
+        path = project.save_config(
+            url=ctx.obj["url"],
+            token=result["access_token"],
+            verify_ssl=ctx.obj["verify_ssl"],
+            timeout=ctx.obj["timeout"],
+            config_path=ctx.obj.get("config_path"),
+        )
+        result = {**result, "saved_to": str(path)}
+    emit(ctx, result)
 
 
 # ──────────────────────────────────────────────────────── category
@@ -9545,6 +11677,30 @@ def mp_unjoin(ctx, entity_id):
     emit(ctx, entity_control_core.media_player_unjoin(make_client(ctx), entity_id))
 
 
+@media_player_grp.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def mp_toggle(ctx, entity_id):
+    """Toggle a media player's power."""
+    emit(ctx, entity_control_core.media_player_toggle(make_client(ctx), entity_id))
+
+
+@media_player_grp.command("seek")
+@click.argument("entity_id")
+@click.argument("position", type=float)
+@click.pass_context
+def mp_seek(ctx, entity_id, position):
+    """Seek to POSITION seconds from the start of the current item."""
+    emit(
+        ctx,
+        entity_control_core.media_player_seek(
+            make_client(ctx),
+            entity_id,
+            position=position,
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────── climate
 
 
@@ -9664,6 +11820,34 @@ def climate_off(ctx, entity_id):
     emit(ctx, entity_control_core.climate_turn_off(make_client(ctx), entity_id))
 
 
+@climate.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def climate_toggle_cmd(ctx, entity_id):
+    """Toggle a climate entity between off and its previous hvac mode."""
+    emit(ctx, entity_control_core.climate_toggle(make_client(ctx), entity_id))
+
+
+@climate.command("set-swing-horizontal")
+@click.argument("entity_id")
+@click.argument("mode")
+@click.pass_context
+def climate_set_swing_horizontal(ctx, entity_id, mode):
+    """Set the HORIZONTAL swing mode (separate from `set-swing`).
+
+    Read the valid values from the entity's `swing_horizontal_modes`
+    attribute: `state get <entity_id>`.
+    """
+    emit(
+        ctx,
+        entity_control_core.climate_set_swing_horizontal_mode(
+            make_client(ctx),
+            entity_id,
+            swing_horizontal_mode=mode,
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────── cover
 
 
@@ -9750,6 +11934,14 @@ def cover_close_tilt_cmd(ctx, entity_id):
 @click.pass_context
 def cover_stop_tilt_cmd(ctx, entity_id):
     emit(ctx, entity_control_core.cover_stop_tilt(make_client(ctx), entity_id))
+
+
+@cover.command("toggle-tilt")
+@click.argument("entity_id")
+@click.pass_context
+def cover_toggle_tilt_cmd(ctx, entity_id):
+    """Toggle the tilt between fully open and fully closed."""
+    emit(ctx, entity_control_core.cover_toggle_tilt(make_client(ctx), entity_id))
 
 
 # ──────────────────────────────────────────────────────── fan
@@ -10459,6 +12651,206 @@ def text_set(ctx, entity_id, value):
             value=value,
         ),
     )
+
+
+# ──────────────────────────────────────────────────────── switch
+
+
+@cli.group()
+def switch():
+    """switch.* entities — on / off / toggle."""
+
+
+@switch.command("on")
+@click.argument("entity_id")
+@click.pass_context
+def switch_on(ctx, entity_id):
+    """Turn a switch on."""
+    emit(ctx, entity_control_core.switch_turn_on(make_client(ctx), entity_id))
+
+
+@switch.command("off")
+@click.argument("entity_id")
+@click.pass_context
+def switch_off(ctx, entity_id):
+    """Turn a switch off."""
+    emit(ctx, entity_control_core.switch_turn_off(make_client(ctx), entity_id))
+
+
+@switch.command("toggle")
+@click.argument("entity_id")
+@click.pass_context
+def switch_toggle_cmd(ctx, entity_id):
+    """Toggle a switch."""
+    emit(ctx, entity_control_core.switch_toggle(make_client(ctx), entity_id))
+
+
+@switch.command("list")
+@click.pass_context
+def switch_list(ctx):
+    """List every switch.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="switch"))
+
+
+# ──────────────────────────────────────────────────────── date / time / datetime
+
+
+@cli.group()
+def date():
+    """date.* entities — set the stored calendar date."""
+
+
+@date.command("set")
+@click.argument("entity_id")
+@click.argument("value")
+@click.pass_context
+def date_set(ctx, entity_id, value):
+    """Set a date entity to VALUE (ISO `YYYY-MM-DD`).
+
+    Only ISO is accepted — HA's own services.yaml example, `2022/11/01`, is
+    rejected by the parser with a bare 400.
+    """
+    emit(ctx, entity_control_core.date_set_value(make_client(ctx), entity_id, date=value))
+
+
+@date.command("list")
+@click.pass_context
+def date_list(ctx):
+    """List every date.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="date"))
+
+
+@cli.group()
+def time():
+    """time.* entities — set the stored time of day."""
+
+
+@time.command("set")
+@click.argument("entity_id")
+@click.argument("value")
+@click.pass_context
+def time_set(ctx, entity_id, value):
+    """Set a time entity to VALUE (`HH:MM` or `HH:MM:SS`; stored as `HH:MM:SS`)."""
+    emit(ctx, entity_control_core.time_set_value(make_client(ctx), entity_id, time=value))
+
+
+@time.command("list")
+@click.pass_context
+def time_list(ctx):
+    """List every time.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="time"))
+
+
+@cli.group("datetime")
+def datetime_grp():
+    """datetime.* entities — set the stored date AND time."""
+
+
+@datetime_grp.command("set")
+@click.argument("entity_id")
+@click.argument("value")
+@click.pass_context
+def datetime_set(ctx, entity_id, value):
+    """Set a datetime entity to VALUE (ISO-8601).
+
+    A naive value is interpreted in HOME ASSISTANT's timezone, not yours; pass
+    an offset (or a trailing `Z`) to be explicit. A date-only value is
+    accepted and stored as midnight.
+    """
+    emit(
+        ctx,
+        entity_control_core.datetime_set_value(make_client(ctx), entity_id, datetime=value),
+    )
+
+
+@datetime_grp.command("list")
+@click.pass_context
+def datetime_list(ctx):
+    """List every datetime.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="datetime"))
+
+
+# ──────────────────────────────────────────────────────── device-tracker
+
+
+@cli.group("device-tracker")
+def device_tracker_grp():
+    """device_tracker.* entities — report a device's position to HA."""
+
+
+@device_tracker_grp.command("see")
+@click.option("--dev-id", default=None, help="Device slug, e.g. `phonedave` (creates it)")
+@click.option("--mac", default=None, help="MAC address, as an alternative key to --dev-id")
+@click.option("--host-name", default=None, help="Friendly hostname")
+@click.option(
+    "--location",
+    "location_name",
+    default=None,
+    help="Zone by name: `home`, `not_home`, or a zone's friendly name",
+)
+@click.option(
+    "--gps",
+    nargs=2,
+    type=float,
+    default=None,
+    help="LATITUDE LONGITUDE — HA resolves the zone itself",
+)
+@click.option("--gps-accuracy", type=int, default=None, help="Accuracy radius in metres")
+@click.option("--battery", type=int, default=None, help="Battery level, 0-100")
+@click.pass_context
+def device_tracker_see(ctx, dev_id, mac, host_name, location_name, gps, gps_accuracy, battery):
+    """Report a position. Creates `device_tracker.<dev-id>` on first use.
+
+    Needs at least one of --dev-id / --mac. --location and --gps are
+    alternatives: the first names a zone, the second gives coordinates.
+    """
+    emit(
+        ctx,
+        entity_control_core.device_tracker_see(
+            make_client(ctx),
+            dev_id=dev_id,
+            mac=mac,
+            host_name=host_name,
+            location_name=location_name,
+            gps=list(gps) if gps else None,
+            gps_accuracy=gps_accuracy,
+            battery=battery,
+        ),
+    )
+
+
+@device_tracker_grp.command("list")
+@click.pass_context
+def device_tracker_list(ctx):
+    """List every device_tracker.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="device_tracker"))
+
+
+# ──────────────────────────────────────────────────────── image-processing
+
+
+@cli.group("image-processing")
+def image_processing_grp():
+    """image_processing.* entities — force a scan now."""
+
+
+@image_processing_grp.command("scan")
+@click.argument("entity_id")
+@click.pass_context
+def image_processing_scan(ctx, entity_id):
+    """Scan now instead of waiting for the poll.
+
+    The result lands on the entity itself — read it back with
+    `state get <entity_id>`.
+    """
+    emit(ctx, entity_control_core.image_processing_scan(make_client(ctx), entity_id))
+
+
+@image_processing_grp.command("list")
+@click.pass_context
+def image_processing_list(ctx):
+    """List every image_processing.* entity and its state."""
+    emit(ctx, states_core.list_states(make_client(ctx), domain="image_processing"))
 
 
 # ──────────────────────────────────────────────────────── notify
@@ -11915,6 +14307,45 @@ def image_proxy_url(ctx, entity_id, signed, expires):
         image_core.proxy_url(
             make_client(ctx),
             entity_id=entity_id,
+            signed=signed,
+            expires=expires,
+        ),
+    )
+
+
+@image.command("capture")
+@click.argument("entity_id")
+@click.argument("output_dir", type=click.Path(file_okay=False))
+@click.option("--frames", type=int, default=1, show_default=True, help="Distinct frames to keep")
+@click.option(
+    "--timeout",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Give up after N seconds — the stream itself never ends",
+)
+@click.option("--prefix", default="frame", show_default=True, help="Output filename prefix")
+@click.option("--overwrite/--no-overwrite", default=False, help="Replace existing frame files")
+@click.option("--signed/--direct", default=False, help="Fetch through a signed one-shot URL")
+@click.option("--expires", type=int, default=30, help="If --signed, seconds the URL is valid for")
+@click.pass_context
+def image_capture(ctx, entity_id, output_dir, frames, timeout, prefix, overwrite, signed, expires):
+    """Capture N distinct frames from an image entity's stream into OUTPUT_DIR.
+
+    The image stream has no interval — HA pushes a frame when the entity
+    changes. A static image entity yields ONE distinct frame and then blocks,
+    so the result reports `complete: false` at the timeout instead of hanging.
+    """
+    emit(
+        ctx,
+        media_proxy_core.image_capture(
+            make_client(ctx),
+            entity_id=entity_id,
+            output_dir=output_dir,
+            frames=frames,
+            timeout=timeout,
+            prefix=prefix,
+            overwrite=overwrite,
             signed=signed,
             expires=expires,
         ),
@@ -15168,6 +17599,613 @@ def media_player_search(ctx, entity_id, query, media_content_id, media_content_t
             media_content_id=media_content_id,
             media_content_type=media_content_type,
         ),
+    )
+
+
+@media_player_grp.command("artwork")
+@click.argument("entity_id")
+@click.argument("output_path", type=click.Path(dir_okay=False, writable=True))
+@click.option(
+    "--overwrite/--no-overwrite", default=False, help="Replace OUTPUT_PATH if it already exists"
+)
+@click.option(
+    "--content-type",
+    "media_content_type",
+    default=None,
+    help="Fetch a browse-media thumbnail instead of the now-playing art. "
+    "Must be given with --content-id.",
+)
+@click.option("--content-id", "media_content_id", default=None, help="See --content-type")
+@click.option("--image-id", "media_image_id", default=None, help="Optional media_image_id")
+@click.option("--signed/--direct", default=False, help="Fetch through a signed one-shot URL")
+@click.option("--expires", type=int, default=30, help="If --signed, seconds the URL is valid for")
+@click.pass_context
+def media_player_artwork(
+    ctx,
+    entity_id,
+    output_path,
+    overwrite,
+    media_content_type,
+    media_content_id,
+    media_image_id,
+    signed,
+    expires,
+):
+    """Download a media player's cover art (or a browse-media thumbnail).
+
+    With --content-type/--content-id this fetches the thumbnail for one node
+    of the `media_player browse` tree — the only way to get those bytes, since
+    the URLs `browse_media` returns point straight back at this endpoint.
+
+    A player with no artwork answers 500; that is a normal outcome, not a
+    server fault, and the error says so.
+    """
+    emit(
+        ctx,
+        media_proxy_core.media_player_artwork(
+            make_client(ctx),
+            entity_id=entity_id,
+            output_path=output_path,
+            overwrite=overwrite,
+            media_content_type=media_content_type,
+            media_content_id=media_content_id,
+            media_image_id=media_image_id,
+            signed=signed,
+            expires=expires,
+        ),
+    )
+
+
+# ──────────────────────────────────────────────────────── cloud (Nabu Casa)
+
+
+@cli.group()
+def cloud():
+    """Home Assistant Cloud — account, subscription, remote UI, Alexa, Google.
+
+    The harness could already see the RESULTS of the cloud (`network urls`
+    shows the cloud URL, `webhook cloudhooks` lists its hooks, `expose`
+    targets `cloud.alexa`) and could not ask the cloud anything. This group
+    asks.
+
+    Read commands answer `logged_in: false` on a signed-out instance instead
+    of failing — that is a true answer to "what is my subscription". Write
+    commands refuse loudly, because there it is the reason nothing happened.
+
+    Signing IN is deliberately absent: those endpoints take an account
+    password, and a password in argv is a password in your shell history.
+    """
+
+
+@cloud.command("status")
+@click.pass_context
+def cloud_status(ctx):
+    """Account, connection, subscription and remote URL in one answer.
+
+    The only command here that is not login-guarded. Read `connection`
+    alongside `logged_in`: a signed-in instance that has lost the socket is
+    `logged_in: true, connected: false`, which is exactly the "Alexa stopped
+    responding" symptom.
+    """
+    emit(ctx, cloud_core.status(make_client(ctx)))
+
+
+@cloud.command("subscription")
+@click.pass_context
+def cloud_subscription(ctx):
+    """The Nabu Casa subscription behind this instance."""
+    emit(ctx, cloud_core.subscription(make_client(ctx)))
+
+
+@cloud.command("set-prefs")
+@click.option(
+    "--alexa/--no-alexa", "alexa_enabled", default=None, help="Enable the Alexa integration."
+)
+@click.option(
+    "--alexa-report-state/--no-alexa-report-state",
+    "alexa_report_state",
+    default=None,
+    help="Proactively push state changes to Alexa.",
+)
+@click.option(
+    "--google/--no-google", "google_enabled", default=None, help="Enable Google Assistant."
+)
+@click.option(
+    "--google-report-state/--no-google-report-state",
+    "google_report_state",
+    default=None,
+    help="Proactively push state changes to Google.",
+)
+@click.option(
+    "--google-pin",
+    "google_secure_devices_pin",
+    default=None,
+    help="Secure-devices PIN for locks/garage doors. Pass '' to clear it.",
+)
+@click.option(
+    "--allow-remote-enable/--no-allow-remote-enable",
+    "remote_allow_remote_enable",
+    default=None,
+    help="Let remote access be turned on from outside the local network.",
+)
+@click.option(
+    "--ice-servers/--no-ice-servers",
+    "cloud_ice_servers_enabled",
+    default=None,
+    help="Use the cloud TURN/STUN servers for WebRTC camera streams.",
+)
+@click.option(
+    "--tts-voice",
+    "tts_default_voice",
+    nargs=2,
+    default=None,
+    metavar="LANGUAGE VOICE",
+    help="Default cloud TTS voice, as a pair. List valid pairs with `cloud tts-voices`.",
+)
+@click.pass_context
+def cloud_set_prefs(
+    ctx,
+    alexa_enabled,
+    alexa_report_state,
+    google_enabled,
+    google_report_state,
+    google_secure_devices_pin,
+    remote_allow_remote_enable,
+    cloud_ice_servers_enabled,
+    tts_default_voice,
+):
+    """Update cloud preferences. Only the flags you pass are sent.
+
+    A genuine partial update — unlike the powercalc options flow, HA leaves
+    every key you omit alone, so there is no read-modify-write hazard.
+
+    Remote access is NOT here: it is `cloud remote connect` / `disconnect`.
+    """
+    emit(
+        ctx,
+        cloud_core.set_prefs(
+            make_client(ctx),
+            alexa_enabled=alexa_enabled,
+            alexa_report_state=alexa_report_state,
+            google_enabled=google_enabled,
+            google_report_state=google_report_state,
+            google_secure_devices_pin=google_secure_devices_pin,
+            remote_allow_remote_enable=remote_allow_remote_enable,
+            cloud_ice_servers_enabled=cloud_ice_servers_enabled,
+            tts_default_voice=tts_default_voice or None,
+        ),
+    )
+
+
+@cloud.command("tts-voices")
+@click.option("--language", default=None, help="Only this language, e.g. en-GB.")
+@click.pass_context
+def cloud_tts_voices(ctx, language):
+    """Cloud TTS voices, grouped by language.
+
+    A (language, voice) pair from here is what `cloud set-prefs --tts-voice`
+    accepts. Not login-guarded — the table is static.
+    """
+    emit(ctx, cloud_core.tts_info(make_client(ctx), language=language))
+
+
+@cloud.command("remove-data")
+@click.option(
+    "--apply",
+    "apply_changes",
+    is_flag=True,
+    default=False,
+    help="Actually erase it. Without this the command only reports what would go.",
+)
+@click.pass_context
+def cloud_remove_data(ctx, apply_changes):
+    """Erase the stored cloud config. Dry-run unless --apply.
+
+    Takes the Alexa/Google exposure settings, the secure-devices PIN and the
+    cloudhook list with it, and there is no undo. HA refuses this while you
+    are logged IN — sign out first.
+    """
+    emit(ctx, cloud_core.remove_data(make_client(ctx), apply=apply_changes))
+
+
+@cloud.group("remote")
+def cloud_remote():
+    """Remote access — the Nabu Casa public URL."""
+
+
+@cloud_remote.command("connect")
+@click.pass_context
+def cloud_remote_connect(ctx):
+    """Enable remote access and connect it.
+
+    The resulting public URL shows up as `remote.domain` in `cloud status`
+    and as `cloud_url` in `network urls`.
+    """
+    emit(ctx, cloud_core.remote_connect(make_client(ctx)))
+
+
+@cloud_remote.command("disconnect")
+@click.confirmation_option(
+    prompt="Disconnect remote access? The public URL, cloudhooks and away-from-home "
+    "app access stop working."
+)
+@click.pass_context
+def cloud_remote_disconnect(ctx):
+    """Disable remote access. The public URL stops answering."""
+    emit(ctx, cloud_core.remote_disconnect(make_client(ctx)))
+
+
+@cloud.group("alexa")
+def cloud_alexa():
+    """What Alexa can see, and pushing changes to it."""
+
+
+@cloud_alexa.command("entities")
+@click.pass_context
+def cloud_alexa_entities(ctx):
+    """Every entity Alexa is capable of representing.
+
+    Not the same list as `expose list --assistant cloud.alexa`: that is what
+    you chose to expose, this is what CAN be. An entity missing here cannot
+    be exposed at all.
+    """
+    emit(ctx, cloud_core.alexa_entities(make_client(ctx)))
+
+
+@cloud_alexa.command("entity")
+@click.argument("entity_id")
+@click.pass_context
+def cloud_alexa_entity(ctx, entity_id):
+    """Whether ONE entity is supported by Alexa.
+
+    HA answers this with an empty result or a bare `not_supported`; both are
+    normalised to `supported: true|false`.
+    """
+    emit(ctx, cloud_core.alexa_entity(make_client(ctx), entity_id))
+
+
+@cloud_alexa.command("sync")
+@click.pass_context
+def cloud_alexa_sync(ctx):
+    """Push the current entity list to Alexa.
+
+    Needed after changing what is exposed — Alexa caches the device list and
+    will not notice on its own.
+    """
+    emit(ctx, cloud_core.alexa_sync(make_client(ctx)))
+
+
+@cloud.group("google")
+def cloud_google():
+    """What Google Assistant can see, and its per-entity PIN setting."""
+
+
+@cloud_google.command("entities")
+@click.pass_context
+def cloud_google_entities(ctx):
+    """Every entity Google Assistant can see, with its traits.
+
+    Read `might_2fa`: those entities want the secure-devices PIN before they
+    act, and a Google command against them fails quietly when none is set.
+    """
+    emit(ctx, cloud_core.google_entities(make_client(ctx)))
+
+
+@cloud_google.command("entity")
+@click.argument("entity_id")
+@click.pass_context
+def cloud_google_entity(ctx, entity_id):
+    """One entity's Google traits and its 2FA setting."""
+    emit(ctx, cloud_core.google_entity(make_client(ctx), entity_id))
+
+
+@cloud_google.command("set-2fa")
+@click.argument("entity_id")
+@click.option(
+    "--require/--skip",
+    "require_pin",
+    default=True,
+    show_default=True,
+    help="--skip lets Google act WITHOUT the secure-devices PIN.",
+)
+@click.pass_context
+def cloud_google_set_2fa(ctx, entity_id, require_pin):
+    """Require or skip the Google PIN prompt for one entity.
+
+    `--skip` on a lock or a garage door means anyone who can talk to the
+    speaker can open it. HA returns nothing when the value is already what
+    you asked for, so read it back with `cloud google entity`.
+    """
+    emit(
+        ctx,
+        cloud_core.google_set_2fa(make_client(ctx), entity_id, disable_2fa=not require_pin),
+    )
+
+
+# ───────────────────────────────────────────────── thread / border routers
+
+
+@cli.group()
+def thread():
+    """Thread networks: the dataset store, border routers, and what they imply.
+
+    Every Matter-over-Thread device sits on a Thread network defined by an
+    operational DATASET. Home Assistant stores those datasets and hands the
+    preferred one to anything it commissions; the border router runs the
+    radio. Both were invisible to this harness — you could see the devices
+    and the repair issues, never the network they are about.
+
+    A dataset TLV is a CREDENTIAL: it carries the network key. `thread
+    dataset` redacts it unless you pass --reveal, and no other command in
+    this group prints one.
+
+    Reads answer `available: false` when the Thread integration is not set
+    up. Writes are dry-run until --apply, because the failure modes here
+    (orphaning every device on the mesh) have no undo.
+    """
+
+
+@thread.command("datasets")
+@click.pass_context
+def thread_datasets(ctx):
+    """Every stored Thread network, with the preferred one marked.
+
+    The preferred dataset is what new Matter-over-Thread devices are
+    commissioned onto. Several stored networks is normal — each border-router
+    vendor adds its own — but only one of them gets new devices.
+    """
+    emit(ctx, thread_network_core.list_datasets(make_client(ctx)))
+
+
+@thread.command("dataset")
+@click.argument("dataset_id")
+@click.option(
+    "--reveal",
+    is_flag=True,
+    default=False,
+    help="Print the network key, the PSKc and the raw TLV. This is the whole "
+    "credential for the mesh.",
+)
+@click.pass_context
+def thread_dataset(ctx, dataset_id, reveal):
+    """Decode one dataset. Credentials are redacted unless --reveal.
+
+    `--reveal` is how you back a network up before `thread otbr create-network`
+    or before deleting a dataset: the TLV it prints is the only way back.
+    """
+    emit(ctx, thread_network_core.dataset(make_client(ctx), dataset_id, reveal=reveal))
+
+
+@thread.command("decode")
+@click.argument("tlv")
+@click.option("--reveal", is_flag=True, default=False, help="Do not redact the credentials.")
+@click.pass_context
+def thread_decode(ctx, tlv, reveal):
+    """Decode a dataset TLV that you already have. Talks to nothing.
+
+    Useful before `thread add-dataset`: it reports the channel, the extended
+    PAN ID and whether Home Assistant will accept the TLV at all (it refuses
+    any dataset without EXTPANID and ACTIVETIMESTAMP, saying only 'Invalid
+    dataset').
+    """
+    emit(ctx, thread_network_core.describe_dataset(tlv, reveal=reveal))
+
+
+@thread.command("add-dataset")
+@click.option("--tlv", default=None, help="The operational dataset as a hex string.")
+@click.option(
+    "--tlv-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read the TLV from a file instead — keeps the credential out of your shell history.",
+)
+@click.option(
+    "--source", default="cli-anything", show_default=True, help="Free-text label for who added it."
+)
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually store it.")
+@click.pass_context
+def thread_add_dataset(ctx, tlv, tlv_file, source, apply_changes):
+    """Store an operational dataset. Dry-run unless --apply.
+
+    `thread/add_dataset_tlv` is an upsert keyed on extended PAN ID and returns
+    `null` whether it created, replaced, ignored or did nothing. This predicts
+    which, then reads the store back to report what actually happened.
+    """
+    if bool(tlv) == bool(tlv_file):
+        _abort("Pass exactly one of --tlv or --tlv-file.")
+    text = tlv if tlv else Path(tlv_file).read_text().strip()
+    emit(
+        ctx,
+        thread_network_core.add_dataset(make_client(ctx), text, source=source, apply=apply_changes),
+    )
+
+
+@thread.command("delete-dataset")
+@click.argument("dataset_id")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually delete it.")
+@click.pass_context
+def thread_delete_dataset(ctx, dataset_id, apply_changes):
+    """Forget a stored network. Dry-run unless --apply.
+
+    Home Assistant refuses to delete the preferred dataset. Nothing tells the
+    devices — they stay on the network, you just lose the credential, so read
+    it out with `thread dataset <id> --reveal` first if it is not saved
+    anywhere else.
+    """
+    emit(
+        ctx,
+        thread_network_core.delete_dataset(make_client(ctx), dataset_id, apply=apply_changes),
+    )
+
+
+@thread.command("set-preferred")
+@click.argument("dataset_id")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually change it.")
+@click.pass_context
+def thread_set_preferred(ctx, dataset_id, apply_changes):
+    """Choose the network new Thread devices join. Dry-run unless --apply.
+
+    Devices that already joined another network stay where they are; this
+    only decides where the NEXT commissioning goes.
+    """
+    emit(
+        ctx,
+        thread_network_core.set_preferred(make_client(ctx), dataset_id, apply=apply_changes),
+    )
+
+
+@thread.command("set-border-agent")
+@click.argument("dataset_id")
+@click.option("--extended-address", required=True, help="Extended address of the border router.")
+@click.option(
+    "--border-agent-id",
+    default=None,
+    help="Border agent id to pin. Omit to clear it (the extended address is still required).",
+)
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually change it.")
+@click.pass_context
+def thread_set_border_agent(ctx, dataset_id, extended_address, border_agent_id, apply_changes):
+    """Record which border router owns a dataset. Dry-run unless --apply.
+
+    Bookkeeping only — no radio is reconfigured. An unknown dataset id makes
+    Home Assistant answer with the opaque `unknown_error`, so it is checked
+    here first.
+    """
+    emit(
+        ctx,
+        thread_network_core.set_border_agent(
+            make_client(ctx),
+            dataset_id,
+            extended_address=extended_address,
+            border_agent_id=border_agent_id,
+            apply=apply_changes,
+        ),
+    )
+
+
+@thread.command("routers")
+@click.option("--timeout", default=10.0, show_default=True, type=float, help="Seconds to listen.")
+@click.option("--max-routers", default=None, type=int, help="Stop early once this many are found.")
+@click.pass_context
+def thread_routers(ctx, timeout, max_routers):
+    """Discover border routers over mDNS for a bounded window.
+
+    Finds routers Home Assistant does NOT manage too — an Apple TV or a Nest
+    hub shows up here and never in `thread otbr info`. An empty result usually
+    means multicast does not reach Home Assistant, not that there are none.
+    """
+    emit(
+        ctx,
+        thread_network_core.discover_routers(
+            make_client(ctx), timeout=timeout, max_routers=max_routers
+        ),
+    )
+
+
+@thread.command("audit")
+@click.option(
+    "--discover-timeout",
+    default=0.0,
+    show_default=True,
+    type=float,
+    help="Also listen for mDNS routers for this many seconds and compare (0 = skip).",
+)
+@click.pass_context
+def thread_audit(ctx, discover_timeout):
+    """Cross-reference datasets, border routers and discovery. Read-only.
+
+    The command to run when Thread devices misbehave: it names the stored
+    network nobody is running, the border router on a network that is not the
+    preferred one, and the Thread web UI's default network key — the same
+    condition Home Assistant raises the `insecure_thread_network` repair for.
+    """
+    emit(ctx, thread_network_core.audit(make_client(ctx), discover_timeout=discover_timeout))
+
+
+@thread.group("otbr")
+def thread_otbr():
+    """The OpenThread Border Router radio Home Assistant runs.
+
+    `thread datasets` is what Home Assistant KNOWS; this is what the radio is
+    DOING. Every write here is dry-run by default and at least one of them
+    (create-network) orphans every device on the mesh.
+    """
+
+
+@thread_otbr.command("info")
+@click.pass_context
+def thread_otbr_info(ctx):
+    """Border routers Home Assistant manages: channel, network, URL.
+
+    The active dataset TLV Home Assistant returns here is dropped — it is the
+    network key. `has_active_dataset` says whether there is one.
+    """
+    emit(ctx, otbr_core.info(make_client(ctx)))
+
+
+@thread_otbr.command("set-channel")
+@click.argument("extended_address")
+@click.argument("channel", type=int)
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually move it.")
+@click.pass_context
+def thread_otbr_set_channel(ctx, extended_address, channel, apply_changes):
+    """Move the radio to another 802.15.4 channel (11-26). Dry-run unless --apply.
+
+    Not immediate: the move goes out as a PENDING dataset with a delay (~300s)
+    so joined devices can follow. Anything asleep for the whole window misses
+    it. `thread otbr info` reports the OLD channel until the timer fires.
+    """
+    emit(
+        ctx,
+        otbr_core.set_channel(make_client(ctx), extended_address, channel, apply=apply_changes),
+    )
+
+
+@thread_otbr.command("set-network")
+@click.argument("extended_address")
+@click.argument("dataset_id")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually move it.")
+@click.pass_context
+def thread_otbr_set_network(ctx, extended_address, dataset_id, apply_changes):
+    """Point a border router at a stored dataset. Dry-run unless --apply.
+
+    Applying disables the radio, writes the dataset and re-enables it. Devices
+    on the router's previous network lose it. Refused with `channel_conflict`
+    if ZHA holds the shared radio on another channel.
+    """
+    emit(
+        ctx,
+        otbr_core.set_network(make_client(ctx), extended_address, dataset_id, apply=apply_changes),
+    )
+
+
+@thread_otbr.command("create-network")
+@click.argument("extended_address")
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually do it.")
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@click.pass_context
+def thread_otbr_create_network(ctx, extended_address, apply_changes, yes):
+    """Factory-reset the border router and form a NEW network. Dry-run unless --apply.
+
+    The most destructive command in this harness. Every Thread device joined
+    to the old network is orphaned and must be re-commissioned by hand; there
+    is no undo. Save the current credential first with `thread dataset <id>
+    --reveal`. Without --apply it only reports what it would do; the
+    confirmation prompt is on the apply, never on the dry run.
+    """
+    if (
+        apply_changes
+        and not yes
+        and not click.confirm(
+            f"Factory-reset border router {extended_address} and form a NEW Thread "
+            "network? Every device on the current network is orphaned.",
+            default=False,
+        )
+    ):
+        _abort("Aborted.")
+    emit(
+        ctx,
+        otbr_core.create_network(make_client(ctx), extended_address, apply=apply_changes),
     )
 
 

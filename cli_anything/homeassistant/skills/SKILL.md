@@ -36,6 +36,12 @@ When you join a session and don't know the install, run these in order:
 # 1. Confirm you can reach HA and the token is valid.
 cli-anything-homeassistant --json system info
 # → {"message": "API running."} or an error.
+#
+# If that says "Unauthorized (401)" and you have NO token, you are not stuck —
+# see "Bootstrapping a token" below. `auth login` needs no existing credential.
+#
+# If `auth providers` then says `onboarding_required`, the instance has no
+# ACCOUNTS yet, not just no token — see "Onboarding a brand-new instance".
 
 # 2. Know who you are.
 cli-anything-homeassistant --json whoami
@@ -109,13 +115,13 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `notifications`    | Persistent notification create/list/dismiss.                                                   |
 | `tag`              | NFC tags + HA tag IDs.                                                                         |
 | `tts`              | Text-to-speech: engines, speak, clear-cache.                                                   |
-| `assist`           | Conversation pipeline: send text, list agents/sentences/languages, debug sentence matching.    |
+| `assist`           | Conversation pipeline: send text, list agents/sentences/languages, debug sentence matching. `assist run` executes a pipeline END TO END (STT -> agent -> TTS); `--audio cmd.wav` transcribes a 16-bit mono WAV, `--save-tts` keeps the spoken reply. |
 | `assist-satellite` | `assist_satellite.*` — current config, set wake words, test connection.                        |
 | `mobile-app`       | Companion app push delivery receipts.                                                          |
 | `media`            | `media_source` browse / resolve / remove.                                                      |
-| `camera`           | `camera.*` capabilities / HLS stream URL / prefs / WebRTC config.                              |
+| `camera`           | `camera.*` capabilities / HLS URL / prefs / WebRTC + `snapshot`, `capture`, `proxy-url`.       |
 | `device-automation`| List a device's available triggers/conditions/actions.                                         |
-| `auth`             | `me`, `sign-path`, `tokens` (refresh-token CRUD), `user` (full user admin).                    |
+| `auth`             | `me`, `sign-path`, `tokens` (refresh-token CRUD), `user` (full user admin). **No token yet:** `login` (username+password → token), `providers`, `refresh`, `revoke`, `exchange-code`, `link-user`, `login-flow start/step/abort`, `oauth-metadata`. |
 | `logger`           | Runtime log-level control (REST + WS-per-component).                                           |
 | `search`           | `search/related` — every automation/scene/script/dashboard tied to an item.                    |
 | `group`            | List members of a group entity.                                                                |
@@ -180,6 +186,127 @@ Always start with `--help` if you're unsure:
 `cli-anything-homeassistant <group> [<subcommand>] --help`.
 
 ## Golden-path recipes
+
+### Onboarding a brand-new instance (v1.53+)
+
+The step BEFORE a token exists. If `auth providers` answers
+`400 onboarding_required`, this Home Assistant has never been set up: there is
+no account to log in as, so nothing else in this CLI can work.
+
+```bash
+export HASS_URL=http://homeassistant.local:8123
+unset HASS_TOKEN
+
+# Is it actually un-onboarded? No token needed.
+cli-anything-homeassistant --json onboarding status
+# → {"onboarded":false,"steps":{"user":false,...},"done":[],"remaining":[...]}
+
+# Nothing → owner account → working access token, in one call.
+cli-anything-homeassistant --json onboarding provision \
+  --name Agent --username agent --password 's3cret' --save
+# → {"access_token","refresh_token","expires_in":1800,"client_id","username",
+#    "steps":{"user":{...},"analytics":{...},"core_config":{...},
+#             "integration":{...}},"onboarded":true,"saved_to"}
+
+# THE ACCESS TOKEN LASTS 30 MINUTES, same as `auth login`. Make it durable:
+cli-anything-homeassistant --json auth tokens create my-agent
+cli-anything-homeassistant config set --token "<that token>"
+```
+
+**THE ONE RULE: every onboarding step is marked done BEFORE it can fail.**
+`_BaseOnboardingView` calls `_async_mark_done()` at the top of each handler,
+ahead of the work and ahead of every check. So:
+
+- A step that errors is **still finished**. Retrying answers
+  `403 "<Step> step already done"`, which reads like an unrelated fault.
+- Results carry **`ok` and `committed` separately**. `ok:false,
+  committed:true` is an OUTCOME, not a failure to retry — the CLI exits 0 for
+  it deliberately.
+- `provision` runs the fallible steps LAST and never aborts the run for one,
+  so a refused step cannot cost you the token you came for.
+
+Other gotchas, all measured against 2025.1.4:
+
+- `onboarding installation-type` is readable **only before the first step**.
+  The guard is `if self._data["done"]` — a non-empty LIST — so it 401s from
+  step one onward, not from completion. Use `system info` after that.
+- `core_config` commonly answers **500** on a perfectly good request: after
+  marking itself done it starts `google_translate`, `met`, `radio_browser` and
+  `shopping_list`, and a missing dependency in any of them escapes the
+  handler. That is a report about the server's optional integrations.
+- `finish-integration` needs a **credential-backed** token. A long-lived
+  access token has no credential behind it and gets
+  `403 Credentials for user not available` — after spending the step. Use one
+  from `onboarding provision` or `auth login`.
+- `create-user` returns an **authorization code**, not a token. Single-use,
+  10-minute expiry, bound to the `client_id` it was created with. HA does
+  *not* validate that `client_id`, so a malformed one burns the single user
+  step and yields a code that can never be redeemed — the CLI checks it
+  locally first.
+- The user step happens **once per instance**, ever. Add more accounts with
+  `auth user create`.
+
+### Bootstrapping a token from a username and password (v1.52+)
+
+Every other command needs a token. These do not — they wrap the endpoints Home
+Assistant mounts outside `/api/`, which is how a token is obtained.
+
+```bash
+export HASS_URL=http://homeassistant.local:8123
+unset HASS_TOKEN                        # you genuinely don't need one here
+
+# What this instance accepts. `type`/`id` is the login `handler`.
+cli-anything-homeassistant --json auth providers
+# → {"providers":[{"name":"Home Assistant Local","id":null,"type":"homeassistant"}], ...}
+
+# Username + password → a working access token, saved to the profile (0600).
+cli-anything-homeassistant --json auth login --username agent --password 's3cret' --save
+# → {"access_token","refresh_token","expires_in":1800,"client_id","username","handler","steps","saved_to"}
+
+# THE ACCESS TOKEN LASTS 30 MINUTES. Make it durable:
+cli-anything-homeassistant --json auth tokens create my-agent   # → long-lived token
+cli-anything-homeassistant config set --token "<that token>"
+```
+
+Follow-ups:
+
+```bash
+# New access token later. --client-id MUST be the value `login` reported —
+# HA compares it against the one the refresh token was issued to and answers a
+# bare 400 "invalid_request" on any mismatch (including omitting it).
+cli-anything-homeassistant --json auth refresh --refresh-token "$RT" \
+  --client-id http://homeassistant.local:8123/ --save
+
+# Revoke. /auth/revoke returns 200 for a valid token, a bogus one and a missing
+# one alike (RFC 7009 2.2), so ask for proof.
+cli-anything-homeassistant --json auth revoke --token "$RT" --verify --yes
+# → {"revoked":true,"verified":true,...}
+```
+
+Two-factor, or a provider wanting fields `login` doesn't know:
+
+```bash
+cli-anything-homeassistant --json auth login --username agent --password p --mfa-code 123456
+
+# Or drive it by hand — `data_schema` names the fields for the next step.
+FID=$(cli-anything-homeassistant --json auth login-flow start | jq -r .flow_id)
+cli-anything-homeassistant --json auth login-flow step "$FID" \
+  --field username=agent --field password=p            # → {"type":"create_entry","result":"<code>"}
+cli-anything-homeassistant --json auth exchange-code "<code>"
+cli-anything-homeassistant auth login-flow abort "$FID" # if you bail out midway
+```
+
+**Gotchas that will otherwise cost you an hour.**
+
+- A **wrong password is an HTTP 200** — the rejection is only in
+  `errors.base = "invalid_auth"`. The CLI raises on it; raw `curl` won't.
+- Each failed attempt is **counted toward an IP ban**. Never loop.
+- Authorization codes are **single-use and expire in minutes**.
+- `--client-id` defaults to the HA base URL, and `--redirect-uri` defaults to
+  `--client-id`. Giving them different origins makes HA **fetch the client_id
+  URL over the network** and then reject the login *after* accepting the
+  password.
+- `auth link-user` is the one command here that **does** need an existing token.
 
 ### Find entities by attribute
 
@@ -337,6 +464,45 @@ cli-anything-homeassistant image snapshot image.front_door /tmp/door.png --overw
 # Get a signed URL valid for 5 minutes (no Auth header needed)
 cli-anything-homeassistant image proxy-url image.front_door --expires 300 --json
 ```
+
+### Get the pixels: camera stills, stream frames, cover art (v1.51+)
+
+```bash
+# One still from a camera
+cli-anything-homeassistant camera snapshot camera.front_door /tmp/front.jpg --overwrite
+
+# Rescale: --width and --height MUST be given together. HA only rescales when
+# both are present AND the camera returns JPEG; `resized` reports whether it
+# actually happened, so never assume it did.
+cli-anything-homeassistant --json camera snapshot camera.front_door /tmp/s.jpg \
+    --width 640 --height 480 | jq .resized
+
+# N distinct frames off the MJPEG stream. The stream never ends, so ALWAYS
+# bound it: --frames is the budget and --timeout is the deadline. --interval
+# makes HA compose the stream from stills (>= 0.5s) instead of using the
+# camera's native MJPEG, which not every platform has (a 502 says so).
+cli-anything-homeassistant --json camera capture camera.front_door /tmp/frames \
+    --frames 5 --interval 1.0 --timeout 30 | jq '{frames, duplicates_skipped, complete}'
+
+# Image entities stream too, but with no interval — HA pushes on change. A
+# static entity gives ONE frame and reports complete:false at the deadline.
+cli-anything-homeassistant --json image capture image.doorbell /tmp/frames --frames 3
+
+# A URL something without an Auth header can fetch (browser, curl, notification)
+cli-anything-homeassistant --json camera proxy-url camera.front_door --expires 300 | jq -r .url
+
+# Cover art for what's playing; or a thumbnail from the browse tree, which is
+# the only way to get those bytes (--content-type and --content-id together).
+cli-anything-homeassistant media-player artwork media_player.lounge /tmp/art.jpg
+cli-anything-homeassistant media-player artwork media_player.lounge /tmp/t.jpg \
+    --content-type album --content-id 'library/albums/17'
+```
+
+Failure modes worth knowing, because HA answers all of them with an empty body:
+`503` = **the camera is off** (`camera turn-on <id>`), `502` = the platform has
+no MJPEG stream (use `--interval`), `500` = no image/artwork available, `403` =
+no credentials reached HA (a bad `--signed` URL), `404` = no such entity. The
+CLI translates each of these into a sentence naming the remedy.
 
 ### Author an automation without shipping a broken one
 
@@ -518,6 +684,18 @@ These are paid in lost time. Read them before mutating anything.
   entity attributes, which report an empty list).
 - **`media search` on the ROOT is an error** (`search_not_supported`), not an
   empty result. Scope it: `--scope media-source://media_source`.
+- **`camera snapshot --width` alone does NOTHING and HA will not say so.**
+  Rescaling happens only when width AND height are both present and the
+  camera returns JPEG; otherwise the size argument is passed to the platform,
+  ignored, and you get a full-size image with a 200. The CLI refuses one
+  without the other, and `resized` in the JSON is the honest answer.
+- **Never point `camera capture` / `image capture` at an unbounded run.**
+  Both MJPEG views stream forever by design — `--frames` and `--timeout` are
+  not optional tuning, they are the only things that end the request. Check
+  `complete` in the output: `false` means the deadline hit first, which for a
+  static entity is the normal answer, not a fault.
+- **A camera that is switched off answers 503**, not 404 and not a blank
+  image. If a snapshot "fails on the server", check `camera turn-on` first.
 - **`media upload` only accepts image/ video/ audio/.** HA answers a bare 400
   for anything else and logs the reason server-side only.
 - **Token = full admin.** Treat `~/.config/cli-anything-homeassistant.json`

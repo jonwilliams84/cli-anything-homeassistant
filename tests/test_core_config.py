@@ -199,7 +199,17 @@ class TestDetect:
         """The WS layer returns [] for an absent result; that is not a location."""
         fake_client.set_ws("config/core/detect", ["Europe/London"])
         got = core_config.detect(fake_client)
-        assert got == {"detected": False, "info": {}, "note": got["note"]}
+        assert got == {
+            "detected": False,
+            "info": {},
+            # A non-object result is not a FAILED lookup — nothing raised, HA
+            # simply answered with something that is not a location. The two
+            # keys v1.49.0 added to tell `{}` apart from `unknown_error` must
+            # both stay clear here.
+            "lookup_failed": False,
+            "error": None,
+            "note": got["note"],
+        }
 
     def test_an_empty_result_is_a_failed_lookup_not_an_error(self, fake_client):
         fake_client.set_ws("config/core/detect", {})

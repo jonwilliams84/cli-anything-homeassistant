@@ -10,6 +10,21 @@ Wraps the HA WebSocket API surface exposed by:
     config/auth_provider/homeassistant/create
     config/auth_provider/homeassistant/delete
     config/auth_provider/homeassistant/change_password
+    config/auth_provider/homeassistant/admin_change_password
+    config/auth_provider/homeassistant/admin_change_username
+
+THE `admin_*` PAIR IS OWNER-ONLY, NOT ADMIN-ONLY
+    Despite the name, `require_admin` is only the outer gate on those two
+    commands: the handler then checks `connection.user.is_owner` and raises
+    `Unauthorized` if not. An ADMIN token is refused. There is exactly one
+    owner per instance — the account created during onboarding — so an
+    automation token minted by a second admin cannot reset passwords, and the
+    failure reads as a bare `unauthorized` that names neither the requirement
+    nor the remedy. Both wrappers say it in the error instead.
+
+    They also differ from `change_password` in what they need: the admin form
+    takes a `user_id` and NO current password, which is what makes it a reset
+    (for a locked-out user) rather than a change.
 """
 
 from __future__ import annotations
@@ -139,3 +154,99 @@ def change_password(client, *, current_password: str, new_password: str) -> dict
         "new_password": new_password,
     }
     return client.ws_call("config/auth_provider/homeassistant/change_password", payload)
+
+
+#: HA's codes for the two ways the `admin_*` pair fails on a valid request.
+_ADMIN_CODES = {
+    "user_not_found": "no user with that user_id (list them with `user list`)",
+    "credentials_not_found": (
+        "that user has no username/password credential to change — they sign in "
+        "another way (a trusted network, or a link-only account). Give them one "
+        "with `user credential-create` first"
+    ),
+}
+
+
+def _admin_credential_call(client, command: str, payload: dict, *, action: str):
+    """Send an owner-only credential command, naming why it was refused.
+
+    `unauthorized` here means the TOKEN IS NOT THE OWNER'S, which the raw code
+    does not say. Admin is not enough (see the module docstring).
+    """
+    from cli_anything.homeassistant.utils.homeassistant_backend import HomeAssistantError
+
+    try:
+        return client.ws_call(command, payload)
+    except HomeAssistantError as exc:
+        code = getattr(exc, "code", None)
+        if code == "unauthorized":
+            raise ValueError(
+                f"Refused: {action} is OWNER-only. Being an admin is not enough — "
+                "Home Assistant checks `user.is_owner`. Use a long-lived token "
+                "belonging to the owner account (the one created at onboarding)."
+            ) from exc
+        if code in _ADMIN_CODES:
+            raise ValueError(f"Cannot {action}: {_ADMIN_CODES[code]}.") from exc
+        raise
+
+
+def admin_change_password(client, *, user_id: str, password: str) -> dict:
+    """Reset ANOTHER user's password. Owner-only; no current password needed.
+
+    This is the locked-out-user remedy: `change_password` needs the existing
+    password and this does not. The user is not notified and any session they
+    already hold stays valid — HA does not revoke tokens on a password change,
+    so a compromised account needs `auth-token delete` as well.
+
+    Sends ``config/auth_provider/homeassistant/admin_change_password``.
+    """
+    if not user_id:
+        raise ValueError("user_id must be a non-empty string")
+    if not password:
+        raise ValueError("password must be a non-empty string")
+    _admin_credential_call(
+        client,
+        "config/auth_provider/homeassistant/admin_change_password",
+        {"user_id": user_id, "password": password},
+        action="resetting another user's password",
+    )
+    return {
+        "applied": True,
+        "user_id": user_id,
+        "changed": "password",
+        "note": (
+            "Password reset. Existing sessions and long-lived tokens for this "
+            "user are NOT revoked — use `auth-token list`/`delete` for that."
+        ),
+    }
+
+
+def admin_change_username(client, *, user_id: str, username: str) -> dict:
+    """Rename the login of ANOTHER user. Owner-only.
+
+    The username is the LOGIN, not the display name — `user update --name`
+    changes what the UI shows and leaves the credential alone. Changing this
+    changes what the person types to sign in; their password is unaffected.
+
+    Sends ``config/auth_provider/homeassistant/admin_change_username``.
+    """
+    if not user_id:
+        raise ValueError("user_id must be a non-empty string")
+    if not username:
+        raise ValueError("username must be a non-empty string")
+    _admin_credential_call(
+        client,
+        "config/auth_provider/homeassistant/admin_change_username",
+        {"user_id": user_id, "username": username},
+        action="renaming another user's login",
+    )
+    return {
+        "applied": True,
+        "user_id": user_id,
+        "changed": "username",
+        "username": username,
+        "note": (
+            "Login renamed. This is the sign-in username, not the display name "
+            "(`user update --name`). The password is unchanged."
+        ),
+    }
