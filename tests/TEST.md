@@ -1189,3 +1189,28 @@ What it proves for real is a genuinely HA-minted signed URL (`auth/sign_path`
 is a core websocket command needing no camera integration), named 404s, and
 that every client-side refusal stops before the wire. The framing is proven in
 `test_media_proxy_stream.py`, which is the stronger test.
+
+## v1.53.0 refine pass — transport/skin/media-search coverage
+
+```
+before ......................... 4549 passed, 30 skipped  (81.80% cover)
+after .......................... 4662 passed, 30 skipped  (83.41% cover)
+
+test_backend_http.py ........... 54 passed   (real http.server socket:
+                                              401 probe both sides, template
+                                              wrap, multipart header trap,
+                                              download no-truncate, timeouts,
+                                              scripted-WS handshakes/failures)
+test_repl_skin.py .............. 45 passed   (banner box-width invariant,
+                                              color matrix, every message/
+                                              table/progress method, tokens,
+                                              session, get_input, toolbar)
+test_media_source.py ........... +14 passed  (search_media rewrites
+                                              search_not_supported with a
+                                              named scope; player_search
+                                              enforces the mutually-inclusive
+                                              content pair)
+```
+
+`utils/homeassistant_backend.py` 65%→93%, `utils/repl_skin.py` 19%→96%,
+`core/media_source.py` 33%→100%.
