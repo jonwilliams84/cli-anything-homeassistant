@@ -225,6 +225,7 @@ stderr and return a non-zero exit code.
 | `profiler`     | Wraps the `profiler` integration's services (cProfile/memray/lru_stats/dump_log_objects/log_thread_frames/log_event_loop_scheduled/log_current_tasks/set_asyncio_debug/log_events) plus a `status` probe |
 | `action`       | Script-engine primitives — the pre-flight for `automation save` / `script save`. `run` (WS `execute_script`: ad-hoc sequence through HA's script engine — traced, gets a context, can return a `response_variable`, creates no entity; `--service` shorthand + `--dry-run`), `validate` (WS `validate_config` on triggers/conditions/actions), `validate-automation` / `validate-script` (whole config file, legacy singular keys upgraded, **exits non-zero when invalid** so it chains with `&&`), `test-condition` (WS `test_condition` against live state; a JSON list is evaluated per-item, error-tolerant; `--exit-code` for shell chaining) |
 | `entity source`| WS `entity/source` — which integration currently supplies an entity. Provenance, not registry: only entities whose integration is loaded appear, so a registry entry with no source is a strong orphan signal (pairs with `entity orphans` / `entity prune`). `--by-integration` groups, `-i <domain>` filters. |
+| `supervisor`   | **The Supervisor half of a Home Assistant OS / Supervised install** — the add-ons, the host and the OS, none of which is part of Core's API. Reached through ONE websocket command, `supervisor/api`, which proxies an arbitrary Supervisor endpoint. `available` / `status` / `info` / `component <host\|os\|core\|network\|supervisor>` / `stats` / `resolution` / `logs` / `boots` / `watch` / `api`, plus `addon list/info/start/stop/restart/rebuild/update/options/logs`. Every write is dry-run until `--apply`; `addon options` MERGES and validates, because the POST replaces the whole options object. Absent on Core/Container: `supervisor available` reports that as an answer with exit 0 |
 
 ### State Model
 
@@ -301,6 +302,10 @@ is fetched on demand. This means:
 | The editor's red "invalid config" box | `action validate-automation morning.json`                        |
 | Hit "Test" next to a condition        | `action test-condition --condition '{"condition":"sun","after":"sunset"}'` |
 | "Provided by <integration>" in the entity dialog | `entity source light.kitchen --json`                  |
+| Settings → Add-ons → an add-on → Restart | `supervisor addon restart core_ssh --apply` (dry-run without it) |
+| An add-on's Configuration tab → Save | `supervisor addon options core_ssh --set key=value --apply` |
+| Settings → System → Logs → the add-on/host picker | `supervisor logs host --lines 200` / `supervisor addon logs core_ssh` |
+| Settings → System → Updates (Supervisor / OS / Core) | `supervisor status` (what is stale), then `supervisor api /<component>/update --method post --timeout 600` |
 
 ## Testing
 
@@ -330,6 +335,15 @@ is fetched on demand. This means:
   HA's websocket framing) and `test_media_proxy_stream.py` (multipart frames
   produced by Home Assistant's OWN `async_get_still_stream`, read over a real
   socket). The latter caught two client bugs on first run.
+- **Absent-surface tests** — the instance the e2e suite boots is a **Core**
+  install, which is what makes it evidence for the `supervisor` group: the
+  `hassio` integration is genuinely not loaded, so `supervisor/api` really is
+  an unregistered websocket command and `/api/hassio/…` really is an unrouted
+  path. The two refusals that group has to translate into sentences are
+  produced by a real Home Assistant rather than by a fake instructed to
+  produce them. The `Range: entries=:-N:` header carrying `--lines` is
+  likewise asserted against a real HTTP server — a header that never left the
+  process is indistinguishable from one the server ignored.
 
 The tests must NOT skip when `homeassistant` is not installed — Home
 Assistant is a hard dependency.

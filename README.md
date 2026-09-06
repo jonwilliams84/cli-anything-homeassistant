@@ -156,6 +156,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `device-links` | Composite splits and linked devices — topology the flat registry cannot show. A device-scoped target applies to ONE registry entry, so a split device is a silent partial hit |
 | `intent` | Fire an intent by name, skipping the sentence parser — what separates a sentence-match failure from a handler failure |
 | `file` | `upload` a file to HA's staging area and get the `file_id` a config flow wants |
+| `supervisor` | **The other half of a Home Assistant OS / Supervised install** (v1.52+) — add-ons, host, OS, network. `available`/`status` (versions side by side, what is stale), `info`, `component`, `stats`, `resolution`, `logs`/`boots` (journals over the HTTP proxy), `watch` (progress events), `api` (any Supervisor endpoint) + `addon list/info/start/stop/restart/rebuild/update/options/logs`. Writes are dry-run until `--apply`; `addon options` merges and validates because the POST REPLACES the whole options object |
 | `profiler` | Pass-through to the `profiler` integration's services: `start` (cProfile), `memory` (memray), `dump-log-objects --type Class`, `log-thread-frames`/`log-current-tasks`/`log-event-loop-scheduled`/`log-events`, `lru-stats`, `set-asyncio-debug`. `status` is a cheap "is the integration even loaded" probe. |
 
 ## Quick examples
@@ -302,6 +303,50 @@ cli-anything-homeassistant --json camera proxy-url camera.front_door --expires 3
 cli-anything-homeassistant media-player artwork media_player.lounge art.jpg
 cli-anything-homeassistant media-player artwork media_player.lounge thumb.jpg \
     --content-type album --content-id 'library/albums/17'
+
+# The Supervisor: add-ons, host and OS (v1.52+)
+# There is no Supervisor on a Core or Container install — `available` says so
+# as an ANSWER (exit 0, `available: false`), so scripts branch on it instead of
+# on the text of an error.
+cli-anything-homeassistant --json supervisor available | jq .available
+
+# Is anything out of date? Supervisor, Core, host and OS in one read; each part
+# degrades on its own, so a Supervised box with no HA OS under it still answers.
+cli-anything-homeassistant --json supervisor status | jq '.updates_available'
+
+# Add-ons. `list` is what is INSTALLED (the store catalogue is /store/addons,
+# via `supervisor api`). Options are withheld from `info` unless --reveal:
+# that is where an add-on's database password lives.
+cli-anything-homeassistant --json supervisor addon list --updates-only
+cli-anything-homeassistant --json supervisor addon info core_ssh | jq .options_keys
+
+# Every write is a dry run first. It reports the state the add-on is in NOW,
+# including when the answer is "already stopped, this would do nothing".
+cli-anything-homeassistant --json supervisor addon restart core_ssh
+cli-anything-homeassistant --json supervisor addon restart core_ssh --apply
+
+# `POST /addons/<slug>/options` REPLACES the options object: send one key and
+# every other key silently reverts to its default. So the current options are
+# read, the change is merged in, and Supervisor is asked whether the RESULT is
+# legal (`/options/validate`, which writes nothing) before anything is sent.
+cli-anything-homeassistant --json supervisor addon options core_ssh \
+    --set 'packages=["git","curl"]' | jq '.keys_preserved, .valid'
+cli-anything-homeassistant --json supervisor addon options core_ssh \
+    --set 'packages=["git","curl"]' --apply
+
+# Logs go over the HTTP proxy, not the websocket one — these endpoints answer
+# plain text and the websocket path parses every body as JSON. --lines rides a
+# `Range: entries=:-N:` header; there is no query parameter for it.
+cli-anything-homeassistant supervisor logs core --lines 200 --text
+cli-anything-homeassistant supervisor addon logs core_ssh --lines 50 --text
+cli-anything-homeassistant --json supervisor boots        # then --boot -1
+
+# Anything this group does not name. The path must be absolute and carry no
+# query string: HA compares it against its own normalisation and refuses any
+# difference with an EMPTY error message, so the check is done here first.
+cli-anything-homeassistant --json supervisor api /store/addons
+cli-anything-homeassistant --json supervisor api /core/update \
+    --method post --timeout 600     # the default is TEN seconds
 ```
 
 ## Agent / `--json` mode
@@ -337,7 +382,10 @@ cli_anything/homeassistant/
 │   ├── diagnostics.py, statistics.py, assist.py, updates.py, inspect.py
 │   ├── logger.py, groups.py, mqtt.py, mqtt_discovery.py, watch.py
 │   ├── system.py, references.py, recorder.py, template.py
-│   └── media_proxy.py   # binary GETs: camera/image stills + MJPEG, artwork
+│   ├── media_proxy.py   # binary GETs: camera/image stills + MJPEG, artwork
+│   └── supervisor.py    # the Supervisor: add-ons, host, OS — via the
+│                        # `supervisor/api` WS proxy, and `/api/hassio/…`
+│                        # for the logs, which answer plain text
 └── utils/
     ├── homeassistant_backend.py   # requests Session + WS client
     └── repl_skin.py
@@ -364,6 +412,14 @@ author of the parser encodes the same assumption twice and agrees with itself:
 implements HA's protocol from the other side, and
 `tests/test_media_proxy_stream.py` parses multipart frames produced by Home
 Assistant's *own* `async_get_still_stream` over a real socket.
+
+The `supervisor` suite is the same idea from the other direction. The instance
+the e2e tests boot is a **Core** install, so `supervisor/api` is genuinely
+unregistered and `/api/hassio/…` is genuinely unrouted — the two refusals this
+group has to turn into sentences are produced by a real Home Assistant rather
+than by a fake told to produce them. The `Range: entries=:-N:` header that
+carries `--lines` is asserted against a real HTTP server, because a header that
+never left the process looks identical to one the server ignored.
 
 ## Sibling projects
 

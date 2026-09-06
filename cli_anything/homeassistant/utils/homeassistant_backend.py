@@ -165,10 +165,19 @@ class HomeAssistantClient:
 
     # ------------------------------------------------------------------ REST
 
-    def get(self, path: str, params: dict | None = None) -> Any:
-        """GET a REST endpoint and return the decoded payload."""
+    def get(self, path: str, params: dict | None = None, headers: dict | None = None) -> Any:
+        """GET a REST endpoint and return the decoded payload.
+
+        `headers` is merged over the session's for THIS request only. It
+        exists for the Supervisor log proxy, which takes its line limit as a
+        `Range: entries=:-N:` header and has no query parameter for it —
+        `HassIOView` forwards `Range` explicitly for the log paths and nothing
+        else would get the limit through.
+        """
         try:
-            resp = self.session.get(self._url(path), params=params, timeout=self.timeout)
+            resp = self.session.get(
+                self._url(path), params=params, headers=headers, timeout=self.timeout
+            )
         except requests.exceptions.ConnectionError as exc:
             raise self._connection_error(exc) from exc
         except requests.exceptions.Timeout as exc:

@@ -5293,3 +5293,713 @@ class TestCardTypes:
         custom = card_types.custom_types_only(
             ["tile", "custom:mushroom-light-card", "vertical-stack"])
         assert custom == ["custom:mushroom-light-card"]
+
+
+# ─────────────────────────────────────────────── supervisor (add-ons / host / OS)
+#
+# The Supervisor proxy multiplexes an entire second API through ONE websocket
+# command, so `FakeClient.set_supervisor(endpoint, data)` keys canned answers
+# by the Supervisor endpoint. The value is the ALREADY-UNWRAPPED `data`
+# object, because `websocket_supervisor_api` strips Supervisor's
+# `{"result": "ok", "data": …}` envelope before it returns.
+
+from cli_anything.homeassistant.core import supervisor as supervisor_core  # noqa: E402
+
+
+def _addon(slug="core_ssh", **over):
+    row = {
+        "slug": slug,
+        "name": "Terminal & SSH",
+        "version": "9.13.0",
+        "version_latest": "9.13.0",
+        "update_available": False,
+        "state": "started",
+        "repository": "core",
+        "icon": True,
+    }
+    row.update(over)
+    return row
+
+
+class TestSupervisorEndpointNormalisation:
+    """`_normalise_endpoint` exists because HA's rejection is unreadable.
+
+    `HassIO.send_command` compares `yarl`'s normalisation of the path against
+    the literal you sent and raises `HassioAPIError` with NO ARGUMENTS on any
+    difference — which the websocket layer forwards as `unknown_error` with an
+    EMPTY message. Every case below would be that empty error on the wire.
+    """
+
+    def test_absolute_path_passes_through(self):
+        assert supervisor_core._normalise_endpoint("/supervisor/info") == "/supervisor/info"
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        assert supervisor_core._normalise_endpoint("  /addons  ") == "/addons"
+
+    def test_missing_leading_slash_is_refused_with_the_fix(self):
+        with pytest.raises(ValueError) as exc:
+            supervisor_core._normalise_endpoint("addons")
+        assert "'/addons'" in str(exc.value)
+
+    def test_query_string_is_refused(self):
+        with pytest.raises(ValueError, match="query string"):
+            supervisor_core._normalise_endpoint("/addons?slug=core_ssh")
+
+    def test_traversal_segments_are_refused(self):
+        with pytest.raises(ValueError, match=r"'\.' or '\.\.'"):
+            supervisor_core._normalise_endpoint("/addons/../../etc/passwd")
+
+    def test_space_is_refused_because_yarl_would_re_encode_it(self):
+        with pytest.raises(ValueError, match="percent-escapes"):
+            supervisor_core._normalise_endpoint("/addons/core ssh/info")
+
+    def test_percent_escape_is_refused(self):
+        with pytest.raises(ValueError, match="percent-escapes"):
+            supervisor_core._normalise_endpoint("/addons/core%5Fssh/info")
+
+    def test_empty_is_refused(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            supervisor_core._normalise_endpoint("   ")
+
+
+class TestSupervisorApi:
+    def test_sends_the_proxy_command_with_endpoint_method_and_timeout(self, fake_client):
+        fake_client.set_supervisor("/supervisor/info", {"version": "2025.01.0"})
+        out = supervisor_core.api(fake_client, "/supervisor/info")
+        assert out == {"version": "2025.01.0"}
+        call = fake_client.ws_calls[-1]
+        assert call["type"] == "supervisor/api"
+        assert call["payload"]["endpoint"] == "/supervisor/info"
+        assert call["payload"]["method"] == "get"
+
+    def test_timeout_is_always_sent_because_omitting_it_means_ten_seconds(self, fake_client):
+        supervisor_core.api(fake_client, "/addons")
+        assert fake_client.ws_calls[-1]["payload"]["timeout"] == 10.0
+
+    def test_no_timeout_is_an_explicit_null_not_a_missing_key(self, fake_client):
+        supervisor_core.api(fake_client, "/addons", timeout=None)
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert "timeout" in payload
+        assert payload["timeout"] is None
+
+    def test_data_is_omitted_entirely_when_not_given(self, fake_client):
+        supervisor_core.api(fake_client, "/addons")
+        assert "data" not in fake_client.ws_calls[-1]["payload"]
+
+    def test_bad_method_is_refused_locally(self, fake_client):
+        with pytest.raises(ValueError, match="method must be one of"):
+            supervisor_core.api(fake_client, "/addons", method="patch")
+        assert fake_client.ws_calls == []
+
+    def test_non_dict_data_is_refused_locally(self, fake_client):
+        with pytest.raises(ValueError, match="JSON object"):
+            supervisor_core.api(fake_client, "/addons", method="post", data=["a"])
+
+    def test_zero_timeout_is_refused_and_names_no_timeout(self, fake_client):
+        with pytest.raises(ValueError, match="must be positive"):
+            supervisor_core.api(fake_client, "/addons", timeout=0)
+
+    def test_non_numeric_timeout_is_refused(self, fake_client):
+        with pytest.raises(ValueError, match="number of seconds"):
+            supervisor_core.api(fake_client, "/addons", timeout="soon")
+
+    def test_an_action_that_returns_no_payload_is_an_empty_dict_not_an_error(self, fake_client):
+        # Every lifecycle endpoint answers {"result": "ok"} with no `data`,
+        # and the handler returns `result.get("data", {})`.
+        fake_client.set_supervisor("/addons/core_ssh/start", {})
+        assert supervisor_core.api(fake_client, "/addons/core_ssh/start", method="post") == {}
+
+    def test_a_scalar_result_is_wrapped_so_the_return_type_never_changes(self, fake_client):
+        fake_client.set_supervisor("/supervisor/ping", "ok")
+        assert supervisor_core.api(fake_client, "/supervisor/ping") == {"result": "ok"}
+
+    def test_unknown_command_becomes_the_no_supervisor_explanation(self, fake_client):
+        fake_client.set_ws_error("supervisor/api", "unknown_command", "")
+        with pytest.raises(HomeAssistantError, match="has no Supervisor"):
+            supervisor_core.api(fake_client, "/supervisor/info")
+
+    def test_a_supervisor_error_keeps_its_message(self, fake_client):
+        fake_client.set_supervisor_error("/addons/nope/info", "Addon nope does not exist")
+        with pytest.raises(HomeAssistantError, match="Addon nope does not exist"):
+            supervisor_core.api(fake_client, "/addons/nope/info")
+
+    def test_an_empty_unknown_error_is_named_as_a_probable_timeout(self, fake_client):
+        # HassIO.send_command swallows TimeoutError and returns None; the
+        # handler then does None.get(...) and the websocket layer reports
+        # `unknown_error` / "Unknown error". Nothing else says what happened.
+        fake_client.set_supervisor_error("/addons/x/update", "Unknown error")
+        with pytest.raises(HomeAssistantError) as exc:
+            supervisor_core.api(fake_client, "/addons/x/update", method="post")
+        message = str(exc.value)
+        assert "--timeout 300" in message
+        assert "supervisor logs" in message
+
+    def test_unauthorized_names_the_admin_requirement(self, fake_client):
+        fake_client.set_supervisor_error("/addons", "", code="unauthorized")
+        with pytest.raises(HomeAssistantError, match="ADMIN user"):
+            supervisor_core.api(fake_client, "/addons")
+
+    def test_an_unrelated_code_is_passed_through_untouched(self, fake_client):
+        fake_client.set_supervisor_error("/addons", "nope", code="not_found")
+        with pytest.raises(HomeAssistantError, match="not_found"):
+            supervisor_core.api(fake_client, "/addons")
+
+
+class TestSupervisorAvailability:
+    def test_available_reports_the_version(self, fake_client):
+        fake_client.set_supervisor(
+            "/supervisor/info",
+            {"version": "2025.01.0", "version_latest": "2025.02.0",
+             "update_available": True, "channel": "stable"},
+        )
+        out = supervisor_core.available(fake_client)
+        assert out["available"] is True
+        assert out["version"] == "2025.01.0"
+        assert out["update_available"] is True
+
+    def test_absent_supervisor_is_an_answer_not_an_exception(self, fake_client):
+        fake_client.set_ws_error("supervisor/api", "unknown_command", "")
+        out = supervisor_core.available(fake_client)
+        assert out["available"] is False
+        assert "Home Assistant OS" in out["note"]
+
+    def test_any_other_failure_still_raises(self, fake_client):
+        fake_client.set_supervisor_error("/supervisor/info", "boom")
+        with pytest.raises(HomeAssistantError):
+            supervisor_core.available(fake_client)
+
+
+class TestSupervisorInfo:
+    def _data(self):
+        return {
+            "version": "2025.01.0",
+            "version_latest": "2025.01.0",
+            "update_available": False,
+            "channel": "stable",
+            "arch": "aarch64",
+            "supported": False,
+            "healthy": True,
+            "addons": [
+                {"slug": "z_wave", "name": "Z-Wave JS", "version": "0.6", "state": "started"},
+                {"slug": "core_ssh", "name": "SSH", "version": "9.13", "state": "stopped"},
+            ],
+        }
+
+    def test_addons_are_summarised_and_sorted(self, fake_client):
+        fake_client.set_supervisor("/supervisor/info", self._data())
+        out = supervisor_core.info(fake_client)
+        assert out["addons_installed"] == 2
+        assert [a["slug"] for a in out["addons"]] == ["core_ssh", "z_wave"]
+
+    def test_unsupported_flag_points_at_the_resolution_centre(self, fake_client):
+        fake_client.set_supervisor("/supervisor/info", self._data())
+        out = supervisor_core.info(fake_client)
+        assert out["supported"] is False
+        assert "supervisor resolution" in out["note"]
+
+
+class TestSupervisorComponentInfo:
+    def test_reads_the_named_component(self, fake_client):
+        fake_client.set_supervisor("/host/info", {"operating_system": "HAOS 14.1"})
+        out = supervisor_core.component_info(fake_client, "host")
+        assert out["component"] == "host"
+        assert out["operating_system"] == "HAOS 14.1"
+
+    def test_case_is_not_significant(self, fake_client):
+        fake_client.set_supervisor("/os/info", {"board": "rpi5"})
+        assert supervisor_core.component_info(fake_client, "OS")["board"] == "rpi5"
+
+    def test_update_available_is_coerced_to_a_bool(self, fake_client):
+        fake_client.set_supervisor("/core/info", {"update_available": 1})
+        assert supervisor_core.component_info(fake_client, "core")["update_available"] is True
+
+    def test_unknown_component_is_refused_locally(self, fake_client):
+        with pytest.raises(ValueError, match="component must be one of"):
+            supervisor_core.component_info(fake_client, "addons")
+        assert fake_client.ws_calls == []
+
+
+class TestSupervisorStats:
+    def test_a_component_goes_to_the_component_endpoint(self, fake_client):
+        fake_client.set_supervisor("/core/stats", {"cpu_percent": 4.2, "memory_percent": 30})
+        out = supervisor_core.stats(fake_client, "core")
+        assert out["endpoint"] == "/core/stats"
+        assert out["cpu_percent"] == 4.2
+
+    def test_anything_else_is_treated_as_an_addon_slug(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/stats", {"cpu_percent": 0.1})
+        out = supervisor_core.stats(fake_client, "core_ssh")
+        assert out["endpoint"] == "/addons/core_ssh/stats"
+
+    def test_empty_component_is_refused(self, fake_client):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            supervisor_core.stats(fake_client, "")
+
+
+class TestSupervisorResolution:
+    def test_counts_issues_and_suggestions(self, fake_client):
+        fake_client.set_supervisor(
+            "/resolution/info",
+            {
+                "unsupported": ["os"],
+                "unhealthy": [],
+                "issues": [{"type": "free_space", "context": "system"}],
+                "suggestions": [{"uuid": "abc", "type": "clear_full_backup"}],
+                "checks": [],
+            },
+        )
+        out = supervisor_core.resolution(fake_client)
+        assert out["issue_count"] == 1
+        assert out["suggestion_count"] == 1
+        assert "/resolution/suggestion/" in out["note"]
+
+    def test_missing_keys_become_empty_lists(self, fake_client):
+        fake_client.set_supervisor("/resolution/info", {})
+        out = supervisor_core.resolution(fake_client)
+        assert out["issues"] == [] and out["unhealthy"] == []
+
+
+class TestSupervisorAddonList:
+    def _installed(self):
+        return {
+            "addons": [
+                _addon("z_wave", state="stopped", update_available=True,
+                       version="0.6", version_latest="0.7"),
+                _addon("core_ssh", state="started"),
+            ]
+        }
+
+    def test_lists_and_sorts_by_slug(self, fake_client):
+        fake_client.set_supervisor("/addons", self._installed())
+        out = supervisor_core.addon_list(fake_client)
+        assert [a["slug"] for a in out["addons"]] == ["core_ssh", "z_wave"]
+        assert out["count"] == 2
+        assert out["running"] == 1
+        assert out["updatable"] == 1
+
+    def test_state_filter(self, fake_client):
+        fake_client.set_supervisor("/addons", self._installed())
+        out = supervisor_core.addon_list(fake_client, state="started")
+        assert [a["slug"] for a in out["addons"]] == ["core_ssh"]
+        assert out["filters"]["state"] == "started"
+
+    def test_updates_only_filter(self, fake_client):
+        fake_client.set_supervisor("/addons", self._installed())
+        out = supervisor_core.addon_list(fake_client, updates_only=True)
+        assert [a["slug"] for a in out["addons"]] == ["z_wave"]
+
+    def test_no_addons_is_an_empty_list_not_a_failure(self, fake_client):
+        fake_client.set_supervisor("/addons", {})
+        assert supervisor_core.addon_list(fake_client)["count"] == 0
+
+
+class TestSupervisorAddonInfo:
+    def _info(self):
+        return _addon(
+            options={"ssh_password": "hunter2", "packages": []},
+            description="Terminal",
+            ingress=True,
+            rating=6,
+        )
+
+    def test_options_are_withheld_by_default_but_the_keys_are_not(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._info())
+        out = supervisor_core.addon_info(fake_client, "core_ssh")
+        assert out["options"] is None
+        assert out["options_keys"] == ["packages", "ssh_password"]
+        assert "hunter2" not in json.dumps(out)
+
+    def test_reveal_prints_them(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._info())
+        out = supervisor_core.addon_info(fake_client, "core_ssh", reveal_options=True)
+        assert out["options"]["ssh_password"] == "hunter2"
+
+    def test_an_addon_with_no_options_still_reports_a_list(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", _addon())
+        assert supervisor_core.addon_info(fake_client, "core_ssh")["options_keys"] == []
+
+    def test_empty_slug_is_refused(self, fake_client):
+        with pytest.raises(ValueError, match="slug cannot be empty"):
+            supervisor_core.addon_info(fake_client, "")
+
+    def test_a_slug_with_a_slash_is_refused_before_it_becomes_a_path(self, fake_client):
+        with pytest.raises(ValueError, match="one path segment"):
+            supervisor_core.addon_info(fake_client, "local/core_ssh")
+        assert fake_client.ws_calls == []
+
+
+class TestSupervisorAddonAction:
+    def test_dry_run_sends_no_write_and_says_what_would_happen(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", _addon(state="stopped"))
+        out = supervisor_core.addon_action(fake_client, "core_ssh", "start")
+        assert out["applied"] is False
+        assert out["state_before"] == "stopped"
+        assert "--apply" in out["note"]
+        assert [c["method"] for c in fake_client.supervisor_calls] == ["get"]
+
+    def test_dry_run_names_a_no_op(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", _addon(state="started"))
+        out = supervisor_core.addon_action(fake_client, "core_ssh", "start")
+        assert out["no_op"] is True
+        assert "already in that state" in out["note"]
+
+    def test_apply_posts_then_re_reads_the_state(self, fake_client):
+        # The lifecycle endpoints answer with no payload, so "did it work" can
+        # only be read back from /info.
+        fake_client.set_supervisor("/addons/core_ssh/info", _addon(state="stopped"))
+        posted = {}
+
+        real = fake_client.ws_call
+
+        def spy(msg_type, payload=None):
+            if payload and payload.get("endpoint") == "/addons/core_ssh/start":
+                posted["hit"] = True
+                fake_client.set_supervisor("/addons/core_ssh/info", _addon(state="started"))
+            return real(msg_type, payload)
+
+        fake_client.ws_call = spy
+        out = supervisor_core.addon_action(fake_client, "core_ssh", "start", apply=True)
+        assert posted == {"hit": True}
+        assert out["applied"] is True
+        assert out["state_after"] == "started"
+        assert "re-read" in out["note"]
+
+    def test_apply_uses_the_slow_timeout_not_the_ten_second_default(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", _addon(state="stopped"))
+        supervisor_core.addon_action(fake_client, "core_ssh", "start", apply=True)
+        write = [c for c in fake_client.supervisor_calls if c["method"] == "post"][0]
+        assert write["timeout"] == supervisor_core.SLOW_TIMEOUT
+
+    def test_update_with_nothing_newer_is_refused_before_anything_is_sent(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", _addon())
+        with pytest.raises(ValueError, match="already at 9.13.0"):
+            supervisor_core.addon_action(fake_client, "core_ssh", "update", apply=True)
+        assert all(c["method"] == "get" for c in fake_client.supervisor_calls)
+
+    def test_update_is_allowed_when_one_is_available(self, fake_client):
+        fake_client.set_supervisor(
+            "/addons/core_ssh/info",
+            _addon(update_available=True, version_latest="9.14.0"),
+        )
+        out = supervisor_core.addon_action(fake_client, "core_ssh", "update")
+        assert out["version_latest"] == "9.14.0"
+
+    def test_unknown_verb_is_refused(self, fake_client):
+        with pytest.raises(ValueError, match="action must be one of"):
+            supervisor_core.addon_action(fake_client, "core_ssh", "uninstall")
+
+    def test_every_documented_verb_is_accepted(self, fake_client):
+        fake_client.set_supervisor(
+            "/addons/core_ssh/info", _addon(update_available=True, version_latest="9.14")
+        )
+        for verb in supervisor_core.ADDON_ACTIONS:
+            assert supervisor_core.addon_action(fake_client, "core_ssh", verb)["action"] == verb
+
+
+class TestSupervisorAddonOptions:
+    def _current(self):
+        return _addon(options={"ssh_password": "old", "packages": ["git"], "share_sessions": False})
+
+    def test_the_write_carries_every_untouched_key_because_the_post_replaces(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        fake_client.set_supervisor("/addons/core_ssh/options/validate", {"valid": True})
+        out = supervisor_core.addon_options(
+            fake_client, "core_ssh", {"ssh_password": "new"}, apply=True
+        )
+        write = [c for c in fake_client.supervisor_calls
+                 if c["endpoint"] == "/addons/core_ssh/options"][0]
+        assert write["data"]["options"] == {
+            "ssh_password": "new", "packages": ["git"], "share_sessions": False
+        }
+        assert out["keys_preserved"] == ["packages", "share_sessions"]
+
+    def test_dry_run_writes_nothing(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        fake_client.set_supervisor("/addons/core_ssh/options/validate", {"valid": True})
+        out = supervisor_core.addon_options(fake_client, "core_ssh", {"ssh_password": "new"})
+        assert out["applied"] is False
+        assert not [c for c in fake_client.supervisor_calls
+                    if c["endpoint"] == "/addons/core_ssh/options"]
+
+    def test_dry_run_still_asks_supervisor_whether_it_would_be_legal(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        fake_client.set_supervisor("/addons/core_ssh/options/validate", {"valid": True})
+        out = supervisor_core.addon_options(fake_client, "core_ssh", {"ssh_password": "new"})
+        assert out["validated"] is True and out["valid"] is True
+
+    def test_an_invalid_change_is_refused_and_never_written(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        fake_client.set_supervisor(
+            "/addons/core_ssh/options/validate",
+            {"valid": False, "message": "expected a list for dictionary value @ data['packages']"},
+        )
+        with pytest.raises(ValueError, match="expected a list"):
+            supervisor_core.addon_options(
+                fake_client, "core_ssh", {"packages": "git"}, apply=True
+            )
+        assert not [c for c in fake_client.supervisor_calls
+                    if c["endpoint"] == "/addons/core_ssh/options"]
+
+    def test_validation_that_itself_fails_does_not_block_the_dry_run(self, fake_client):
+        # Older Supervisors have no /options/validate. Losing the check is not
+        # a reason to lose the command.
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        fake_client.set_supervisor_error("/addons/core_ssh/options/validate", "not found")
+        out = supervisor_core.addon_options(fake_client, "core_ssh", {"ssh_password": "new"})
+        assert out["validated"] is False
+        assert "not found" in out["validation_error"]
+
+    def test_no_validate_skips_the_call_entirely(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        out = supervisor_core.addon_options(
+            fake_client, "core_ssh", {"ssh_password": "new"}, validate=False
+        )
+        assert out["validated"] is None
+        assert not [c for c in fake_client.supervisor_calls if "validate" in c["endpoint"]]
+
+    def test_remove_drops_the_key_rather_than_nulling_it(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        fake_client.set_supervisor("/addons/core_ssh/options/validate", {"valid": True})
+        out = supervisor_core.addon_options(
+            fake_client, "core_ssh", {}, remove=("packages",), apply=True
+        )
+        write = [c for c in fake_client.supervisor_calls
+                 if c["endpoint"] == "/addons/core_ssh/options"][0]
+        assert "packages" not in write["data"]["options"]
+        assert out["keys_removed"] == ["packages"]
+
+    def test_removing_a_key_that_is_not_set_is_reported_not_silent(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        fake_client.set_supervisor("/addons/core_ssh/options/validate", {"valid": True})
+        out = supervisor_core.addon_options(fake_client, "core_ssh", {}, remove=("nope",))
+        assert out["keys_not_present"] == ["nope"]
+        assert out["changed"] is False
+
+    def test_setting_and_removing_the_same_key_is_refused(self, fake_client):
+        with pytest.raises(ValueError, match="set and remove the same key"):
+            supervisor_core.addon_options(
+                fake_client, "core_ssh", {"packages": []}, remove=("packages",)
+            )
+
+    def test_an_empty_change_is_refused(self, fake_client):
+        with pytest.raises(ValueError, match="Nothing to change"):
+            supervisor_core.addon_options(fake_client, "core_ssh", {})
+
+    def test_applying_reminds_you_the_addon_is_still_on_the_old_config(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", self._current())
+        fake_client.set_supervisor("/addons/core_ssh/options/validate", {"valid": True})
+        out = supervisor_core.addon_options(
+            fake_client, "core_ssh", {"ssh_password": "new"}, apply=True
+        )
+        assert "restart" in out["note"]
+
+    def test_an_addon_with_no_options_yet_still_merges(self, fake_client):
+        fake_client.set_supervisor("/addons/core_ssh/info", _addon(options=None))
+        fake_client.set_supervisor("/addons/core_ssh/options/validate", {"valid": True})
+        out = supervisor_core.addon_options(fake_client, "core_ssh", {"a": 1}, apply=True)
+        write = [c for c in fake_client.supervisor_calls
+                 if c["endpoint"] == "/addons/core_ssh/options"][0]
+        assert write["data"]["options"] == {"a": 1}
+        assert out["keys_preserved"] == []
+
+
+class TestSupervisorLogs:
+    def test_reads_over_the_http_proxy_not_the_websocket(self, fake_client):
+        fake_client.set("GET", "hassio/core/logs", "line one\nline two\n")
+        out = supervisor_core.logs(fake_client, "core")
+        assert fake_client.ws_calls == []
+        assert out["path"] == "/api/hassio/core/logs"
+        assert out["entries"] == ["line one", "line two"]
+        assert out["lines_returned"] == 2
+
+    def test_lines_go_out_as_a_journal_range_header(self, fake_client):
+        fake_client.set("GET", "hassio/host/logs", "x")
+        supervisor_core.logs(fake_client, "host", lines=25)
+        assert fake_client.calls[-1]["headers"] == {"Range": "entries=:-25:"}
+
+    def test_addon_logs_use_the_addon_path(self, fake_client):
+        fake_client.set("GET", "hassio/addons/core_ssh/logs", "hello")
+        out = supervisor_core.logs(fake_client, None, addon="core_ssh")
+        assert out["path"] == "/api/hassio/addons/core_ssh/logs"
+        assert out["kind"] == "addon"
+
+    def test_a_boot_offset_becomes_a_path_segment(self, fake_client):
+        fake_client.set("GET", "hassio/host/logs/boots/-1", "old")
+        out = supervisor_core.logs(fake_client, "host", boot=-1)
+        assert out["path"] == "/api/hassio/host/logs/boots/-1"
+
+    def test_a_component_outside_the_allowlist_is_refused_locally(self, fake_client):
+        with pytest.raises(ValueError, match="component must be one of"):
+            supervisor_core.logs(fake_client, "zigbee")
+        assert fake_client.calls == []
+
+    def test_component_and_addon_together_are_refused(self, fake_client):
+        with pytest.raises(ValueError, match="not both"):
+            supervisor_core.logs(fake_client, "core", addon="core_ssh")
+
+    def test_zero_lines_is_refused(self, fake_client):
+        with pytest.raises(ValueError, match="lines must be positive"):
+            supervisor_core.logs(fake_client, "core", lines=0)
+
+    def test_a_401_is_explained_as_the_allowlist_not_as_a_bad_token(self, fake_client):
+        fake_client.set_rest_error("GET", "hassio/addons/nope/logs", 401, "")
+        with pytest.raises(HomeAssistantError) as exc:
+            supervisor_core.logs(fake_client, None, addon="nope")
+        assert "allowlist" in str(exc.value)
+        assert "not installed" in str(exc.value)
+
+    def test_a_404_is_explained_as_no_supervisor(self, fake_client):
+        fake_client.set_rest_error("GET", "hassio/core/logs", 404, "")
+        with pytest.raises(HomeAssistantError, match="has no Supervisor"):
+            supervisor_core.logs(fake_client, "core")
+
+    def test_a_502_is_explained_as_supervisor_unreachable(self, fake_client):
+        fake_client.set_rest_error("GET", "hassio/core/logs", 502, "")
+        with pytest.raises(HomeAssistantError, match="could not reach the Supervisor"):
+            supervisor_core.logs(fake_client, "core")
+
+    def test_an_unrecognised_status_is_passed_through(self, fake_client):
+        fake_client.set_rest_error("GET", "hassio/core/logs", 418, "teapot")
+        with pytest.raises(HomeAssistantError, match="teapot"):
+            supervisor_core.logs(fake_client, "core")
+
+    def test_a_json_body_is_still_rendered_as_text(self, fake_client):
+        fake_client.set("GET", "hassio/core/logs", {"a": 1})
+        out = supervisor_core.logs(fake_client, "core")
+        assert out["text"] == '{"a": 1}'
+
+
+class TestSupervisorBoots:
+    def test_indexes_the_boots_in_offset_order(self, fake_client):
+        fake_client.set("GET", "hassio/host/logs/boots", {"data": {"0": "aaa", "-1": "bbb"}})
+        out = supervisor_core.boots(fake_client)
+        assert [row["offset"] for row in out["boots"]] == [-1, 0]
+        assert out["count"] == 2
+
+    def test_an_unenveloped_body_is_read_too(self, fake_client):
+        fake_client.set("GET", "hassio/host/logs/boots", {"0": "aaa"})
+        assert supervisor_core.boots(fake_client)["count"] == 1
+
+    def test_a_text_body_is_parsed_as_json(self, fake_client):
+        fake_client.set("GET", "hassio/host/logs/boots", '{"data": {"0": "aaa"}}')
+        assert supervisor_core.boots(fake_client)["count"] == 1
+
+    def test_an_unparseable_body_is_no_boots_rather_than_a_crash(self, fake_client):
+        fake_client.set("GET", "hassio/host/logs/boots", "not json at all")
+        assert supervisor_core.boots(fake_client)["boots"] == []
+
+    def test_a_404_is_explained(self, fake_client):
+        fake_client.set_rest_error("GET", "hassio/host/logs/boots", 404, "")
+        with pytest.raises(HomeAssistantError, match="has no Supervisor"):
+            supervisor_core.boots(fake_client)
+
+
+class TestSupervisorStatus:
+    def _populate(self, fake_client):
+        fake_client.set_supervisor(
+            "/supervisor/info",
+            {"version": "2025.01.0", "version_latest": "2025.01.0", "channel": "stable",
+             "healthy": True, "supported": True},
+        )
+        fake_client.set_supervisor(
+            "/core/info",
+            {"version": "2025.1.4", "version_latest": "2025.2.0", "update_available": True},
+        )
+        fake_client.set_supervisor(
+            "/host/info", {"operating_system": "HAOS 14.1", "kernel": "6.6", "disk_free": 20.1}
+        )
+        fake_client.set_supervisor("/os/info", {"version": "14.1", "board": "rpi5"})
+
+    def test_reports_all_four_and_names_what_is_stale(self, fake_client):
+        self._populate(fake_client)
+        out = supervisor_core.status(fake_client)
+        assert out["available"] is True
+        assert set(out["components"]) == {"supervisor", "core", "host", "os"}
+        assert out["updates_available"] == ["core"]
+        assert "--timeout 600" in out["note"]
+
+    def test_host_and_os_carry_their_own_extra_fields(self, fake_client):
+        self._populate(fake_client)
+        out = supervisor_core.status(fake_client)
+        assert out["components"]["host"]["operating_system"] == "HAOS 14.1"
+        assert out["components"]["os"]["board"] == "rpi5"
+        assert out["components"]["supervisor"]["channel"] == "stable"
+
+    def test_one_failing_component_does_not_fail_the_command(self, fake_client):
+        # A Supervised install has no HA OS under it, so /os/info errors while
+        # the other three answer.
+        self._populate(fake_client)
+        fake_client.set_supervisor_error("/os/info", "System does not support this")
+        out = supervisor_core.status(fake_client)
+        assert "os" not in out["components"]
+        assert "os" in out["errors"]
+        assert out["components"]["core"]["version"] == "2025.1.4"
+
+    def test_no_supervisor_short_circuits_instead_of_four_failures(self, fake_client):
+        fake_client.set_ws_error("supervisor/api", "unknown_command", "")
+        out = supervisor_core.status(fake_client)
+        assert out["available"] is False
+        assert out["components"] == {}
+        assert len(fake_client.ws_calls) == 1
+
+    def test_everything_current_says_so(self, fake_client):
+        self._populate(fake_client)
+        fake_client.set_supervisor(
+            "/core/info", {"version": "2025.2.0", "version_latest": "2025.2.0"}
+        )
+        out = supervisor_core.status(fake_client)
+        assert out["updates_available"] == []
+        assert "newest known version" in out["note"]
+
+
+class TestSupervisorWatch:
+    def test_collects_the_events_it_is_given(self, subscribing_client):
+        subscribing_client.queue_events({"event": "addon", "slug": "core_ssh"})
+        out = supervisor_core.watch(subscribing_client, duration=5)
+        assert out["count"] == 1
+        assert subscribing_client.subscribe_calls[0][0] == "supervisor/subscribe"
+
+    def test_an_idle_instance_producing_nothing_is_the_normal_result(self, subscribing_client):
+        out = supervisor_core.watch(subscribing_client, duration=5)
+        assert out["events"] == []
+        assert "idle instance" in out["note"]
+
+    def test_max_events_stops_early(self, subscribing_client):
+        subscribing_client.queue_events({"a": 1}, {"a": 2}, {"a": 3})
+        out = supervisor_core.watch(subscribing_client, duration=5, max_events=2)
+        assert out["count"] == 2
+
+    def test_on_event_is_called_per_event(self, subscribing_client):
+        seen = []
+        subscribing_client.queue_events({"a": 1}, {"a": 2})
+        supervisor_core.watch(subscribing_client, duration=5, on_event=seen.append)
+        assert len(seen) == 2
+
+    def test_a_non_positive_duration_is_refused(self, subscribing_client):
+        with pytest.raises(ValueError, match="duration must be positive"):
+            supervisor_core.watch(subscribing_client, duration=0)
+
+    def test_a_non_positive_max_events_is_refused(self, subscribing_client):
+        with pytest.raises(ValueError, match="max_events must be positive"):
+            supervisor_core.watch(subscribing_client, duration=5, max_events=0)
+
+    def test_any_other_subscribe_failure_is_passed_through_untouched(self, subscribing_client):
+        def boom(*args, **kwargs):
+            raise HomeAssistantError("WS subscribe failed: {'code': 'unauthorized'}")
+
+        subscribing_client.ws_subscribe = boom
+        with pytest.raises(HomeAssistantError, match="unauthorized"):
+            supervisor_core.watch(subscribing_client, duration=5)
+
+    def test_no_supervisor_is_explained_rather_than_repeated(self, subscribing_client):
+        subscribing_client.set_ws_error("supervisor/subscribe", "unknown_command", "")
+
+        def boom(*args, **kwargs):
+            raise HomeAssistantError(
+                "WS command supervisor/subscribe failed: unknown_command ",
+                code="unknown_command",
+            )
+
+        subscribing_client.ws_subscribe = boom
+        with pytest.raises(HomeAssistantError, match="has no Supervisor"):
+            supervisor_core.watch(subscribing_client, duration=5)

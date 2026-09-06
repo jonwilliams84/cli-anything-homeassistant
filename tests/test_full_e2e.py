@@ -38,10 +38,12 @@ from cli_anything.homeassistant.core import (
     states as states_core,
     system as system_core,
     core_config as core_config_core,
+    supervisor as supervisor_core,
     template as template_core,
 )
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
+    HomeAssistantError,
 )
 
 
@@ -2151,3 +2153,321 @@ class TestMediaProxyLive:
             r = self._run([group, command, "--help"], hass_instance)
             assert r.returncode == 0, f"{group} {command}: {r.stderr}"
             assert "Usage:" in r.stdout
+
+
+# ────────────────────────────────────────── supervisor (add-ons / host / OS)
+#
+# The instance these tests boot is a CORE install: no Supervisor, no add-ons,
+# and the `hassio` integration is not loaded. That is not a limitation here —
+# it is the ONE thing a fake client cannot prove. A FakeClient answers
+# `unknown_command` because a test told it to; a real Home Assistant answers
+# it because the websocket command genuinely is not registered, and the HTTP
+# proxy genuinely is not routed. Both of those refusals are what this harness
+# has to turn into a sentence, and both are exercised for real below.
+
+
+class TestLiveSupervisorAbsent:
+    """A Core install has no Supervisor. Every command must say so, once."""
+
+    def test_available_is_false_rather_than_an_error(self, live_client):
+        out = supervisor_core.available(live_client)
+        assert out["available"] is False
+        assert out["version"] is None
+        assert "Home Assistant OS" in out["note"]
+
+    def test_the_websocket_command_really_is_unregistered(self, live_client):
+        """The premise of every other assertion in this class.
+
+        If HA ever registered `supervisor/api` on a Core install, the
+        `available: false` above would be measuring the wrong thing.
+        """
+        with pytest.raises(HomeAssistantError) as exc:
+            live_client.ws_call("supervisor/api", {"endpoint": "/supervisor/info",
+                                                    "method": "get", "timeout": 10})
+        assert exc.value.code == "unknown_command"
+
+    def test_status_short_circuits_on_the_first_component(self, live_client):
+        out = supervisor_core.status(live_client)
+        assert out["available"] is False
+        assert out["components"] == {}
+
+    def test_info_raises_the_explanation_not_the_raw_code(self, live_client):
+        with pytest.raises(HomeAssistantError) as exc:
+            supervisor_core.info(live_client)
+        assert "unknown_command" not in str(exc.value)
+        assert "system components" in str(exc.value)
+
+    def test_addon_list_raises_the_same_explanation(self, live_client):
+        with pytest.raises(HomeAssistantError, match="has no Supervisor"):
+            supervisor_core.addon_list(live_client)
+
+    def test_the_http_log_proxy_is_not_routed_either(self, live_client):
+        """A 404 from `/api/hassio/...` is "no Supervisor", not "no such log".
+
+        Measured, not assumed: the view is registered by the `hassio`
+        integration, so on a Core install the path falls through to HA's
+        catch-all and the status is a 404 with no body.
+        """
+        with pytest.raises(HomeAssistantError) as exc:
+            supervisor_core.logs(live_client, "core")
+        assert "has no Supervisor" in str(exc.value)
+
+    def test_boots_is_explained_the_same_way(self, live_client):
+        with pytest.raises(HomeAssistantError, match="has no Supervisor"):
+            supervisor_core.boots(live_client)
+
+
+class TestLiveSupervisorClientSideRefusals:
+    """Refusals that must happen HERE, because HA's version of them is unreadable.
+
+    Home Assistant compares the endpoint against its own normalisation and
+    answers any mismatch with `unknown_error` and an EMPTY message. These
+    calls never leave the process.
+    """
+
+    def test_a_relative_endpoint_never_reaches_the_wire(self, live_client):
+        with pytest.raises(ValueError, match="must start with"):
+            supervisor_core.api(live_client, "supervisor/info")
+
+    def test_a_query_string_never_reaches_the_wire(self, live_client):
+        with pytest.raises(ValueError, match="query string"):
+            supervisor_core.api(live_client, "/addons?x=1")
+
+    def test_traversal_never_reaches_the_wire(self, live_client):
+        with pytest.raises(ValueError, match=r"'\.' or '\.\.'"):
+            supervisor_core.api(live_client, "/../etc/passwd")
+
+    def test_a_bad_log_component_never_reaches_the_wire(self, live_client):
+        with pytest.raises(ValueError, match="component must be one of"):
+            supervisor_core.logs(live_client, "zigbee")
+
+
+class TestLiveRangeHeaderTransport:
+    """The `--lines` limit rides a header, and headers were not sendable before.
+
+    `client.get()` gained a `headers` argument for exactly this: Supervisor
+    takes its line limit as `Range: entries=:-N:` and `HassIOView` forwards
+    that header for log paths only. A limit that silently never left the
+    process would look identical to one the server ignored, so this asserts
+    the header reaches a real HTTP server.
+    """
+
+    def test_the_range_header_is_actually_transmitted(self, hass_instance):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        seen: dict = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                seen["path"] = self.path
+                seen["range"] = self.headers.get("Range")
+                seen["auth"] = self.headers.get("Authorization")
+                body = b"entry one\nentry two\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = HomeAssistantClient(
+                url=f"http://127.0.0.1:{server.server_port}", token="tkn", timeout=10
+            )
+            out = supervisor_core.logs(client, "supervisor", lines=42)
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert seen["path"] == "/api/hassio/supervisor/logs"
+        assert seen["range"] == "entries=:-42:"
+        # The bearer must survive the per-request header merge — a `headers`
+        # argument that REPLACED the session's would drop it silently.
+        assert seen["auth"] == "Bearer tkn"
+        assert out["entries"] == ["entry one", "entry two"]
+        assert out["lines_requested"] == 42
+
+
+class _SupervisorCliRunner:
+    """Subprocess helper.
+
+    Deliberately NOT a subclass of `TestCLISubprocess`: inheriting it would
+    re-run every one of that class's tests once per subclass, tripling the
+    slowest part of the suite to gain nothing.
+    """
+
+    def _env(self, hass_instance):
+        env = os.environ.copy()
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        env["HASS_VERIFY_SSL"] = "0"
+        return env
+
+    def _run(self, args, hass_instance, check=True):
+        return subprocess.run(
+            CLI_BASE + args,
+            capture_output=True, text=True,
+            env=self._env(hass_instance),
+            check=check,
+            timeout=60,
+        )
+
+
+class TestCLISupervisorSubprocess(_SupervisorCliRunner):
+    """The `supervisor` group through the installed command."""
+
+    def test_every_new_command_is_registered(self, hass_instance):
+        for args in (
+            ["supervisor", "--help"],
+            ["supervisor", "available", "--help"],
+            ["supervisor", "status", "--help"],
+            ["supervisor", "info", "--help"],
+            ["supervisor", "component", "--help"],
+            ["supervisor", "stats", "--help"],
+            ["supervisor", "resolution", "--help"],
+            ["supervisor", "logs", "--help"],
+            ["supervisor", "boots", "--help"],
+            ["supervisor", "api", "--help"],
+            ["supervisor", "watch", "--help"],
+            ["supervisor", "addon", "--help"],
+            ["supervisor", "addon", "list", "--help"],
+            ["supervisor", "addon", "info", "--help"],
+            ["supervisor", "addon", "start", "--help"],
+            ["supervisor", "addon", "stop", "--help"],
+            ["supervisor", "addon", "restart", "--help"],
+            ["supervisor", "addon", "rebuild", "--help"],
+            ["supervisor", "addon", "update", "--help"],
+            ["supervisor", "addon", "options", "--help"],
+            ["supervisor", "addon", "logs", "--help"],
+        ):
+            r = self._run(args, hass_instance)
+            assert r.returncode == 0, f"{args}: {r.stderr}"
+            assert "Usage:" in r.stdout
+
+    def test_available_is_json_and_exits_zero_without_a_supervisor(self, hass_instance):
+        r = self._run(["--json", "supervisor", "available"], hass_instance)
+        data = json.loads(r.stdout)
+        assert data["available"] is False
+        assert data["version"] is None
+
+    def test_status_is_json_and_exits_zero_without_a_supervisor(self, hass_instance):
+        r = self._run(["--json", "supervisor", "status"], hass_instance)
+        data = json.loads(r.stdout)
+        assert data["available"] is False
+        assert data["updates_available"] == []
+
+    def test_a_missing_supervisor_is_a_sentence_not_a_traceback(self, hass_instance):
+        r = self._run(["--json", "supervisor", "info"], hass_instance, check=False)
+        assert r.returncode == 1
+        assert "Traceback" not in r.stderr
+        assert r.stderr.startswith("error: ")
+        assert "system components" in r.stderr
+
+    @pytest.mark.parametrize(
+        "args,needle",
+        [
+            (["supervisor", "api", "supervisor/info"], "must start with"),
+            (["supervisor", "api", "/addons?x=1"], "query string"),
+            (["supervisor", "api", "/addons/../x"], "'.' or '..'"),
+            (["supervisor", "api", "/addons", "--timeout", "0"], "must be positive"),
+            (["supervisor", "stats", ""], "cannot be empty"),
+            (["supervisor", "logs", "zigbee"], "component must be one of"),
+            (["supervisor", "logs", "core", "--lines", "0"], "lines must be positive"),
+            (["supervisor", "logs", "core", "--addon", "x"], "not both"),
+            (["supervisor", "addon", "info", ""], "slug cannot be empty"),
+            (["supervisor", "addon", "info", "a/b"], "one path segment"),
+            (["supervisor", "addon", "options", "x"], "Nothing to change"),
+            (
+                ["supervisor", "addon", "options", "x", "--set", "a=1", "--remove", "a"],
+                "set and remove the same key",
+            ),
+            (["supervisor", "watch", "--duration", "0"], "duration must be positive"),
+        ],
+    )
+    def test_client_side_refusals_are_sentences(self, hass_instance, args, needle):
+        r = self._run(["--json", *args], hass_instance, check=False)
+        assert r.returncode == 1, r.stdout
+        assert needle in r.stderr, r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_an_invalid_component_choice_is_rejected_by_click(self, hass_instance):
+        r = self._run(["supervisor", "component", "addons"], hass_instance, check=False)
+        assert r.returncode == 2
+        assert "Invalid value" in r.stderr
+
+    def test_an_invalid_method_choice_is_rejected_by_click(self, hass_instance):
+        r = self._run(
+            ["supervisor", "api", "/addons", "--method", "patch"], hass_instance, check=False
+        )
+        assert r.returncode == 2
+        assert "Invalid value" in r.stderr
+
+    def test_data_json_that_is_not_json_is_a_usage_error(self, hass_instance):
+        r = self._run(
+            ["supervisor", "api", "/addons", "--data-json", "{oops"], hass_instance, check=False
+        )
+        assert r.returncode == 2
+        assert "not valid JSON" in r.stderr
+
+    def test_the_subcommand_timeout_is_not_stolen_by_the_root_one(self, hass_instance):
+        """`--timeout 2.5` on `supervisor api` is the SUPERVISOR's timeout.
+
+        The root group declares an int `--timeout`; hoisting used to move any
+        `--timeout` to the front, so a float died with "is not a valid
+        integer". The subcommand declares its own, so it must keep it — the
+        proof is that a float parses and the command reaches the wire (and
+        then fails for the real reason: there is no Supervisor).
+        """
+        r = self._run(
+            ["--json", "supervisor", "api", "/supervisor/info", "--timeout", "2.5"],
+            hass_instance,
+            check=False,
+        )
+        assert r.returncode == 1
+        assert "not a valid integer" not in r.stderr
+        assert "has no Supervisor" in r.stderr
+
+    def test_watch_bounded_by_duration_returns_an_empty_stream(self, hass_instance):
+        """`supervisor/subscribe` is unregistered here, so this must refuse fast.
+
+        The point is that it does not HANG: an unbounded subscription against
+        an instance that never sends anything is the failure mode this
+        command's duration bound exists to prevent.
+        """
+        r = self._run(
+            ["--json", "supervisor", "watch", "--duration", "3"], hass_instance, check=False
+        )
+        assert r.returncode == 1
+        assert "Traceback" not in r.stderr
+
+
+class TestCLISupervisorWorkflow(_SupervisorCliRunner):
+    """Compose the new group with commands that were already here."""
+
+    def test_availability_agrees_with_the_loaded_integration_list(self, hass_instance):
+        """The two commands read the same fact from opposite ends.
+
+        `supervisor available` is false exactly when the `hassio` integration
+        is not loaded — that integration is what registers `supervisor/api`
+        and the `/api/hassio/…` proxy. `system components` reports the loaded
+        list independently. A harness where these disagreed would be lying in
+        one of the two places.
+        """
+        components = json.loads(
+            self._run(["--json", "system", "components"], hass_instance).stdout
+        )
+        loaded = components if isinstance(components, list) else components.get("components", [])
+        avail = json.loads(
+            self._run(["--json", "supervisor", "available"], hass_instance).stdout
+        )
+        assert ("hassio" in loaded) is avail["available"]
+        assert avail["available"] is False
+
+    def test_the_group_appears_in_the_root_help(self, hass_instance):
+        r = self._run(["--help"], hass_instance)
+        assert "supervisor" in r.stdout

@@ -125,6 +125,7 @@ cli-anything-homeassistant service call light turn_on \
 | `category`   | `list`, `create`, `update`, `delete`, `by-name` — registry CRUD for scope-bound categories |
 | `logger` (extensions) | `info-ws`, `level-get`, `level-set` (WS-side per-component log control) |
 | `system` (extensions) | `manifest list/get`, `analytics get/set`, `app-credentials config/entry`, `issue get-data/ignore`, `usb-scan`, `zha-permit-join`, `hardware-info`, `board-info`, `cpu-info`, `log errors/clear/write` |
+| `supervisor` | `available`, `status`, `info`, `component`, `stats`, `resolution`, `logs`, `boots`, `watch`, `api` + `addon list/info/start/stop/restart/rebuild/update/options/logs` — the Supervisor half of a HA OS / Supervised install |
 
 Examples from the refine pass:
 
@@ -206,6 +207,29 @@ cli-anything-homeassistant system issue ignore homeassistant <issue_id>
 # Trigger a USB rescan or open Zigbee for join
 cli-anything-homeassistant system usb-scan
 cli-anything-homeassistant system zha-permit-join --duration 120
+
+# The Supervisor (v1.52+): add-ons, host, OS. Absent on Core/Container —
+# `available` reports that as an answer, exit 0, rather than as an error.
+cli-anything-homeassistant --json supervisor available
+cli-anything-homeassistant --json supervisor status | jq .updates_available
+
+# Add-ons: what is installed, and what is out of date
+cli-anything-homeassistant --json supervisor addon list --updates-only
+
+# Writes are dry-run until --apply
+cli-anything-homeassistant --json supervisor addon restart core_ssh --apply
+
+# The options POST REPLACES the whole object, so the change is merged into the
+# current options and validated by Supervisor before anything is written
+cli-anything-homeassistant --json supervisor addon options core_ssh \
+  --set 'packages=["git"]' --apply
+
+# Journals — over the HTTP proxy, because they answer plain text
+cli-anything-homeassistant supervisor logs supervisor --lines 200 --text
+cli-anything-homeassistant supervisor addon logs core_ssh --text
+
+# Anything not named above
+cli-anything-homeassistant --json supervisor api /store/addons
 ```
 
 ## Tests
