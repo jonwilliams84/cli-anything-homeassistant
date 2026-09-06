@@ -8,10 +8,10 @@ logic or renders templates locally. Every command supports `--json`.
 
 ## Layout
 - `cli_anything/homeassistant/homeassistant_cli.py` — the Click CLI + REPL (~10k lines, single file; all commands wired here). Entry point: `main`.
-- `cli_anything/homeassistant/core/` — ~117 modules, one HA API surface each (states, registry, lovelace*, automation, backup, statistics, powercalc*, …). Each is pure function-per-operation, callable from Python directly or via the Click wrapper.
+- `cli_anything/homeassistant/core/` — ~122 modules, one HA API surface each (states, registry, lovelace*, automation, backup, statistics, powercalc*, …). Each is pure function-per-operation, callable from Python directly or via the Click wrapper.
 - `cli_anything/homeassistant/utils/homeassistant_backend.py` — the wire client: `requests.Session` (REST) + websocket-client (WS) + `download()` (streamed binary, for a multi-GB backup) and `upload()` (multipart). All core modules call through this. Three WS shapes, three methods: `ws_call` (request/response), `ws_subscribe` (open-ended, caller stops it), `ws_run_events` (run-to-completion — empty ack, then events, terminal condition read from the data; `on_ack` pushes binary audio on a daemon thread).
 - `cli_anything/homeassistant/skills/SKILL.md` — packaged self-contained skill manifest (full command docs); packaged via `package_data`.
-- `tests/` — 90 files, 3,980+ tests. `tests/conftest.py` defines `FakeClient` (records every REST/WS call, returns prepared responses). E2e tests boot a real HA in a temp config dir.
+- `tests/` — 90 files, 4,550+ tests. `tests/conftest.py` defines `FakeClient` (records every REST/WS call, returns prepared responses). E2e tests boot a real HA in a temp config dir.
 - `HOMEASSISTANT.md` — SOP / agent operating guide. `CHANGELOG.md` — per-version detail.
 
 ## Commands
@@ -24,6 +24,79 @@ logic or renders templates locally. Every command supports `--json`.
 - New API surface = new module under `core/` (pure functions) + a Click wrapper in `homeassistant_cli.py` + a unit test using `FakeClient`. Keep `--json` output on every new command.
 - Versioning: bump `version` in `setup.py`, add a `CHANGELOG.md` entry. Work happens on `feat/*` branches → PR → merge to `main` (see git history). Tags like `v1.42.0` per release.
 - Powercalc commands are safety wrappers over HA footguns (REPLACE-on-write options flow, binary_sensor no-op); preserve the backup-first / dry-run-by-default / `--apply`-to-commit pattern when extending them (mirrored in `entity prune`).
+
+## Gotchas from the v1.52.0 refine pass (the Supervisor)
+
+- **A COVERAGE SCAN THAT MATCHES LITERALS LIES ABOUT CONSTANTS.** The v1.51.0
+  report ("204/235 websocket commands covered, the rest unreachable") was
+  produced by matching `vol.Required("type")` against a literal string.
+  `hassio` declares its commands through constants — `vol.Required(WS_TYPE):
+  WS_TYPE_API` — so the scan never saw `supervisor/api`,
+  `supervisor/subscribe` or `supervisor/event` and reported full coverage of a
+  surface it had not enumerated. Resolve the constants (or grep the
+  `const.py`) before believing any "the surface is nearly closed" conclusion.
+  `supervisor/api` alone is the ENTIRE Supervisor REST API behind one command.
+- **`/api/hassio/{path}` looks like the way in and is barred.**
+  `HassIOView._handle` matches the path against `PATHS_ADMIN` BEFORE
+  forwarding, and for an authenticated admin that allowlist is only: backups
+  by 8-hex slug, `backups/new/upload`, `<component>/logs…`, and
+  `addons/<slug>/(logs|changelog|documentation)`. `/addons`,
+  `/supervisor/info`, `/host/reboot` — every management endpoint — answer
+  **401 with an empty body** through it. Management is websocket-only. The
+  logs are HTTP-only in return: `send_command` calls `response.json()` on
+  every body, and a `text/plain` journal therefore fails as `unknown_error`.
+- **Every failure of `supervisor/api` is `unknown_error`, and three different
+  faults share it.** (1) A real Supervisor error, forwarded with its message —
+  the useful case. (2) A path `yarl` normalises differently from what you sent
+  raises `HassioAPIError` **with no arguments**, so the message is the EMPTY
+  STRING. (3) A Supervisor timeout or connection error is worst:
+  `HassIO.send_command` catches `TimeoutError`/`aiohttp.ClientError` and then
+  FALLS OFF THE END OF THE FUNCTION — it returns `None`, the handler does
+  `result.get(ATTR_DATA)`, and the websocket layer reports the `AttributeError`
+  as `unknown_error` / "Unknown error". Refuse (2) client-side; name (3),
+  because the proxy's default timeout is TEN SECONDS and installs, updates
+  and backups take minutes.
+- **`timeout` is `vol.Any(Number, None)` and null is not the same as absent.**
+  Omitting the key means 10s; sending `null` means no Supervisor-side limit.
+  Always send the key explicitly. Note the client's own websocket timeout
+  still applies on top — `ws_call` uses `self.timeout`.
+- **A successful lifecycle action is an EMPTY DICT.** The handler returns
+  `result.get(ATTR_DATA, {})`, and Supervisor answers `{"result": "ok"}` with
+  no `data` for `start`/`stop`/`restart`/`update`. Re-read
+  `/addons/<slug>/info` to report what actually happened; printing `{}` reads
+  as "nothing happened".
+- **`POST /addons/<slug>/options` REPLACES the options object** — same footgun
+  as the powercalc options flow. Merge into the current options and re-send
+  everything. Supervisor has a REAL validator for the dry run
+  (`/addons/<slug>/options/validate`, writes nothing), which beats a
+  self-authored diff. `--remove` must DROP a key: Supervisor reads an explicit
+  `null` as "back to the default", which is a different thing.
+- **The log line limit rides a header, not a query.** `Range: entries=:-N:`
+  (journal-gateway syntax); `HassIOView` forwards `Range` for `PATHS_LOGS`
+  only. `HomeAssistantClient.get()` gained a `headers` argument for this —
+  merged over the session's, so the bearer survives. Assert it against a real
+  HTTP server: a header that never left the process looks exactly like one the
+  server ignored.
+- **`…/logs/follow` never ends** (it is in HA's `NO_TIMEOUT` list), same class
+  of trap as the MJPEG streams in v1.51.0. Do not offer `--follow` on a
+  blocking client.
+- **`host` is the only component whose bare `/logs/boots` index is allowed.**
+  `PATHS_ADMIN` spells it `host/logs(/follow|/boots(/-?\d+(/follow)?)?)?` while
+  every other component demands an explicit number. Asking anything else for
+  the index is a 401.
+- **An ABSENT surface is the one thing a FakeClient cannot prove.** The e2e
+  instance is a Core install, so `supervisor/api` is genuinely unregistered
+  and `/api/hassio/…` genuinely unrouted — the two refusals this group
+  translates are produced by a real HA. Assert the PREMISE too
+  (`exc.code == "unknown_command"` straight off the wire), or the suite
+  quietly starts measuring something else the day that changes.
+- **Do not subclass a test class to reuse its `_run` helper.** Inheriting
+  `TestCLISubprocess` re-runs every one of its ~100 subprocess tests once per
+  subclass. Extract a non-`Test`-prefixed helper.
+- **`click.Group.command()` snapshots the docstring at CONSTRUCTION.** A
+  factory that builds several commands from one body and assigns
+  `_cmd.__doc__` afterwards ships them all with a blank `--help`. Pass
+  `help=` to the decorator.
 
 ## Gotchas from the v1.51.0 refine pass (binary media proxies)
 

@@ -180,6 +180,8 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `tag create/delete` | Full tag CRUD (was list/find/update only). |
 | **New in v1.48 — script-engine primitives** | |
 | `action`           | `run` (WS `execute_script` — ad-hoc action sequence through HA's script engine: traced, gets a context, can return a `response_variable`, creates no `script.*` entity; `--sequence`/`--sequence-file` or `--service light.turn_on -t entity_id=… -d k=v` shorthand; `--var k=v`; `--dry-run` prints the WS payload), `validate` (WS `validate_config` — `--triggers`/`--conditions`/`--actions` (+ `-file` variants), each answered `{valid, error}`), `validate-automation <file>` / `validate-script <file>` (whole config; legacy singular `trigger:`/`condition:`/`action:` keys auto-upgraded; **exits non-zero when invalid** so it chains with `&&`), `test-condition` (WS `test_condition` against live state; JSON list evaluates per-item error-tolerantly; `--exit-code` makes false → exit 1). |
+| **New in v1.52 — the Supervisor** | |
+| `supervisor`       | The add-ons, host and OS of a Home Assistant OS / Supervised install — none of it part of Core's API. Reads: `available` (is there one at all; an ANSWER, exit 0), `status` (supervisor/core/host/os versions side by side + what is stale), `info`, `component <host\|os\|core\|network\|supervisor>`, `stats <component\|addon-slug>`, `resolution` (the issues that block installs/updates), `logs <component>` / `addon logs <slug>` / `boots`, `watch` (progress events while a long job runs). Writes: `addon start/stop/restart/rebuild/update` (dry-run until `--apply`) and `addon options` (MERGES into the current options and asks Supervisor to validate the result, because the POST REPLACES the whole object). `api <endpoint>` is the escape hatch onto any Supervisor endpoint (`--method`, `--data k=v`, `--data-json`, `--timeout`). |
 | `entity source`    | WS `entity/source` — which integration actually supplies an entity. `entity source` (full map), `entity source <entity_id>` (`{loaded, domain}`), `--by-integration` / `-i <domain>` to group/filter. Registry entry with no source = strong orphan signal. |
 
 Always start with `--help` if you're unsure:
@@ -504,6 +506,48 @@ no MJPEG stream (use `--interval`), `500` = no image/artwork available, `403` =
 no credentials reached HA (a bad `--signed` URL), `404` = no such entity. The
 CLI translates each of these into a sentence naming the remedy.
 
+### The Supervisor: add-ons, host, OS (v1.52+)
+
+```bash
+# FIRST. There is no Supervisor on a Core or Container install and every other
+# command in the group fails on one. This reports it as an ANSWER, exit 0.
+cli-anything-homeassistant --json supervisor available | jq .available
+
+# Is anything out of date across all four moving parts?
+cli-anything-homeassistant --json supervisor status | jq '.updates_available, .components'
+
+# Add-ons. `list` is INSTALLED; the store catalogue is `supervisor api /store/addons`.
+cli-anything-homeassistant --json supervisor addon list --updates-only
+cli-anything-homeassistant --json supervisor addon list --state started
+
+# `info` withholds `options` (that is where an add-on's DB password lives).
+# `options_keys` says what is set; `--reveal` prints the values.
+cli-anything-homeassistant --json supervisor addon info core_ssh | jq .options_keys
+
+# Lifecycle. Dry-run first — it reports the CURRENT state and whether the verb
+# would do anything at all (`no_op: true` for "start" on a running add-on).
+cli-anything-homeassistant --json supervisor addon restart core_ssh
+cli-anything-homeassistant --json supervisor addon restart core_ssh --apply
+
+# Options are MERGED. Read `keys_preserved` — those are the keys that would
+# have been silently reset to their defaults by a naive POST. `valid` is
+# Supervisor's own verdict on the merged object; it is checked before writing.
+cli-anything-homeassistant --json supervisor addon options core_ssh \
+    --set 'packages=["git","curl"]' | jq '.keys_preserved, .valid, .changed'
+cli-anything-homeassistant --json supervisor addon options core_ssh \
+    --set 'packages=["git","curl"]' --apply
+cli-anything-homeassistant supervisor addon restart core_ssh --apply   # required
+
+# Logs. Plain text, so they go over the HTTP proxy, not the websocket one.
+cli-anything-homeassistant supervisor logs core --lines 200 --text
+cli-anything-homeassistant --json supervisor boots      # then --boot -1
+
+# Anything else Supervisor serves. Absolute path, no query string.
+cli-anything-homeassistant --json supervisor api /store/addons
+cli-anything-homeassistant --json supervisor api /addons/core_ssh/install \
+    --method post --timeout 600
+```
+
 ### Author an automation without shipping a broken one
 
 ```bash
@@ -675,6 +719,47 @@ target applies to ONE registry entry; where HA has split a device, the
 
 These are paid in lost time. Read them before mutating anything.
 
+- **`supervisor` is a SECOND API, and it has one error code.** Everything
+  behind `supervisor/api` reports every failure as `unknown_error`: a real
+  Supervisor error (with a useful message), a path Home Assistant would not
+  normalise (message: the EMPTY STRING), and a Supervisor timeout or
+  connection failure (message: "Unknown error", because HA's own handler
+  crashes on the `None` its transport returns instead of raising). Only the
+  first explains itself. The harness refuses bad paths locally and names the
+  other two.
+- **The Supervisor proxy's default timeout is TEN SECONDS.** An add-on
+  install, a core update, an OS update or a backup takes minutes, so the
+  default turns a job that is running fine into an error with no message.
+  Pass `--timeout 600` to anything slow. The job usually COMPLETES anyway —
+  the timeout is on the answer, not on the work.
+- **`POST /addons/<slug>/options` REPLACES the options object.** A key you
+  leave out is a key reset to the add-on's default, silently, and the add-on
+  boots into it on the next restart. Use `supervisor addon options`, which
+  reads the current options, merges, validates the result against the add-on's
+  schema and re-sends the FULL object; never hand-roll it through
+  `supervisor api`.
+- **Options written are not options applied.** The add-on keeps running the
+  old configuration until it is restarted (`supervisor addon restart <slug>
+  --apply`).
+- **`/api/hassio/…` is NOT a general Supervisor door.** For an authenticated
+  admin the proxy's allowlist permits only backups, `<component>/logs` and
+  `addons/<slug>/(logs|changelog|documentation)`. Everything else — `/addons`,
+  `/supervisor/info`, `/host/reboot` — is a **401 with an empty body** through
+  it. Management goes over the websocket command; the HTTP proxy is for the
+  logs, which the websocket path cannot read at all (it parses every body as
+  JSON, and logs are plain text).
+- **A 401 from `supervisor addon logs <slug>` usually means the slug is not
+  installed**, not that the token is wrong. The proxy matches its path
+  allowlist before it checks anything else and answers with an empty body
+  either way.
+- **There is no `--follow`, on purpose.** HA puts the `…/logs/follow` paths in
+  its `NO_TIMEOUT` list and they stream until the client disappears; a
+  blocking read of one never returns. Use `--lines`, or `supervisor watch` for
+  progress events.
+- **`supervisor addon info` hides `options` unless you ask.** Add-on options
+  routinely hold database passwords, MQTT credentials and cloud API keys.
+  `options_keys` tells you what is set without printing it; `--reveal` prints
+  it.
 - **A 500 from `tts get-url` means the ENGINE DOES NOT SUPPORT THAT LANGUAGE**,
   and HA's body says nothing at all. Measured across four engines: omitting
   `--language` works on every one, while the engines disagree on the string —

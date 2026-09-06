@@ -70,6 +70,12 @@ class FakeClient:
         # per path would make a three-step helper flow look like a one-step
         # one.
         self.response_queues: dict[tuple[str, str], list[Any]] = {}
+        # Supervisor proxy recorder — see `set_supervisor`. Keyed by the
+        # Supervisor ENDPOINT rather than the websocket command, because every
+        # Supervisor call in the harness is the same command.
+        self.supervisor_responses: dict[str, Any] = {}
+        self.supervisor_errors: dict[str, tuple[str, str]] = {}
+        self.supervisor_calls: list[dict] = []
 
     #: Whatever a core module derives a default client_id from. A real-looking
     #: origin, since `validate_client_id` is applied to it for real.
@@ -258,11 +264,13 @@ class FakeClient:
     def set_ws(self, msg_type: str, response: Any) -> None:
         self.ws_responses[msg_type] = response
 
-    def get(self, path: str, params: dict | None = None) -> Any:
+    def get(self, path: str, params: dict | None = None,
+             headers: dict | None = None) -> Any:
         path = path.lstrip("/")
         # Strip any querystring fragment for matching.
         match_path = path.split("?", 1)[0]
-        self.calls.append({"verb": "GET", "path": path, "params": params})
+        self.calls.append({"verb": "GET", "path": path, "params": params,
+                           "headers": headers})
         self._maybe_rest_error("GET", path)
         queued, response = self._dequeue("GET", match_path)
         if queued:
@@ -310,6 +318,29 @@ class FakeClient:
             return response
         return self.responses.get(("DELETE", path), {})
 
+    def set_supervisor(self, endpoint: str, response: Any) -> None:
+        """Canned answer for one Supervisor endpoint behind `supervisor/api`.
+
+        The proxy multiplexes the WHOLE Supervisor API through a single
+        websocket command, so keying canned answers by `msg_type` — which is
+        always `supervisor/api` — cannot tell `/addons` from `/host/info`.
+        These are keyed by the `endpoint` field of the payload instead, and
+        the value is the ALREADY-UNWRAPPED `data` object, matching what
+        `websocket_supervisor_api` returns (it strips Supervisor's
+        `{"result": "ok", "data": …}` envelope).
+        """
+        self.supervisor_responses[endpoint] = response
+
+    def set_supervisor_error(self, endpoint: str, message: str = "",
+                              code: str = "unknown_error") -> None:
+        """Make one Supervisor endpoint fail the way the proxy fails.
+
+        Every fault — a Supervisor error, a rejected path, a timeout — comes
+        back as `unknown_error`; only the message differs, and for two of the
+        three it is empty or the literal "Unknown error".
+        """
+        self.supervisor_errors[endpoint] = (code, message)
+
     def ws_call(self, msg_type: str, payload: dict | None = None) -> Any:
         self.ws_calls.append({"type": msg_type, "payload": payload})
         if msg_type in self.ws_errors:
@@ -321,6 +352,26 @@ class FakeClient:
             raise HomeAssistantError(
                 f"WS command {msg_type} failed: {code} {message}", code=code
             )
+        if msg_type == "supervisor/api" and isinstance(payload, dict):
+            endpoint = payload.get("endpoint")
+            self.supervisor_calls.append({
+                "endpoint": endpoint,
+                "method": payload.get("method"),
+                "data": payload.get("data"),
+                "timeout": payload.get("timeout"),
+            })
+            if endpoint in self.supervisor_errors:
+                from cli_anything.homeassistant.utils.homeassistant_backend import (
+                    HomeAssistantError,
+                )
+
+                code, message = self.supervisor_errors[endpoint]
+                raise HomeAssistantError(
+                    f"WS command {msg_type} failed: {code} {message}", code=code
+                )
+            if endpoint in self.supervisor_responses:
+                return self.supervisor_responses[endpoint]
+            return {}
         return self.ws_responses.get(msg_type, [])
 
 

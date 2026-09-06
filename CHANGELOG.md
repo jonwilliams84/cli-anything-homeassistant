@@ -4,6 +4,125 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.52.0] — 2026-09-06
+
+The harness covered Home Assistant Core completely and the other half of a
+Home Assistant OS install not at all: **the Supervisor** — the thing that
+installs the add-ons, owns the host and ships the OS updates. Add-ons are what
+most people actually run on Home Assistant, and until now nothing here could
+list one, let alone restart it.
+
+### Why the gap survived three coverage passes
+
+The v1.51.0 report said websocket coverage was 204/235 with the remainder
+belonging to unreachable integrations. That report was produced by a scan that
+matched `vol.Required("type")` against a **literal string**. The `hassio`
+integration declares its three commands through constants —
+`vol.Required(WS_TYPE): WS_TYPE_API` — so the scan never saw them and reported
+full coverage of a surface it had not enumerated. All three were missing:
+`supervisor/api`, `supervisor/subscribe`, `supervisor/event`.
+
+`supervisor/api` is not one endpoint. It proxies an **arbitrary** Supervisor
+path with an arbitrary method, which is the entire Supervisor REST API behind
+a single websocket command.
+
+### Added — `supervisor` command group
+
+Reads:
+
+- `supervisor available` — is there a Supervisor at all. A READ: on a Core or
+  Container install it answers `available: false` and exits 0, so scripts
+  branch on a field instead of on the text of an error.
+- `supervisor status` — Supervisor, Core, host and OS versions side by side
+  and which of them is stale. Each part degrades on its own: `os/info` failing
+  on a Supervised box (there is no HA OS under it) leaves the other three.
+- `supervisor info` — version, channel, health, `supported`, installed add-ons.
+- `supervisor component <host|os|core|network|supervisor>` — `/<component>/info`.
+- `supervisor stats <component|addon-slug>` — CPU, memory, network, block I/O.
+- `supervisor resolution` — the issues and suggestions that explain why an
+  install or update gets refused.
+- `supervisor logs <component>` / `supervisor addon logs <slug>` /
+  `supervisor boots` — journals, with `--lines`, `--boot` and `--text`.
+- `supervisor watch` — Supervisor's progress events, bounded by `--duration`
+  and `--max-events`.
+- `supervisor api <endpoint>` — the escape hatch onto any Supervisor endpoint
+  (`--method`, `--data k=v`, `--data-json`, `--timeout`/`--no-timeout`).
+
+Add-ons (`supervisor addon …`):
+
+- `list` (`--state`, `--updates-only`), `info` (`--reveal`), `logs`.
+- `start` / `stop` / `restart` / `rebuild` / `update` — **dry-run until
+  `--apply`**, and the dry run reports the state the add-on is in NOW,
+  including `no_op: true` when the verb would do nothing.
+- `options` — `--set k=v` / `--remove k`, dry-run by default.
+
+### Added — `core/supervisor.py`
+
+The transport details that make this surface different from every other one
+here, each turned into a refusal or a sentence rather than a symptom:
+
+- **The error channel is one bit wide.** `websocket_supervisor_api` reports
+  every failure as `unknown_error`. A genuine Supervisor error carries a
+  message; a path Home Assistant will not normalise raises `HassioAPIError`
+  **with no arguments**, so the message is the empty string; and a Supervisor
+  timeout or connection error is worse than either — `HassIO.send_command`
+  catches `TimeoutError`/`aiohttp.ClientError` and then falls off the end of
+  the function, returning `None`, whereupon the handler does `None.get(…)` and
+  the websocket layer reports the resulting `AttributeError` as
+  `unknown_error` / "Unknown error". `_normalise_endpoint` refuses the second
+  class locally (no leading slash, a query string, `..`, anything `yarl` would
+  re-encode) and `_explain` names the third, because HA's default timeout is
+  **ten seconds** and installs, updates and backups take minutes.
+- **`/api/hassio/…` is not a general door.** For an authenticated admin its
+  allowlist permits only backups, `<component>/logs` and
+  `addons/<slug>/(logs|changelog|documentation)`; `/addons`,
+  `/supervisor/info` and every management endpoint are a **401 with an empty
+  body** through it. Management therefore goes over the websocket command —
+  and the logs cannot, because that path parses every body as JSON and logs
+  are `text/plain`. Both transports are used, and the split is load-bearing.
+- **`POST /addons/<slug>/options` REPLACES the options object.** `addon
+  options` reads the current options, merges the change in, and writes the
+  FULL object; `keys_preserved` names what a naive POST would have silently
+  reset. The dry run asks Supervisor's own validator
+  (`/addons/<slug>/options/validate`, which writes nothing) whether the result
+  is legal, so a change that would leave an add-on unable to boot is refused
+  before it can. `--remove` drops a key rather than nulling it, because
+  Supervisor reads `null` as "back to the default".
+- **A lifecycle action returns nothing.** The handler hands back
+  `result["data"]`, and `{"result": "ok"}` has none — so success is an empty
+  dict. `addon_action` re-reads `/addons/<slug>/info` and reports the state it
+  actually reached rather than printing `{}`.
+- **`addon info` withholds `options`** unless `--reveal`; that object is where
+  an add-on's database password and API keys live. `options_keys` says what is
+  set without saying what it is set to.
+- **No `--follow`.** Those paths are in HA's `NO_TIMEOUT` list and stream
+  until the client disappears.
+
+### Changed — `HomeAssistantClient.get()` takes `headers`
+
+Merged over the session's for one request. Supervisor takes its log line limit
+as `Range: entries=:-N:` — journal-gateway syntax, forwarded by `HassIOView`
+for log paths and nothing else — and there is no query parameter for it. The
+merge is per-request, so the bearer survives; an e2e test asserts both the
+`Range` and the `Authorization` header against a real HTTP server, because a
+header that never left the process is indistinguishable from one the server
+ignored.
+
+### Tests
+
++131 (4417 → 4548 passing, 30 skipped, 0 regressions). 95 unit tests against
+`FakeClient`, which grew `set_supervisor(endpoint, …)` — canned answers keyed
+by Supervisor endpoint, since every call in this group is the same websocket
+command and keying by command name cannot tell `/addons` from `/host/info`.
+
+The e2e suite is evidence here rather than decoration: the instance it boots
+is a **Core** install, so `supervisor/api` is genuinely an unregistered
+websocket command and `/api/hassio/…` a genuinely unrouted path. The two
+refusals this group exists to translate are produced by a real Home Assistant
+rather than by a fake told to produce them, and a test asserts the premise
+(`exc.code == "unknown_command"` straight off the wire) so the rest cannot
+quietly start measuring the wrong thing.
+
 ## [1.51.0] — 2026-08-30
 
 Refine pass scoped by re-enumerating the running version's surface (235

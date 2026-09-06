@@ -147,6 +147,7 @@ from cli_anything.homeassistant.core import otbr as otbr_core
 from cli_anything.homeassistant.core import voice as voice_core
 from cli_anything.homeassistant.core import auth_login as auth_login_core
 from cli_anything.homeassistant.core import onboarding as onboarding_core
+from cli_anything.homeassistant.core import supervisor as supervisor_core
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
     HomeAssistantError,
@@ -18207,6 +18208,398 @@ def thread_otbr_create_network(ctx, extended_address, apply_changes, yes):
         ctx,
         otbr_core.create_network(make_client(ctx), extended_address, apply=apply_changes),
     )
+
+
+# ─────────────────────────────────────────────────────────────────── supervisor
+
+
+@cli.group()
+def supervisor():
+    """The Supervisor: add-ons, host, OS, network and updates.
+
+    The other half of a Home Assistant OS / Supervised install. It is not part
+    of Core's REST API — every command here goes through the `supervisor/api`
+    websocket proxy, except `logs`, which has to use the HTTP one.
+
+    On a Core or Container install there is no Supervisor and every command
+    says so in one line. `supervisor available` is the check to script against.
+    """
+
+
+@supervisor.command("available")
+@click.pass_context
+def supervisor_available(ctx):
+    """Is there a Supervisor here? Read-only; "no" is an answer, not an error.
+
+    Branch on this rather than on the text of an error: `available: false`
+    means a Core or Container install, where add-ons do not exist.
+    """
+    emit(ctx, supervisor_core.available(make_client(ctx)))
+
+
+@supervisor.command("status")
+@click.pass_context
+def supervisor_status(ctx):
+    """Supervisor, Core, host and OS versions side by side, and what is stale.
+
+    The one read that answers "is anything out of date here". Each of the four
+    parts degrades on its own — `os/info` failing on a Supervised install
+    (there is no HA OS under it) leaves the other three intact.
+    """
+    emit(ctx, supervisor_core.status(make_client(ctx)))
+
+
+@supervisor.command("info")
+@click.pass_context
+def supervisor_info(ctx):
+    """`/supervisor/info` — version, channel, health and the installed add-ons.
+
+    `supported: false` means Supervisor has flagged this install and will
+    refuse some operations; `supervisor resolution` says which flags.
+    """
+    emit(ctx, supervisor_core.info(make_client(ctx)))
+
+
+@supervisor.command("component")
+@click.argument(
+    "component",
+    type=click.Choice(["host", "os", "core", "network", "supervisor"], case_sensitive=False),
+)
+@click.pass_context
+def supervisor_component(ctx, component):
+    """`/<component>/info` for host, os, core, network or supervisor.
+
+    Five endpoints with one shape, because "what version is it and is there a
+    newer one" is the same question for all of them.
+    """
+    emit(ctx, supervisor_core.component_info(make_client(ctx), component))
+
+
+@supervisor.command("stats")
+@click.argument("component")
+@click.pass_context
+def supervisor_stats(ctx, component):
+    """CPU, memory and network for one container — or one add-on.
+
+    COMPONENT is a Supervisor component (supervisor, core, audio, dns,
+    multicast, observer) or an add-on slug; the add-on form is routed to
+    `/addons/<slug>/stats` automatically.
+    """
+    emit(ctx, supervisor_core.stats(make_client(ctx), component))
+
+
+@supervisor.command("resolution")
+@click.pass_context
+def supervisor_resolution(ctx):
+    """Issues Supervisor has found, and the suggestions it will act on.
+
+    The machine-readable form of the repair notices. An `unhealthy` entry here
+    is why an add-on install or an update gets refused.
+    """
+    emit(ctx, supervisor_core.resolution(make_client(ctx)))
+
+
+@supervisor.command("logs")
+@click.argument("component", required=False)
+@click.option("--addon", default=None, help="Read an add-on's log instead of a component's.")
+@click.option("--lines", default=100, show_default=True, type=int, help="How many entries.")
+@click.option(
+    "--boot",
+    default=None,
+    type=int,
+    help="Read an earlier boot: 0 is the current one, -1 the previous.",
+)
+@click.option("--text", "as_text", is_flag=True, default=False, help="Print the raw journal only.")
+@click.pass_context
+def supervisor_logs(ctx, component, addon, lines, boot, as_text):
+    """Read a Supervisor-managed journal (host, core, supervisor, an add-on …).
+
+    Goes over the HTTP proxy, not the websocket one: these endpoints answer
+    plain text, and the websocket path parses every body as JSON and reports
+    the failure as a bare `unknown_error`.
+
+    `--lines` becomes `Range: entries=:-N:`, the journal-gateway syntax
+    Supervisor speaks — there is no query parameter for it. There is
+    deliberately no `--follow`: those paths stream until the client goes away
+    and never return.
+    """
+    result = supervisor_core.logs(make_client(ctx), component, addon=addon, lines=lines, boot=boot)
+    if as_text and not ctx.obj.get("as_json"):
+        click.echo(result["text"])
+        return
+    emit(ctx, result)
+
+
+@supervisor.command("boots")
+@click.pass_context
+def supervisor_boots(ctx):
+    """Boot ids an earlier journal can be read from (`/host/logs/boots`).
+
+    Host-only — it is the one component whose bare boot index the proxy
+    allowlist permits. Feed an offset to `supervisor logs <component> --boot`.
+    """
+    emit(ctx, supervisor_core.boots(make_client(ctx)))
+
+
+@supervisor.command("api")
+@click.argument("endpoint")
+@click.option(
+    "--method",
+    default="get",
+    show_default=True,
+    type=click.Choice(list(supervisor_core.METHODS), case_sensitive=False),
+    help="HTTP verb Supervisor should be called with.",
+)
+@click.option("--data", multiple=True, help="Body as key=value (repeatable, JSON-decoded).")
+@click.option("--data-json", default=None, help="Body as a raw JSON object; overrides --data.")
+@click.option(
+    "--timeout",
+    "sup_timeout",
+    default=supervisor_core.DEFAULT_TIMEOUT,
+    show_default=True,
+    type=float,
+    help="Supervisor-side timeout in seconds.",
+)
+@click.option(
+    "--no-timeout",
+    is_flag=True,
+    default=False,
+    help="No Supervisor-side limit at all (the client's own --timeout still applies).",
+)
+@click.pass_context
+def supervisor_api(ctx, endpoint, method, data, data_json, sup_timeout, no_timeout):
+    """Call ANY Supervisor endpoint. The escape hatch under every command here.
+
+    ENDPOINT is an absolute Supervisor path — `/store/addons`,
+    `/backups`, `/resolution/suggestion/<uuid>`. It must start with `/` and
+    carry no query string: Home Assistant compares the path you send against
+    its own normalisation of it and refuses any difference, with an EMPTY
+    error message. That check is enforced here first, by name.
+
+    Raise `--timeout` for anything slow. Installs, updates and backups take
+    minutes and the proxy's default is ten seconds — past which Home Assistant
+    reports a running job as an unexplained `unknown_error`.
+    """
+    if data_json is not None:
+        try:
+            payload = json.loads(data_json)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(f"--data-json is not valid JSON: {exc}") from exc
+    else:
+        payload = parse_kv_pairs(data) if data else None
+    emit(
+        ctx,
+        supervisor_core.api(
+            make_client(ctx),
+            endpoint,
+            method=method,
+            data=payload,
+            timeout=None if no_timeout else sup_timeout,
+        ),
+    )
+
+
+@supervisor.command("watch")
+@click.option("--duration", default=30.0, show_default=True, type=float, help="Seconds to listen.")
+@click.option("--max-events", default=None, type=int, help="Stop after this many events.")
+@click.pass_context
+def supervisor_watch(ctx, duration, max_events):
+    """Stream Supervisor progress events while a long job runs.
+
+    `supervisor addon <verb> --apply` and every update answer nothing until
+    they finish. Run this in a second shell to see what Supervisor is doing
+    meanwhile. An idle instance dispatches nothing, so an empty list is the
+    normal result.
+    """
+    emit(
+        ctx,
+        supervisor_core.watch(make_client(ctx), duration=duration, max_events=max_events),
+    )
+
+
+@supervisor.group("addon")
+def supervisor_addon():
+    """Add-ons: what is installed, what it is doing, and how to change it.
+
+    Reads are direct. Every write is dry-run until `--apply`, because the
+    add-on you are stopping may be the one serving the session you typed the
+    command into.
+    """
+
+
+@supervisor_addon.command("list")
+@click.option("--state", default=None, help="Only add-ons in this state (started, stopped, …).")
+@click.option(
+    "--updates-only", is_flag=True, default=False, help="Only add-ons with an update available."
+)
+@click.pass_context
+def supervisor_addon_list(ctx, state, updates_only):
+    """Every INSTALLED add-on: slug, version, state, update availability.
+
+    Installed, not available — the store catalogue is `/store/addons`, through
+    `supervisor api`.
+    """
+    emit(
+        ctx,
+        supervisor_core.addon_list(make_client(ctx), state=state, updates_only=updates_only),
+    )
+
+
+@supervisor_addon.command("info")
+@click.argument("slug")
+@click.option(
+    "--reveal",
+    is_flag=True,
+    default=False,
+    help="Also print the add-on's options, which routinely hold credentials.",
+)
+@click.pass_context
+def supervisor_addon_info(ctx, slug, reveal):
+    """One add-on in full: version, state, network, ingress, rating.
+
+    The options are WITHHELD unless --reveal: an add-on's options are where
+    its database password and API keys live. `options_keys` says what is set
+    without saying what it is set to.
+    """
+    emit(ctx, supervisor_core.addon_info(make_client(ctx), slug, reveal_options=reveal))
+
+
+def _addon_action_command(verb: str, help_text: str):
+    """Build one lifecycle command. Five verbs, one body, no copy-paste drift.
+
+    The help text is passed to the decorator rather than assigned to
+    `__doc__` afterwards: Click snapshots the docstring when the command is
+    CONSTRUCTED, so a later assignment leaves `--help` blank.
+    """
+    import inspect as inspect_mod
+
+    @supervisor_addon.command(verb, help=inspect_mod.cleandoc(help_text))
+    @click.argument("slug")
+    @click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually do it.")
+    @click.option(
+        "--timeout",
+        "sup_timeout",
+        default=supervisor_core.SLOW_TIMEOUT,
+        show_default=True,
+        type=float,
+        help="Supervisor-side timeout in seconds — these are not instant.",
+    )
+    @click.pass_context
+    def _cmd(ctx, slug, apply_changes, sup_timeout):
+        emit(
+            ctx,
+            supervisor_core.addon_action(
+                make_client(ctx),
+                slug,
+                verb,
+                apply=apply_changes,
+                timeout=sup_timeout,
+            ),
+        )
+
+    return _cmd
+
+
+supervisor_addon_start = _addon_action_command(
+    "start",
+    """Start an add-on. Dry-run unless --apply.
+
+    The dry run reports the state it is in now, including when the answer is
+    "already started, this would do nothing".
+    """,
+)
+supervisor_addon_stop = _addon_action_command(
+    "stop",
+    """Stop an add-on. Dry-run unless --apply.
+
+    Check WHICH add-on first: stopping the SSH or VS Code add-on cuts the
+    session that issued the command.
+    """,
+)
+supervisor_addon_restart = _addon_action_command(
+    "restart",
+    """Restart an add-on. Dry-run unless --apply.
+
+    This is what makes an options change take effect — `addon options` writes
+    the configuration and the add-on keeps running on the old one.
+    """,
+)
+supervisor_addon_rebuild = _addon_action_command(
+    "rebuild",
+    """Rebuild a locally-built add-on. Dry-run unless --apply.
+
+    Only meaningful for add-ons built on this machine (a local or custom
+    repository); minutes long, so raise --timeout.
+    """,
+)
+supervisor_addon_update = _addon_action_command(
+    "update",
+    """Update an add-on to the newest version Supervisor knows. Dry-run unless --apply.
+
+    Refused up front when there is nothing newer, rather than sent and
+    silently ignored. Minutes long: raise --timeout, and back up first —
+    there is no downgrade.
+    """,
+)
+
+
+@supervisor_addon.command("options")
+@click.argument("slug")
+@click.option("--set", "settings", multiple=True, help="key=value (repeatable, JSON-decoded).")
+@click.option("--remove", "removals", multiple=True, help="Drop this key entirely (repeatable).")
+@click.option(
+    "--no-validate",
+    is_flag=True,
+    default=False,
+    help="Skip Supervisor's schema check of the merged options.",
+)
+@click.option("--apply", "apply_changes", is_flag=True, default=False, help="Actually write it.")
+@click.pass_context
+def supervisor_addon_options(ctx, slug, settings, removals, no_validate, apply_changes):
+    """Change an add-on's options — merged, validated, dry-run by default.
+
+    `POST /addons/<slug>/options` REPLACES the whole options object: send only
+    the key you meant to change and every other key silently reverts to the
+    add-on's default. So the current options are read first and the change is
+    merged in; what gets written is always the full object.
+
+    The dry run asks Supervisor itself whether the result is legal
+    (`/options/validate`, which writes nothing), so a change that would leave
+    the add-on unable to boot is refused before it can.
+
+    The add-on keeps running with the old configuration until it is restarted.
+    """
+    emit(
+        ctx,
+        supervisor_core.addon_options(
+            make_client(ctx),
+            slug,
+            parse_kv_pairs(settings) if settings else {},
+            remove=tuple(removals),
+            apply=apply_changes,
+            validate=not no_validate,
+        ),
+    )
+
+
+@supervisor_addon.command("logs")
+@click.argument("slug")
+@click.option("--lines", default=100, show_default=True, type=int, help="How many entries.")
+@click.option("--boot", default=None, type=int, help="Read an earlier boot (0 = current).")
+@click.option("--text", "as_text", is_flag=True, default=False, help="Print the raw journal only.")
+@click.pass_context
+def supervisor_addon_logs(ctx, slug, lines, boot, as_text):
+    """An add-on's log. Same transport and caveats as `supervisor logs`.
+
+    A 401 from this path usually means the slug is not installed rather than
+    that the token is wrong — the proxy checks its path allowlist first and
+    answers with an empty body either way.
+    """
+    result = supervisor_core.logs(make_client(ctx), None, addon=slug, lines=lines, boot=boot)
+    if as_text and not ctx.obj.get("as_json"):
+        click.echo(result["text"])
+        return
+    emit(ctx, result)
 
 
 if __name__ == "__main__":
