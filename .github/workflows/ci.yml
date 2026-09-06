@@ -19,6 +19,13 @@ jobs:
   test:
     name: Tests + Coverage
     runs-on: ubuntu-latest
+    # The suite runs in ~3.5 minutes; converge's build pod gates on the identical
+    # command and finishes in 204s. With no bound, a hang runs to GitHub's SIX
+    # HOUR default and the PR simply never resolves — converge PR #40 sat
+    # in_progress for over half an hour on 2026-09-06 with the log empty and
+    # both matrix legs stuck, while Ruff and Bandit had passed in seconds. A
+    # test job that hangs should fail fast and say so.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
