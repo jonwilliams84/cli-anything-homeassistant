@@ -19,13 +19,18 @@ jobs:
   test:
     name: Tests + Coverage
     runs-on: ubuntu-latest
-    # The suite runs in ~3.5 minutes; converge's build pod gates on the identical
-    # command and finishes in 204s. With no bound, a hang runs to GitHub's SIX
-    # HOUR default and the PR simply never resolves — converge PR #40 sat
-    # in_progress for over half an hour on 2026-09-06 with the log empty and
-    # both matrix legs stuck, while Ruff and Bandit had passed in seconds. A
-    # test job that hangs should fail fast and say so.
-    timeout-minutes: 20
+    # MEASURED, not guessed: on 2026-09-06 this job took 39m52s (3.11) and
+    # 43m37s (3.12) on a hosted runner, and passed. Nearly all of it is the e2e
+    # fixtures booting a real Home Assistant — converge's build pod runs the
+    # identical pytest command in 204s because its image has a different
+    # (pinned-by-accident) homeassistant, so that 204s is NOT a fair comparison
+    # and I first mistook this job for hung because of it.
+    #
+    # With no bound at all the job inherits GitHub's SIX HOUR default, so a real
+    # hang blocks the PR for a working day. 75 minutes is ~1.7x the slowest
+    # observed run: enough headroom for a slow runner and a cold pip cache,
+    # while still failing legibly instead of silently burning an afternoon.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
