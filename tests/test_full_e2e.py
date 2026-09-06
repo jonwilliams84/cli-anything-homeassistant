@@ -40,6 +40,7 @@ from cli_anything.homeassistant.core import (
     core_config as core_config_core,
     supervisor as supervisor_core,
     template as template_core,
+    zwave_js as zwave_js_core,
 )
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
@@ -2471,3 +2472,81 @@ class TestCLISupervisorWorkflow(_SupervisorCliRunner):
     def test_the_group_appears_in_the_root_help(self, hass_instance):
         r = self._run(["--help"], hass_instance)
         assert "supervisor" in r.stdout
+
+class TestLiveZwaveAbsent:
+    """The test instance has no Z-Wave controller, so `zwave_js` never loads.
+
+    Same discipline as TestLiveSupervisorAbsent: prove the premise first (the
+    websocket commands really are unregistered), then check that every
+    surface answers the absence cleanly instead of leaking a bare
+    `unknown_command` — and that `zwave available` turns the same fact into
+    an answer a script can branch on.
+    """
+
+    def test_available_is_false_rather_than_an_error(self, live_client):
+        out = zwave_js_core.available(live_client)
+        assert out["available"] is False
+        assert "zwave_js" in out["note"]
+
+    def test_the_websocket_command_really_is_unregistered(self, live_client):
+        """The premise of every other assertion in this class."""
+        with pytest.raises(HomeAssistantError) as exc:
+            live_client.ws_call("zwave_js/network_status", {"entry_id": "x"})
+        assert exc.value.code == "unknown_command"
+
+    def test_network_status_raises_the_explanation_not_the_raw_code(self, live_client):
+        with pytest.raises(HomeAssistantError) as exc:
+            zwave_js_core.network_status(live_client, entry_id="x")
+        assert "no Z-Wave controller" in str(exc.value)
+        assert "unknown_command" not in str(exc.value)
+
+    def test_node_commands_raise_the_same_explanation(self, live_client):
+        with pytest.raises(HomeAssistantError, match="no Z-Wave controller"):
+            zwave_js_core.node_status(live_client, "dev-1")
+
+    def test_service_commands_raise_it_too(self, live_client):
+        with pytest.raises(HomeAssistantError, match="no Z-Wave controller"):
+            zwave_js_core.ping(live_client, "lock.front")
+
+    def test_resolve_device_id_is_independent_of_the_integration(self, live_client):
+        """Entity→device resolution uses the registry, which works everywhere."""
+        entries = live_client.ws_call("config/entity_registry/list") or []
+        linked = [e["entity_id"] for e in entries if e.get("device_id")]
+        if not linked:  # a bare test HA may register no devices at all
+            pytest.skip("no registry-linked entities on this instance")
+        device_id = zwave_js_core.resolve_device_id(live_client, linked[0])
+        assert isinstance(device_id, str) and device_id
+
+    @staticmethod
+    def _env(hass_instance):
+        env = os.environ.copy()
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        env["HASS_VERIFY_SSL"] = "0"
+        return env
+
+    def test_available_cli_branch_point(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "zwave", "available"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 0, r.stderr
+        out = json.loads(r.stdout)
+        assert out["available"] is False
+        assert "zwave_js" in out["note"]
+
+    def test_status_cli_says_so_cleanly(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "zwave", "status", "--entry", "x"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 1
+        assert "no Z-Wave controller" in r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_the_group_appears_in_the_root_help(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--help"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert "zwave" in r.stdout
