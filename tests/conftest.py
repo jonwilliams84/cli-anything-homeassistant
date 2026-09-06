@@ -448,6 +448,38 @@ def tmp_dir(tmp_path: Path) -> str:
 
 # ────────────────────────────────────────────────────────── E2E fixtures (real HA)
 
+def _drain(proc: subprocess.Popen, timeout: float = 10.0) -> str:
+    """The killed instance's log, or a note saying why there isn't one.
+
+    NEVER `proc.stdout.read()`. That reads to EOF, and EOF on this pipe means
+    every holder of the write end has closed it — not just Home Assistant. HA
+    spawns children that inherit it, so after a boot timeout the read can block
+    FOREVER while the fixture is only trying to explain itself, turning a
+    `pytest.skip` into a hung job with an empty log.
+
+    Seen for real on 2026-09-06: `Tests + Coverage` on converge PR #40 ran past
+    35 minutes on both matrix legs with nothing in the log, against a freshly
+    released Home Assistant that no longer came up inside the boot timeout. The
+    job had no `timeout-minutes` either, so it was heading for GitHub's six-hour
+    default.
+
+    `communicate` is the supported way to do this and it takes a deadline.
+    """
+    if not proc.stdout:
+        return ""
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except Exception:
+            return "[log unavailable: the instance held its output pipe open]"
+    except Exception as exc:      # a closed or already-reaped pipe is not a test failure
+        return f"[log unavailable: {exc}]"
+    return (out or b"").decode(errors="replace")
+
+
 def _hass_available() -> bool:
     """Return True if the homeassistant Python package is importable."""
     try:
@@ -611,7 +643,7 @@ def fresh_hass_instance() -> Iterator[dict]:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-        out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+        out = _drain(proc)
         shutil.rmtree(config_dir, ignore_errors=True)
         pytest.skip(f"Home Assistant did not come up: {exc}\nLog:\n{out[-2000:]}")
 
@@ -695,7 +727,7 @@ def hass_instance() -> Iterator[dict]:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-        out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+        out = _drain(proc)
         shutil.rmtree(config_dir, ignore_errors=True)
         pytest.skip(f"Home Assistant did not come up: {exc}\nLog:\n{out[-2000:]}")
 
