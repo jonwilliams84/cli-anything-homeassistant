@@ -4,6 +4,52 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.53.0] — 2026-09-06
+
+A coverage-refine pass. No commands were added or changed; the work was
+closing test gaps on surfaces whose behaviour was already shipped but whose
+failure paths had never been executed: the wire client, the REPL skin, and
+the media-search functions.
+
+### Tests added — 113 new tests, 0 changed, 0 skipped
+
+- `tests/test_backend_http.py` (54 tests) — `HomeAssistantClient` pointed at a
+  REAL `http.server` socket and a scripted fake websocket. This exercises the
+  branches `FakeClient` structurally cannot: the 401 root-probe that tells
+  "bad token" from "admin-only endpoint" (both sides of the probe), the
+  `{"template": …}` wrapping of a string POST body, the multipart upload whose
+  `Content-Type: application/json` session header must NOT ride along, the
+  streamed download that must NOT truncate the destination file on a 4xx, the
+  timeout and connection-error messages on every verb, and the websocket
+  handshake failures (`auth_invalid`, unexpected handshake, failed result with
+  machine-readable `code`, socket drop named as "the connection closed",
+  missing `websocket-client` install hint on all four WS methods, `cert_reqs`
+  sslopt when `--no-verify-ssl`).
+- `tests/test_repl_skin.py` (45 tests) — the REPL skin was at 19% with no test
+  file at all. Covers banner box-width invariants, prompt/context/modified
+  markers with colors ON and OFF, color-detection matrix (`NO_COLOR`,
+  `CLI_ANYTHING_NO_COLOR`, non-tty, tty), every message/status/progress/table
+  method including the zero-total and empty-input edge cases, prompt-toolkit
+  tokens/style/session, `get_input` on both paths, and the bottom-toolbar
+  callback.
+- `tests/test_media_source.py` (+14 tests) — `search_media` and
+  `player_search` shipped untested. Covers payload shapes, both nested and
+  flat result shapes, `filter_classes`, the `search_not_supported` rewrite
+  that names the scope and suggests a working one, pass-through of unrelated
+  errors, and the client-side refusals (empty query, non-`media_player.*`
+  entity, the mutually-inclusive `media_content_id`/`type` pair).
+
+### Results
+
+```
+before ......................... 4549 passed, 30 skipped  (81.80% cover)
+after .......................... 4662 passed, 30 skipped  (83.41% cover)
+
+utils/homeassistant_backend.py .  65% ->  93%
+utils/repl_skin.py .............  19% ->  96%
+core/media_source.py ...........  33% -> 100%
+```
+
 ## [1.52.0] — 2026-09-06
 
 The harness covered Home Assistant Core completely and the other half of a
