@@ -226,6 +226,7 @@ stderr and return a non-zero exit code.
 | `action`       | Script-engine primitives — the pre-flight for `automation save` / `script save`. `run` (WS `execute_script`: ad-hoc sequence through HA's script engine — traced, gets a context, can return a `response_variable`, creates no entity; `--service` shorthand + `--dry-run`), `validate` (WS `validate_config` on triggers/conditions/actions), `validate-automation` / `validate-script` (whole config file, legacy singular keys upgraded, **exits non-zero when invalid** so it chains with `&&`), `test-condition` (WS `test_condition` against live state; a JSON list is evaluated per-item, error-tolerant; `--exit-code` for shell chaining) |
 | `entity source`| WS `entity/source` — which integration currently supplies an entity. Provenance, not registry: only entities whose integration is loaded appear, so a registry entry with no source is a strong orphan signal (pairs with `entity orphans` / `entity prune`). `--by-integration` groups, `-i <domain>` filters. |
 | `supervisor`   | **The Supervisor half of a Home Assistant OS / Supervised install** — the add-ons, the host and the OS, none of which is part of Core's API. Reached through ONE websocket command, `supervisor/api`, which proxies an arbitrary Supervisor endpoint. `available` / `status` / `info` / `component <host\|os\|core\|network\|supervisor>` / `stats` / `resolution` / `logs` / `boots` / `watch` / `api`, plus `addon list/info/start/stop/restart/rebuild/update/options/logs`. Every write is dry-run until `--apply`; `addon options` MERGES and validates, because the POST replaces the whole options object. Absent on Core/Container: `supervisor available` reports that as an answer with exit 0 |
+| `zwave`        | **The `zwave_js` integration** (v1.54) — the WebSocket API the Z-Wave configuration panel drives. `available` (no error when absent — scripts branch on it), `nodes` (device registry, with `node_id` extracted), `status` (`--entry` XOR `--device`), `node` / `node-metadata` / `node-alerts` / `capabilities` / `config` (per-node reads; all accept an entity id, resolved through the entity registry), `config-set <node> <param> <value>` (int, `0x…` hex or JSON bitmask object), `refresh` / `refresh-values` / `rebuild-routes` / `begin-rebuild-routes` / `stop-rebuild-routes` / `remove-failed` / `hard-reset` (confirmation-gated factory reset), `log-config` / `log-config-set`, `data-collection` / `data-collection-opt`, `config-updates` / `config-updates-install`, `integration-settings`, plus the domain's services: `ping`, `lock-usercode` / `lock-clear-usercode` / `lock-configuration`. When the integration is not loaded, every command names that instead of leaking a bare `unknown_command` |
 
 ### State Model
 
@@ -343,7 +344,12 @@ is fetched on demand. This means:
   produced by a real Home Assistant rather than by a fake instructed to
   produce them. The `Range: entries=:-N:` header carrying `--lines` is
   likewise asserted against a real HTTP server — a header that never left the
-  process is indistinguishable from one the server ignored.
+  process is indistinguishable from one the server ignored. The same fixture
+  is evidence for the `zwave` group (`TestLiveZwaveAbsent`): no Z-Wave
+  controller is configured on the test instance, so every `zwave_js/…`
+  websocket command really is unregistered, and a failed `zwave_js` REST
+  service call really is a 400 with an empty body — the two wire shapes the
+  wrappers translate into "no Z-Wave controller configured".
 
 The tests must NOT skip when `homeassistant` is not installed — Home
 Assistant is a hard dependency.

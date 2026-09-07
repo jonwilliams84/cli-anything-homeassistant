@@ -158,6 +158,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `file` | `upload` a file to HA's staging area and get the `file_id` a config flow wants |
 | `supervisor` | **The other half of a Home Assistant OS / Supervised install** (v1.52+) — add-ons, host, OS, network. `available`/`status` (versions side by side, what is stale), `info`, `component`, `stats`, `resolution`, `logs`/`boots` (journals over the HTTP proxy), `watch` (progress events), `api` (any Supervisor endpoint) + `addon list/info/start/stop/restart/rebuild/update/options/logs`. Writes are dry-run until `--apply`; `addon options` merges and validates because the POST REPLACES the whole options object |
 | `profiler` | Pass-through to the `profiler` integration's services: `start` (cProfile), `memory` (memray), `dump-log-objects --type Class`, `log-thread-frames`/`log-current-tasks`/`log-event-loop-scheduled`/`log-events`, `lru-stats`, `set-asyncio-debug`. `status` is a cheap "is the integration even loaded" probe. |
+| `zwave` | **The `zwave_js` integration's own WebSocket API** (v1.54) — what the Z-Wave configuration panel drives. `available` (a read: 'not loaded' is an answer, not an error), `nodes`, `status`, per-node `node` / `node-metadata` / `node-alerts` / `capabilities` / `config` / `config-set` (int, `0x…` hex or JSON bitmask), `refresh` / `refresh-values` / `rebuild-routes` / `begin-rebuild-routes` / `stop-rebuild-routes` / `remove-failed` / `hard-reset`, driver `log-config` / `log-config-set`, telemetry `data-collection` / `data-collection-opt`, device-database `config-updates` / `config-updates-install`, `integration-settings`, and the domain's services: `ping`, `lock-usercode` / `lock-clear-usercode` / `lock-configuration`. Node-scoped commands accept an entity id and resolve the device via the registry; an instance with no Z-Wave controller gets every command's refusal as one sentence instead of `unknown_command` |
 
 ## Quick examples
 
@@ -348,6 +349,43 @@ cli-anything-homeassistant --json supervisor api /store/addons
 cli-anything-homeassistant --json supervisor api /core/update \
     --method post --timeout 600     # the default is TEN seconds
 ```
+
+```bash
+# The Z-Wave JS integration (v1.54+) — the API the Z-Wave panel itself drives
+# First question: is there even a Z-Wave controller here? `available` is a
+# READ — 'not loaded' is an answer (exit 0), so scripts branch on it.
+cli-anything-homeassistant --json zwave available | jq .available
+
+# Inventory: every node, with the node id pulled out of the device identifiers
+cli-anything-homeassistant --json zwave nodes --pattern door
+
+# A node's state, its alerts, and every config parameter with values.
+# Node-scoped commands take a device id OR any entity id on that device.
+cli-anything-homeassistant --json zwave node lock.front_door
+cli-anything-homeassistant --json zwave node-alerts lock.front_door
+cli-anything-homeassistant --json zwave config lock.front_door
+
+# Write a config parameter: plain, 0x-hex or a JSON bitmask object
+cli-anything-homeassistant zwave config-set lock.front_door 68 1
+cli-anything-homeassistant zwave config-set dev1 112 0x2a --property-key 2
+cli-anything-homeassistant zwave config-set dev1 9 '{"1": true, "4": true}'
+
+# Maintenance: refresh a node, rebuild its routes, drop a failed node.
+# The network-wide rebuild and the controller factory reset are separate,
+# explicitly gated commands — hard-reset REMOVES every node from the network.
+cli-anything-homeassistant zwave refresh lock.front_door
+cli-anything-homeassistant zwave begin-rebuild-routes <ENTRY_ID>
+cli-anything-homeassistant zwave hard-reset <ENTRY_ID>       # asks twice
+
+# Locks: program / clear a user code slot, set the relock behaviour
+cli-anything-homeassistant zwave lock-usercode lock.front 3 1234
+cli-anything-homeassistant zwave lock-configuration lock.front \
+    --operation-type timed --timeout 30
+
+# Diagnose an unreachable device: is it the mesh or the lock?
+cli-anything-homeassistant --json zwave ping sensor.front_door_battery
+```
+
 
 ## Agent / `--json` mode
 

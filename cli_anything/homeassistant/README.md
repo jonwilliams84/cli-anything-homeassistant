@@ -126,6 +126,7 @@ cli-anything-homeassistant service call light turn_on \
 | `logger` (extensions) | `info-ws`, `level-get`, `level-set` (WS-side per-component log control) |
 | `system` (extensions) | `manifest list/get`, `analytics get/set`, `app-credentials config/entry`, `issue get-data/ignore`, `usb-scan`, `zha-permit-join`, `hardware-info`, `board-info`, `cpu-info`, `log errors/clear/write` |
 | `supervisor` | `available`, `status`, `info`, `component`, `stats`, `resolution`, `logs`, `boots`, `watch`, `api` + `addon list/info/start/stop/restart/rebuild/update/options/logs` — the Supervisor half of a HA OS / Supervised install |
+| `zwave` | `available`, `nodes`, `status`, `node`, `node-metadata`, `node-alerts`, `capabilities`, `config`, `config-set`, `refresh`, `refresh-values`, `rebuild-routes`, `begin-rebuild-routes`, `stop-rebuild-routes`, `remove-failed`, `hard-reset`, `log-config`, `log-config-set`, `data-collection`, `data-collection-opt`, `config-updates`, `config-updates-install`, `integration-settings`, `ping`, `lock-usercode`, `lock-clear-usercode`, `lock-configuration` — the `zwave_js` integration's WebSocket + service surface (v1.54) |
 
 Examples from the refine pass:
 

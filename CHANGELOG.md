@@ -4,6 +4,60 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.54.0] — 2026-09-06
+
+A coverage-refine pass that closes the biggest remaining integration gap: the
+**`zwave_js` integration's own WebSocket + service surface** — the API the
+Z-Wave configuration panel drives — is now a `zwave` command group. Every other
+mainstream integration surface already had one (alarmo, HACS, MQTT, powercalc,
+the Supervisor); Z-Wave had nothing but an incidental `zha-permit-join`.
+
+### New group: `zwave` (24 commands)
+
+- **Reads** — `available` (is the integration loaded; 'no' is an answer, not an
+  error, checked against the components list), `nodes` (device registry, with
+  the Z-Wave `node_id` extracted from HA's identifier tuples), `status`
+  (`zwave_js/network_status`; `--entry` XOR `--device`, as upstream's
+  `vol.Exclusive` demands), `node` / `node-metadata` / `node-alerts` /
+  `capabilities` / `config` (all config parameters with metadata + current
+  values), `log-config`, `data-collection`, `config-updates`,
+  `integration-settings`.
+- **Writes** — `config-set` (int, `0x…` hex or JSON bitmask object; optional
+  `--property-key` / `--endpoint`), `refresh` (re-interview),
+  `refresh-values`, `rebuild-routes` (node) / `begin-rebuild-routes` /
+  `stop-rebuild-routes` (network), `remove-failed`, `log-config-set` (partial —
+  only passed fields change), `data-collection-opt --in/--out`,
+  `config-updates-install`, plus `hard-reset` (factory reset of the
+  controller — confirmation-gated, and the prompt says what it destroys).
+- **Services** — `ping` (mesh round-trip for one device), `lock-usercode` /
+  `lock-clear-usercode` (program / wipe a lock's user code slot),
+  `lock-configuration` (constant vs timed relock behaviour).
+- Ergonomics: every node-scoped command accepts a device id **or any entity id
+  on the device**, resolved through the entity registry (which works whether
+  or not `zwave_js` is loaded).
+
+### When there is no Z-Wave controller
+
+An instance without `zwave_js` answers every `zwave_js/…` websocket command
+with `unknown_command` — the same code a typo gets — and a `zwave_js` REST
+service call with a 400 and an EMPTY body, indistinguishable from any other
+bad request. Both are translated into one sentence naming the integration and
+pointing at `system components`. `zwave available` turns the same fact into an
+answer with exit 0, so scripts branch on it. A failed availability probe
+surfaces the ORIGINAL error rather than a wrong "not loaded" claim.
+
+### Tests
+
+- `tests/test_zwave_js.py` (59) — payload shapes against the upstream schemas,
+  identifier exclusivity, the absent-integration guard on both transports,
+  entity→device resolution, value validation.
+- `tests/test_cli_zwave_wiring.py` (29) — every command wired through the real
+  Click decorators; confirmation gates; the clean-error contract.
+- `tests/test_full_e2e.py` `TestLiveZwaveAbsent` (9) — the same discipline as
+  the supervisor class: the test instance genuinely has no Z-Wave controller,
+  so the premise (unregistered commands, 400-empty-body service calls) is
+  proven against a real Home Assistant, not a fake.
+
 ## [1.53.0] — 2026-09-06
 
 A coverage-refine pass. No commands were added or changed; the work was

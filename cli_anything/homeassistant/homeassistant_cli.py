@@ -92,6 +92,7 @@ from cli_anything.homeassistant.core import device_automation as device_automati
 from cli_anything.homeassistant.core import expose_entity as expose_entity_core
 from cli_anything.homeassistant.core import hacs as hacs_core
 from cli_anything.homeassistant.core import alarmo as alarmo_core
+from cli_anything.homeassistant.core import zwave_js as zwave_core
 from cli_anything.homeassistant.core import hardware_info as hardware_info_core
 from cli_anything.homeassistant.core import logger_ws as logger_ws_core
 from cli_anything.homeassistant.core import media_source as media_source_core
@@ -18600,6 +18601,318 @@ def supervisor_addon_logs(ctx, slug, lines, boot, as_text):
         click.echo(result["text"])
         return
     emit(ctx, result)
+
+
+# ──────────────────────────────────────────────────────── zwave
+
+
+def _config_value(_ctx, _param, raw: str):
+    """Parse a Z-Wave config-parameter value: int or JSON bitmask object."""
+    raw = (raw or "").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    if raw.lower().startswith("0x"):
+        try:
+            return int(raw, 16)
+        except ValueError:
+            pass
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise click.BadParameter(
+            f"value must be an integer or a JSON bitmask object, got {raw!r}"
+        ) from exc
+    if isinstance(parsed, dict):
+        return parsed
+    raise click.BadParameter(f"value must be an integer or a JSON bitmask object, got {raw!r}")
+
+
+@cli.group()
+def zwave():
+    """The zwave_js integration — nodes, config parameters, routes, locks."""
+
+
+@zwave.command("available")
+@click.pass_context
+def zwave_available(ctx):
+    """Is zwave_js loaded? A read — 'no' is an answer, not an error."""
+    emit(ctx, zwave_core.available(make_client(ctx)))
+
+
+@zwave.command("status")
+@click.option("--entry", "entry_id", default=None, help="The zwave_js config entry id")
+@click.option("--device", "device_id", default=None, help="A zwave_js device id (or entity id)")
+@click.pass_context
+def zwave_status(ctx, entry_id, device_id):
+    """Network status — controller state, home id, controller statistics."""
+    emit(ctx, zwave_core.network_status(make_client(ctx), entry_id=entry_id, device_id=device_id))
+
+
+@zwave.command("nodes")
+@click.option("--pattern", default=None, help="Case-insensitive substring on the device name")
+@click.pass_context
+def zwave_nodes(ctx, pattern):
+    """Every Z-Wave node this instance knows, as device-registry rows."""
+    emit(ctx, zwave_core.list_nodes(make_client(ctx), pattern=pattern))
+
+
+@zwave.command("node")
+@click.argument("ident")
+@click.pass_context
+def zwave_node(ctx, ident):
+    """One node's status (device id or entity id)."""
+    emit(ctx, zwave_core.node_status(make_client(ctx), ident))
+
+
+@zwave.command("node-metadata")
+@click.argument("ident")
+@click.pass_context
+def zwave_node_metadata(ctx, ident):
+    """One node's vendor/product/protocol metadata."""
+    emit(ctx, zwave_core.node_metadata(make_client(ctx), ident))
+
+
+@zwave.command("node-alerts")
+@click.argument("ident")
+@click.pass_context
+def zwave_node_alerts(ctx, ident):
+    """One node's current alert list."""
+    emit(ctx, zwave_core.node_alerts(make_client(ctx), ident))
+
+
+@zwave.command("capabilities")
+@click.argument("ident")
+@click.pass_context
+def zwave_capabilities(ctx, ident):
+    """One node's command classes and versions."""
+    emit(ctx, zwave_core.node_capabilities(make_client(ctx), ident))
+
+
+@zwave.command("config")
+@click.argument("ident")
+@click.pass_context
+def zwave_config(ctx, ident):
+    """Every config parameter on a node, with metadata and current value."""
+    emit(ctx, zwave_core.config_parameters(make_client(ctx), ident))
+
+
+@zwave.command("config-set")
+@click.argument("ident")
+@click.argument("parameter", type=int)
+@click.argument("value", callback=_config_value)
+@click.option(
+    "--property-key", type=int, default=None, help="Sub-parameter (bitmask bit / channel)"
+)
+@click.option("--endpoint", type=int, default=0, help="Node endpoint (default 0)")
+@click.pass_context
+def zwave_config_set(ctx, ident, parameter, value, property_key, endpoint):
+    """Write one config parameter (value: integer or JSON bitmask object)."""
+    emit(
+        ctx,
+        zwave_core.set_config_parameter(
+            make_client(ctx),
+            ident,
+            parameter,
+            value,
+            property_key=property_key,
+            endpoint=endpoint,
+        ),
+    )
+
+
+@zwave.command("refresh")
+@click.argument("ident")
+@click.pass_context
+def zwave_refresh(ctx, ident):
+    """Re-interview a node: refresh all its information from the device."""
+    emit(ctx, zwave_core.refresh_node_info(make_client(ctx), ident))
+
+
+@zwave.command("refresh-values")
+@click.argument("ident")
+@click.pass_context
+def zwave_refresh_values(ctx, ident):
+    """Refresh every value on a node from the device."""
+    emit(ctx, zwave_core.refresh_node_values(make_client(ctx), ident))
+
+
+@zwave.command("rebuild-routes")
+@click.argument("ident")
+@click.pass_context
+def zwave_rebuild_routes(ctx, ident):
+    """Recalculate routes for one node."""
+    emit(ctx, zwave_core.rebuild_node_routes(make_client(ctx), ident))
+
+
+@zwave.command("begin-rebuild-routes")
+@click.argument("entry_id")
+@click.pass_context
+def zwave_begin_rebuild_routes(ctx, entry_id):
+    """Heal the whole network (may take minutes; battery nodes must wake)."""
+    emit(ctx, zwave_core.begin_rebuilding_routes(make_client(ctx), entry_id))
+
+
+@zwave.command("stop-rebuild-routes")
+@click.argument("entry_id")
+@click.pass_context
+def zwave_stop_rebuild_routes(ctx, entry_id):
+    """Abort a network-wide route rebuild."""
+    emit(ctx, zwave_core.stop_rebuilding_routes(make_client(ctx), entry_id))
+
+
+@zwave.command("remove-failed")
+@click.argument("ident")
+@click.pass_context
+def zwave_remove_failed(ctx, ident):
+    """Drop a node the controller has marked failed."""
+    emit(ctx, zwave_core.remove_failed_node(make_client(ctx), ident))
+
+
+@zwave.command("hard-reset")
+@click.argument("entry_id")
+@click.confirmation_option(
+    prompt=(
+        "FACTORY RESET the Z-Wave controller? Every node is REMOVED from the "
+        "network and will need re-inclusion — the automations break too."
+    )
+)
+@click.pass_context
+def zwave_hard_reset(ctx, entry_id):
+    """Factory-reset the controller — ERASES the whole Z-Wave network."""
+    emit(ctx, zwave_core.hard_reset_controller(make_client(ctx), entry_id))
+
+
+@zwave.command("log-config")
+@click.argument("entry_id")
+@click.pass_context
+def zwave_log_config(ctx, entry_id):
+    """The Z-Wave driver's log level and sinks."""
+    emit(ctx, zwave_core.get_log_config(make_client(ctx), entry_id))
+
+
+@zwave.command("log-config-set")
+@click.argument("entry_id")
+@click.option("--level", default=None, help="Log level (debug/info/warning/error/off)")
+@click.option("--log-to-file/--no-log-to-file", default=None, help="Write the driver log to a file")
+@click.option("--filename", default=None, help="Log file path (when --log-to-file)")
+@click.option("--force-console/--no-force-console", default=None, help="Also log to the console")
+@click.pass_context
+def zwave_log_config_set(ctx, entry_id, level, log_to_file, filename, force_console):
+    """Change the Z-Wave driver's logging (only passed fields change)."""
+    emit(
+        ctx,
+        zwave_core.update_log_config(
+            make_client(ctx),
+            entry_id,
+            level=level,
+            log_to_file=log_to_file,
+            filename=filename,
+            force_console=force_console,
+        ),
+    )
+
+
+@zwave.command("data-collection")
+@click.argument("entry_id")
+@click.pass_context
+def zwave_data_collection(ctx, entry_id):
+    """Z-Wave telemetry opt-in state and endpoint health."""
+    emit(ctx, zwave_core.data_collection_status(make_client(ctx), entry_id))
+
+
+@zwave.command("data-collection-opt")
+@click.argument("entry_id")
+@click.option("--in/--out", "opted_in", default=None, required=True, help="Opt in or out")
+@click.pass_context
+def zwave_data_collection_opt(ctx, entry_id, opted_in):
+    """Opt Z-Wave telemetry in or out."""
+    emit(
+        ctx,
+        zwave_core.update_data_collection_preference(
+            make_client(ctx), entry_id, opted_in=bool(opted_in)
+        ),
+    )
+
+
+@zwave.command("config-updates")
+@click.argument("entry_id")
+@click.pass_context
+def zwave_config_updates(ctx, entry_id):
+    """Are device-database (config) updates available?"""
+    emit(ctx, zwave_core.check_for_config_updates(make_client(ctx), entry_id))
+
+
+@zwave.command("config-updates-install")
+@click.argument("entry_id")
+@click.confirmation_option(prompt="Apply pending Z-Wave device-database updates?")
+@click.pass_context
+def zwave_config_updates_install(ctx, entry_id):
+    """Apply pending device-database updates."""
+    emit(ctx, zwave_core.install_config_update(make_client(ctx), entry_id))
+
+
+@zwave.command("integration-settings")
+@click.argument("entry_id")
+@click.pass_context
+def zwave_integration_settings(ctx, entry_id):
+    """The integration's settings (poll interval, ignore timeouts, ...)."""
+    emit(ctx, zwave_core.integration_settings(make_client(ctx), entry_id))
+
+
+@zwave.command("ping")
+@click.argument("entity_id")
+@click.pass_context
+def zwave_ping(ctx, entity_id):
+    """Round-trip one Z-Wave device over the mesh (`zwave_js/ping`)."""
+    emit(ctx, zwave_core.ping(make_client(ctx), entity_id))
+
+
+@zwave.command("lock-usercode")
+@click.argument("entity_id")
+@click.argument("slot", type=int)
+@click.argument("code")
+@click.pass_context
+def zwave_lock_usercode(ctx, entity_id, slot, code):
+    """Program one user code slot on a Z-Wave lock."""
+    emit(ctx, zwave_core.set_lock_usercode(make_client(ctx), entity_id, slot, code))
+
+
+@zwave.command("lock-clear-usercode")
+@click.argument("entity_id")
+@click.argument("slot", type=int)
+@click.pass_context
+def zwave_lock_clear_usercode(ctx, entity_id, slot):
+    """Wipe one user code slot on a Z-Wave lock."""
+    emit(ctx, zwave_core.clear_lock_usercode(make_client(ctx), entity_id, slot))
+
+
+@zwave.command("lock-configuration")
+@click.argument("entity_id")
+@click.option(
+    "--operation-type",
+    type=click.Choice(list(zwave_core.LOCK_OPERATIONS)),
+    required=True,
+    help="constant (always relock) or timed (relock after a keypad unlock)",
+)
+@click.option("--timeout", "lock_timeout", type=int, default=None, help="Timed mode: seconds")
+@click.option(
+    "--auto-relock", "auto_relock_time", type=int, default=None, help="Constant mode: seconds"
+)
+@click.pass_context
+def zwave_lock_configuration(ctx, entity_id, operation_type, lock_timeout, auto_relock_time):
+    """Set a Z-Wave lock's RF relock behaviour."""
+    emit(
+        ctx,
+        zwave_core.set_lock_configuration(
+            make_client(ctx),
+            entity_id,
+            operation_type=operation_type,
+            lock_timeout=lock_timeout,
+            auto_relock_time=auto_relock_time,
+        ),
+    )
 
 
 if __name__ == "__main__":

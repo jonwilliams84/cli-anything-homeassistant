@@ -1214,3 +1214,49 @@ test_media_source.py ........... +14 passed  (search_media rewrites
 
 `utils/homeassistant_backend.py` 65%→93%, `utils/repl_skin.py` 19%→96%,
 `core/media_source.py` 33%→100%.
+
+## v1.54.0 refine pass — the `zwave` group (zwave_js integration)
+
+The gap: every mainstream integration surface had a group — alarmo, HACS,
+MQTT, powercalc, the Supervisor — but `zwave_js`, the WebSocket API the
+Z-Wave configuration panel itself drives, had none. v1.54 adds `core/zwave_js.py`
+and a `zwave` command group over the 20+ commands
+`homeassistant/components/zwave_js/api.py` registers plus the domain's services.
+
+```
+before ......................... 4662 passed, 30 skipped  (83.41% cover)
+after .......................... 4808 passed, 31 skipped  (83.5% cover)
+
+test_zwave_js.py ............... 59 passed   (payload shapes, identifier
+                                              exclusivity, absent-integration
+                                              guard, entity→device resolution,
+                                              int/hex/bitmask value validation)
+test_cli_zwave_wiring.py ....... 29 passed   (every command wired, options
+                                              parse, confirmations gate,
+                                              clean-error contract)
+test_full_e2e.py ............... +9 in TestLiveZwaveAbsent (all pass against
+                                              a real HA; 1 skip when the test
+                                              instance has no registry-linked
+                                              entities)
+```
+
+Key behaviours pinned:
+
+- `zwave available` is a READ — the integration being missing is an answer
+  (`available: false`, exit 0), not an error, checked against the loaded
+  components list rather than against a websocket command that does not exist.
+- Every other command translates `unknown_command` (WS) and the 400-empty-body
+  (REST service call to an unloaded domain) into one sentence naming the
+  integration and pointing at `system components` — never leaking the bare
+  code. A failed components probe surfaces the ORIGINAL error rather than a
+  wrong "not loaded" claim.
+- The two identifiers HA makes mutually exclusive are kept apart: node-scoped
+  commands take `device_id`, entry-scoped ones `entry_id`, and `network_status`
+  refuses both/neither exactly as `vol.Exclusive` does upstream.
+- Node-scoped commands accept an entity id and resolve it through
+  `config/entity_registry/get` (independent of the integration), naming the
+  entity when it is not device-linked.
+- `config-set` accepts an int, `0x…` hex or a JSON bitmask object — matching
+  HA's `vol.Any(int, BITMASK_SCHEMA)`; anything else is refused before the wire.
+- `hard-reset` and `config-updates-install` require confirmation; the
+  factory-reset prompt says what it destroys.
