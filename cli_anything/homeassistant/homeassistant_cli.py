@@ -93,6 +93,7 @@ from cli_anything.homeassistant.core import expose_entity as expose_entity_core
 from cli_anything.homeassistant.core import hacs as hacs_core
 from cli_anything.homeassistant.core import alarmo as alarmo_core
 from cli_anything.homeassistant.core import zwave_js as zwave_core
+from cli_anything.homeassistant.core import zha as zha_core
 from cli_anything.homeassistant.core import hardware_info as hardware_info_core
 from cli_anything.homeassistant.core import logger_ws as logger_ws_core
 from cli_anything.homeassistant.core import media_source as media_source_core
@@ -18913,6 +18914,589 @@ def zwave_lock_configuration(ctx, entity_id, operation_type, lock_timeout, auto_
             auto_relock_time=auto_relock_time,
         ),
     )
+
+
+# ─────────────────────────────────────────────────────── zha
+
+
+def _ieee_arg(_ctx, _param, raw: str) -> str:
+    """Parse and shape-check an IEEE (EUI-64) argument."""
+    try:
+        return zha_core.parse_ieee(raw)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+def _member_arg(_ctx, _param, raw):
+    """Parse a group member: `<ieee>:<endpoint_id>`.
+
+    On a `multiple=True` option Click hands the callback the COLLECTED
+    values as a tuple, not one value at a time — accept both shapes.
+    """
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    try:
+        parsed = [zha_core.parse_member(v) for v in values]
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+    return parsed if isinstance(raw, (list, tuple)) else parsed[0]
+
+
+def _binding_arg(_ctx, _param, raw):
+    """Parse a cluster binding: a JSON object with name/type/id/endpoint_id."""
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    try:
+        parsed = [zha_core.parse_binding(v) for v in values]
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+    return parsed if isinstance(raw, (list, tuple)) else parsed[0]
+
+
+def _channel_arg(_ctx, _param, raw: str):
+    """Parse a Zigbee channel: 'auto' or an integer 11–26."""
+    raw = (raw or "").strip().lower()
+    if raw == "auto":
+        return "auto"
+    try:
+        channel = int(raw)
+    except ValueError:
+        raise click.BadParameter(f"new channel must be 'auto' or an integer 11–26, got {raw!r}")
+    if channel not in zha_core.ZIGBEE_CHANNELS:
+        raise click.BadParameter(f"new channel must be 'auto' or an integer 11–26, got {raw!r}")
+    return channel
+
+
+def _json_dict_arg(_ctx, _param, raw: str) -> dict:
+    """Parse a JSON object argument (configuration data, backup payload)."""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise click.BadParameter(f"expected a JSON object, got {raw!r}") from exc
+    if not isinstance(parsed, dict):
+        raise click.BadParameter(f"expected a JSON object, got {raw!r}")
+    return parsed
+
+
+def _attribute_value(_ctx, _param, raw: str):
+    """Parse a raw Zigbee attribute value: int, true/false, else string."""
+    raw = (raw or "").strip()
+    low = raw.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
+@cli.group()
+def zha():
+    """The ZHA (Zigbee) integration — devices, groups, clusters, bindings, network."""
+
+
+@zha.command("available")
+@click.pass_context
+def zha_available(ctx):
+    """Is ZHA loaded? A read — 'no' is an answer, not an error."""
+    emit(ctx, zha_core.available(make_client(ctx)))
+
+
+@zha.command("devices")
+@click.pass_context
+def zha_devices(ctx):
+    """Every device on the Zigbee network, ZHA's view."""
+    emit(ctx, zha_core.list_devices(make_client(ctx)))
+
+
+@zha.command("device")
+@click.argument("ieee", callback=_ieee_arg)
+@click.pass_context
+def zha_device(ctx, ieee):
+    """One device's ZHA info (routing, neighbours, its entities)."""
+    emit(ctx, zha_core.get_device(make_client(ctx), ieee))
+
+
+@zha.command("devices-groupable")
+@click.pass_context
+def zha_devices_groupable(ctx):
+    """Devices whose endpoints may be put into a Zigbee group."""
+    emit(ctx, zha_core.groupable_devices(make_client(ctx)))
+
+
+@zha.command("bindable")
+@click.argument("ieee", callback=_ieee_arg)
+@click.pass_context
+def zha_bindable(ctx, ieee):
+    """Devices that may be direct-bound to an IEEE address."""
+    emit(ctx, zha_core.bindable_devices(make_client(ctx), ieee))
+
+
+@zha.command("groups")
+@click.pass_context
+def zha_groups(ctx):
+    """Every Zigbee group, ZHA's view."""
+    emit(ctx, zha_core.list_groups(make_client(ctx)))
+
+
+@zha.command("group")
+@click.argument("group_id", type=int)
+@click.pass_context
+def zha_group(ctx, group_id):
+    """One group's info (members, entities)."""
+    emit(ctx, zha_core.get_group(make_client(ctx), group_id))
+
+
+@zha.command("group-add")
+@click.argument("name")
+@click.option("--group-id", type=int, default=None, help="Pin a specific group id")
+@click.option(
+    "--member", "-m", callback=_member_arg, multiple=True, help="<ieee>:<endpoint> (repeatable)"
+)
+@click.pass_context
+def zha_group_add(ctx, name, group_id, member):
+    """Create a Zigbee group, optionally with members."""
+    emit(
+        ctx,
+        zha_core.add_group(make_client(ctx), name, group_id=group_id, members=list(member) or None),
+    )
+
+
+@zha.command("group-remove")
+@click.argument("group_ids", type=int, nargs=-1, required=True)
+@click.pass_context
+def zha_group_remove(ctx, group_ids):
+    """Delete one or more Zigbee groups; prints what is left."""
+    emit(ctx, zha_core.remove_groups(make_client(ctx), list(group_ids)))
+
+
+@zha.command("group-members-add")
+@click.argument("group_id", type=int)
+@click.option(
+    "--member",
+    "-m",
+    callback=_member_arg,
+    multiple=True,
+    required=True,
+    help="<ieee>:<endpoint> (repeatable)",
+)
+@click.pass_context
+def zha_group_members_add(ctx, group_id, member):
+    """Put devices into a Zigbee group."""
+    emit(ctx, zha_core.add_group_members(make_client(ctx), group_id, list(member)))
+
+
+@zha.command("group-members-remove")
+@click.argument("group_id", type=int)
+@click.option(
+    "--member",
+    "-m",
+    callback=_member_arg,
+    multiple=True,
+    required=True,
+    help="<ieee>:<endpoint> (repeatable)",
+)
+@click.pass_context
+def zha_group_members_remove(ctx, group_id, member):
+    """Take devices out of a Zigbee group."""
+    emit(ctx, zha_core.remove_group_members(make_client(ctx), group_id, list(member)))
+
+
+@zha.command("clusters")
+@click.argument("ieee", callback=_ieee_arg)
+@click.pass_context
+def zha_clusters(ctx, ieee):
+    """Every cluster on every endpoint of a device."""
+    emit(ctx, zha_core.clusters(make_client(ctx), ieee))
+
+
+@zha.command("cluster-attributes")
+@click.argument("ieee", callback=_ieee_arg)
+@click.option("--endpoint", "-e", type=int, required=True, help="Endpoint id")
+@click.option("--cluster-id", "-c", type=int, required=True, help="Cluster id")
+@click.option(
+    "--cluster-type",
+    "-t",
+    type=click.Choice(zha_core.CLUSTER_TYPES),
+    default="in",
+    show_default=True,
+    help="Cluster type",
+)
+@click.pass_context
+def zha_cluster_attributes(ctx, ieee, endpoint, cluster_id, cluster_type):
+    """List one cluster's attributes (id + name)."""
+    emit(
+        ctx,
+        zha_core.cluster_attributes(
+            make_client(ctx),
+            ieee,
+            endpoint_id=endpoint,
+            cluster_id=cluster_id,
+            cluster_type=cluster_type,
+        ),
+    )
+
+
+@zha.command("cluster-commands")
+@click.argument("ieee", callback=_ieee_arg)
+@click.option("--endpoint", "-e", type=int, required=True, help="Endpoint id")
+@click.option("--cluster-id", "-c", type=int, required=True, help="Cluster id")
+@click.option(
+    "--cluster-type",
+    "-t",
+    type=click.Choice(zha_core.CLUSTER_TYPES),
+    default="in",
+    show_default=True,
+)
+@click.pass_context
+def zha_cluster_commands(ctx, ieee, endpoint, cluster_id, cluster_type):
+    """List one cluster's commands (id, name, JSON schema)."""
+    emit(
+        ctx,
+        zha_core.cluster_commands(
+            make_client(ctx),
+            ieee,
+            endpoint_id=endpoint,
+            cluster_id=cluster_id,
+            cluster_type=cluster_type,
+        ),
+    )
+
+
+@zha.command("read-attribute")
+@click.argument("ieee", callback=_ieee_arg)
+@click.option("--endpoint", "-e", type=int, required=True, help="Endpoint id")
+@click.option("--cluster-id", "-c", type=int, required=True, help="Cluster id")
+@click.option(
+    "--cluster-type",
+    "-t",
+    type=click.Choice(zha_core.CLUSTER_TYPES),
+    default="in",
+    show_default=True,
+)
+@click.option("--attribute", "-a", type=int, required=True, help="Attribute id")
+@click.option(
+    "--manufacturer", type=int, default=None, help="Manufacturer code (for proprietary clusters)"
+)
+@click.pass_context
+def zha_read_attribute(ctx, ieee, endpoint, cluster_id, cluster_type, attribute, manufacturer):
+    """Read one Zigbee attribute live — the VALUE as a string."""
+    emit(
+        ctx,
+        zha_core.read_attribute(
+            make_client(ctx),
+            ieee,
+            endpoint_id=endpoint,
+            cluster_id=cluster_id,
+            cluster_type=cluster_type,
+            attribute=attribute,
+            manufacturer=manufacturer,
+        ),
+    )
+
+
+@zha.command("bind")
+@click.argument("source_ieee", callback=_ieee_arg)
+@click.argument("target_ieee", callback=_ieee_arg)
+@click.pass_context
+def zha_bind(ctx, source_ieee, target_ieee):
+    """Create a direct Zigbee binding between two devices."""
+    emit(ctx, zha_core.bind_devices(make_client(ctx), source_ieee, target_ieee))
+
+
+@zha.command("unbind")
+@click.argument("source_ieee", callback=_ieee_arg)
+@click.argument("target_ieee", callback=_ieee_arg)
+@click.pass_context
+def zha_unbind(ctx, source_ieee, target_ieee):
+    """Remove a direct Zigbee binding between two devices."""
+    emit(ctx, zha_core.unbind_devices(make_client(ctx), source_ieee, target_ieee))
+
+
+@zha.command("groups-bind")
+@click.argument("source_ieee", callback=_ieee_arg)
+@click.argument("group_id", type=int)
+@click.option(
+    "--binding",
+    "-b",
+    callback=_binding_arg,
+    multiple=True,
+    required=True,
+    help='JSON binding {"name","type","id","endpoint_id"} (repeatable)',
+)
+@click.pass_context
+def zha_groups_bind(ctx, source_ieee, group_id, binding):
+    """Bind a device's clusters to a Zigbee group."""
+    emit(ctx, zha_core.bind_to_group(make_client(ctx), source_ieee, group_id, list(binding)))
+
+
+@zha.command("groups-unbind")
+@click.argument("source_ieee", callback=_ieee_arg)
+@click.argument("group_id", type=int)
+@click.option(
+    "--binding",
+    "-b",
+    callback=_binding_arg,
+    multiple=True,
+    required=True,
+    help='JSON binding {"name","type","id","endpoint_id"} (repeatable)',
+)
+@click.pass_context
+def zha_groups_unbind(ctx, source_ieee, group_id, binding):
+    """Unbind a device's clusters from a Zigbee group."""
+    emit(ctx, zha_core.unbind_from_group(make_client(ctx), source_ieee, group_id, list(binding)))
+
+
+@zha.command("configuration")
+@click.pass_context
+def zha_configuration(ctx):
+    """The ZHA options UI: schemas + current values."""
+    emit(ctx, zha_core.configuration(make_client(ctx)))
+
+
+@zha.command("configuration-update")
+@click.argument("data", callback=_json_dict_arg)
+@click.confirmation_option(
+    prompt="Update ZHA's configuration? This reloads the config entry — every ZHA entity blinks out."
+)
+@click.pass_context
+def zha_configuration_update(ctx, data):
+    """Write ZHA's custom configuration (the options UI's JSON object)."""
+    emit(ctx, zha_core.update_configuration(make_client(ctx), data))
+
+
+@zha.command("network-settings")
+@click.pass_context
+def zha_network_settings(ctx):
+    """Radio type, coordinator path, active network settings."""
+    emit(ctx, zha_core.network_settings(make_client(ctx)))
+
+
+@zha.command("network-backups")
+@click.pass_context
+def zha_network_backups(ctx):
+    """The Zigbee network backups on disk."""
+    emit(ctx, zha_core.list_network_backups(make_client(ctx)))
+
+
+@zha.command("network-backup-create")
+@click.pass_context
+def zha_network_backup_create(ctx):
+    """Take a fresh Zigbee network backup (5–30s; `is_complete` says if devices rode along)."""
+    emit(ctx, zha_core.create_network_backup(make_client(ctx)))
+
+
+@zha.command("network-backup-restore")
+@click.argument("backup", callback=_json_dict_arg)
+@click.option(
+    "--ezsp-force-write-eui64",
+    is_flag=True,
+    default=False,
+    help="Overwrite an EZ-SP stick's existing EUI64 (NVRAM refuses a restore without this)",
+)
+@click.confirmation_option(
+    prompt="RESTORE this Zigbee network backup? It replaces the coordinator's network settings."
+)
+@click.pass_context
+def zha_network_backup_restore(ctx, backup, ezsp_force_write_eui64):
+    """Restore a Zigbee network backup (pass the JSON of a `zha network-backups` row)."""
+    if isinstance(backup.get("backup"), dict):
+        # The user passed the whole row/payload (it already carries a
+        # "backup" key) — keep just the backup object; the core call wraps it.
+        backup = backup["backup"]
+    emit(
+        ctx,
+        zha_core.restore_network_backup(
+            make_client(ctx), backup, ezsp_force_write_eui64=ezsp_force_write_eui64
+        ),
+    )
+
+
+@zha.command("channel-change")
+@click.argument("new_channel", callback=_channel_arg)
+@click.confirmation_option(
+    prompt="Migrate the WHOLE Zigbee network to a new channel? Takes minutes; asleep devices may drop out."
+)
+@click.pass_context
+def zha_channel_change(ctx, new_channel):
+    """Migrate the Zigbee network to a channel (11–26, or 'auto')."""
+    emit(ctx, zha_core.change_channel(make_client(ctx), new_channel))
+
+
+@zha.command("remove")
+@click.argument("ieee", callback=_ieee_arg)
+@click.confirmation_option(
+    prompt="REMOVE this device from the Zigbee network? It must be power-cycled to re-join."
+)
+@click.pass_context
+def zha_remove(ctx, ieee):
+    """Drop a device from the Zigbee network (`zha.remove` service)."""
+    emit(ctx, zha_core.remove_device(make_client(ctx), ieee))
+
+
+@zha.command("set-attribute")
+@click.argument("ieee", callback=_ieee_arg)
+@click.option("--endpoint", "-e", type=int, required=True, help="Endpoint id")
+@click.option("--cluster-id", "-c", type=int, required=True, help="Cluster id")
+@click.option(
+    "--cluster-type",
+    "-t",
+    type=click.Choice(zha_core.CLUSTER_TYPES),
+    default="in",
+    show_default=True,
+)
+@click.option("--attribute", "-a", required=True, help="Attribute id (integer) or name")
+@click.option(
+    "--value",
+    "-v",
+    callback=_attribute_value,
+    required=True,
+    help="Value: integer, true/false, or text",
+)
+@click.option("--manufacturer", type=int, default=None, help="Manufacturer code")
+@click.pass_context
+def zha_set_attribute(
+    ctx, ieee, endpoint, cluster_id, cluster_type, attribute, value, manufacturer
+):
+    """Write one raw Zigbee attribute — no unit conversion, no validation."""
+    attr = _int_or_text(attribute, "attribute")
+    emit(
+        ctx,
+        zha_core.set_cluster_attribute(
+            make_client(ctx),
+            ieee,
+            endpoint_id=endpoint,
+            cluster_id=cluster_id,
+            cluster_type=cluster_type,
+            attribute=attr,
+            value=value,
+            manufacturer=manufacturer,
+        ),
+    )
+
+
+@zha.command("issue-command")
+@click.argument("ieee", callback=_ieee_arg)
+@click.option("--endpoint", "-e", type=int, required=True, help="Endpoint id")
+@click.option("--cluster-id", "-c", type=int, required=True, help="Cluster id")
+@click.option(
+    "--cluster-type",
+    "-t",
+    type=click.Choice(zha_core.CLUSTER_TYPES),
+    default="in",
+    show_default=True,
+)
+@click.option("--command", type=int, required=True, help="Command id")
+@click.option(
+    "--command-type",
+    type=click.Choice(["client", "server"]),
+    required=True,
+    help="client = command the device sends; server = command it receives",
+)
+@click.option("--params", default=None, help="Named parameters as a JSON object")
+@click.option("--args", default=None, help="Positional arguments as a JSON list")
+@click.option("--manufacturer", type=int, default=None, help="Manufacturer code")
+@click.pass_context
+def zha_issue_command(
+    ctx, ieee, endpoint, cluster_id, cluster_type, command, command_type, params, args, manufacturer
+):
+    """Invoke a raw Zigbee cluster command on a device."""
+    if bool(params is None) == bool(args is None):
+        raise click.BadParameter("pass exactly one of --params (JSON object) or --args (JSON list)")
+    emit(
+        ctx,
+        zha_core.issue_cluster_command(
+            make_client(ctx),
+            ieee,
+            endpoint_id=endpoint,
+            cluster_id=cluster_id,
+            command=command,
+            command_type=command_type,
+            params=json.loads(params) if params else None,
+            args=json.loads(args) if args else None,
+            manufacturer=manufacturer,
+        ),
+    )
+
+
+@zha.command("issue-group-command")
+@click.argument("group_id", type=int)
+@click.option("--cluster-id", "-c", type=int, required=True, help="Cluster id")
+@click.option("--command", type=int, required=True, help="Command id")
+@click.option(
+    "--cluster-type",
+    "-t",
+    type=click.Choice(zha_core.CLUSTER_TYPES),
+    default="in",
+    show_default=True,
+)
+@click.option("--args", default=None, help="Positional arguments as a JSON list")
+@click.option("--manufacturer", type=int, default=None, help="Manufacturer code")
+@click.pass_context
+def zha_issue_group_command(ctx, group_id, cluster_id, command, cluster_type, args, manufacturer):
+    """Broadcast a raw Zigbee command to a group."""
+    emit(
+        ctx,
+        zha_core.issue_group_command(
+            make_client(ctx),
+            group_id,
+            cluster_id=cluster_id,
+            command=command,
+            cluster_type=cluster_type,
+            args=json.loads(args) if args else [],
+            manufacturer=manufacturer,
+        ),
+    )
+
+
+@zha.command("warning-squawk")
+@click.argument("ieee", callback=_ieee_arg)
+@click.option("--mode", type=int, default=0, show_default=True, help="0 = armed, 1 = disarmed")
+@click.option("--strobe", type=int, default=1, show_default=True, help="Strobe: 0/1")
+@click.option("--level", type=int, default=2, show_default=True, help="Sound level 0–3")
+@click.pass_context
+def zha_warning_squawk(ctx, ieee, mode, strobe, level):
+    """One short siren chirp (an IAS warning device)."""
+    emit(
+        ctx, zha_core.warning_squawk(make_client(ctx), ieee, mode=mode, strobe=strobe, level=level)
+    )
+
+
+@zha.command("warning-warn")
+@click.argument("ieee", callback=_ieee_arg)
+@click.option(
+    "--mode", type=int, default=3, show_default=True, help="0 stop … 3 emergency, 4–6 panics"
+)
+@click.option("--strobe", type=int, default=1, show_default=True, help="Strobe: 0/1")
+@click.option("--level", type=int, default=2, show_default=True, help="Sound level 0–3")
+@click.option("--duration", type=int, default=5, show_default=True, help="Seconds")
+@click.option(
+    "--duty-cycle", type=int, default=0, show_default=True, help="Strobe duty cycle 0–100"
+)
+@click.option("--intensity", type=int, default=2, show_default=True, help="Strobe intensity 0–3")
+@click.pass_context
+def zha_warning_warn(ctx, ieee, mode, strobe, level, duration, duty_cycle, intensity):
+    """Sound a siren (an IAS warning device) for --duration seconds."""
+    emit(
+        ctx,
+        zha_core.warning_warn(
+            make_client(ctx),
+            ieee,
+            mode=mode,
+            strobe=strobe,
+            level=level,
+            duration=duration,
+            duty_cycle=duty_cycle,
+            intensity=intensity,
+        ),
+    )
+
+
+def _int_or_text(raw: str, what: str):
+    """Accept an integer or a bare string (attribute/command names)."""
+    raw = (raw or "").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
 
 
 if __name__ == "__main__":

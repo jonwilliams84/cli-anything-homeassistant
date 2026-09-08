@@ -4,6 +4,10 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.55.0] — 2026-09-08
+
+- Updated `cli_anything/homeassistant/homeassistant_cli.py`. (1 file changed, 467 insertions(+))
+
 ## [1.54.0] — 2026-09-06
 
 A coverage-refine pass that closes the biggest remaining integration gap: the
