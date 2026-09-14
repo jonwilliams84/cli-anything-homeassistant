@@ -1260,3 +1260,60 @@ Key behaviours pinned:
   HA's `vol.Any(int, BITMASK_SCHEMA)`; anything else is refused before the wire.
 - `hard-reset` and `config-updates-install` require confirmation; the
   factory-reset prompt says what it destroys.
+
+## v1.56.0 refine pass — the `matter` group (Matter integration)
+
+Every mainstream integration surface had a command group — alarmo, HACS, MQTT,
+powercalc, the Supervisor, `zwave_js` — but Matter, the integration that runs
+the hub most smart-home purchases ship with, had none. v1.56 adds
+`core/matter.py` and a `matter` command group over the NINE websocket commands
+`homeassistant/components/matter/api.py` registers (2026.8.x), plus a
+device-registry read for listing nodes.
+
+```
+before ......................... 4855 passed, 31 skipped
+after .......................... 4928 passed, 32 skipped  (83.86% cover)
+
+test_matter.py ................. 45 passed   (payload shapes, identifier
+                                              decoding, absent-integration
+                                              guard, node_not_found
+                                              translation, pin/fabric
+                                              validation, empty-ack
+                                              envelopes)
+test_cli_matter_wiring.py ...... 20 passed   (every command wired, options
+                                              parse, the confirmation gate on
+                                              remove-fabric, the hidden
+                                              password prompt, clean-error
+                                              contract)
+test_full_e2e.py ............... +9 in TestLiveMatterAbsent (all pass against
+                                              a real HA; 1 skip when the test
+                                              instance has no registry-linked
+                                              entities)
+```
+
+Key behaviours pinned:
+
+- `matter available` is a READ — the integration being missing is an answer
+  (`available: false`, exit 0), checked against the loaded components list
+  rather than against a websocket command that does not exist. A failed
+  components probe surfaces the ORIGINAL error rather than a wrong "not
+  loaded" claim.
+- Every other command translates `unknown_command` (WS) into one sentence
+  naming the integration AND the Core-install reason (the `python-matter-server`
+  package) — never leaking the bare code.
+- The upstream error code `node_not_found` has two different meanings ("no
+  such device id" and "that device id is not a Matter device"); the wrappers
+  re-raise it as a `ValueError` naming `matter nodes` as the remedy. Other
+  Matter error codes pass through with their code preserved.
+- `list_nodes` decodes the `("matter", "deviceid_<fabric:016X>-<node:016X>-…")`
+  identifier into `node_id` / `fabric_id` / `endpoint`; `endpoint` is only set
+  for bridged devices, and an unparseable identifier yields `None` — never a
+  wrong non-zero claim.
+- Commission commands are validated client-side where HA's schema is looser
+  than the truth: `pin` must be the 8- or 11-digit setup PIN as an integer,
+  `fabric_index` must be an integer in 1..254, `code` must be non-empty.
+- Successful writes (commission, interview, remove-fabric) answer an EMPTY
+  result; the wrappers wrap it in `{result, note}` so `{}` never reads as
+  "nothing happened", each naming where to look next.
+- `remove-fabric` requires confirmation; the prompt says what stops working.
+  `set-wifi` prompts hidden for the password and never echoes it.

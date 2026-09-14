@@ -41,6 +41,7 @@ from cli_anything.homeassistant.core import (
     supervisor as supervisor_core,
     template as template_core,
     zwave_js as zwave_js_core,
+    matter as matter_core,
 )
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
@@ -2550,3 +2551,87 @@ class TestLiveZwaveAbsent:
             capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
         )
         assert "zwave" in r.stdout
+
+
+class TestLiveMatterAbsent:
+    """The test instance has no Matter controller, so `matter` never loads.
+
+    Same discipline as TestLiveZwaveAbsent: prove the premise first (the
+    websocket commands really are unregistered), then check that every
+    surface answers the absence cleanly instead of leaking a bare
+    `unknown_command` — and that `matter available` turns the same fact into
+    an answer a script can branch on. On a Core install the absence is
+    DOUBLY real: the integration is not configured AND the
+    `python-matter-server` package it imports is not installed.
+    """
+
+    def test_available_is_false_rather_than_an_error(self, live_client):
+        out = matter_core.available(live_client)
+        assert out["available"] is False
+        assert "matter" in out["note"]
+
+    def test_the_websocket_command_really_is_unregistered(self, live_client):
+        """The premise of every other assertion in this class."""
+        with pytest.raises(HomeAssistantError) as exc:
+            live_client.ws_call("matter/commission", {"code": "MT:x", "network_only": True})
+        assert exc.value.code == "unknown_command"
+
+    def test_node_commands_raise_the_explanation_not_the_raw_code(self, live_client):
+        with pytest.raises(HomeAssistantError, match="no Matter controller"):
+            matter_core.ping_node(live_client, "dev-1")
+
+    def test_node_scoped_accepts_an_entity_id_independently(self, live_client):
+        """Resolution uses the registry, which works without the integration."""
+        entries = live_client.ws_call("config/entity_registry/list") or []
+        linked = [e["entity_id"] for e in entries if e.get("device_id")]
+        if not linked:
+            pytest.skip("no registry-linked entities on this instance")
+        device_id = matter_core.resolve_device_id(live_client, linked[0])
+        assert isinstance(device_id, str) and device_id
+
+    def test_nodes_listing_works_without_the_integration(self, live_client):
+        """The listing reads the device registry — no Matter command involved."""
+        nodes = matter_core.list_nodes(live_client)
+        assert isinstance(nodes, list)
+
+    @staticmethod
+    def _env(hass_instance):
+        env = os.environ.copy()
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        env["HASS_VERIFY_SSL"] = "0"
+        return env
+
+    def test_available_cli_branch_point(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "matter", "available"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 0, r.stderr
+        out = json.loads(r.stdout)
+        assert out["available"] is False
+        assert "matter" in out["note"]
+
+    def test_ping_cli_says_so_cleanly(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "matter", "ping", "dev-1"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 1
+        assert "no Matter controller" in r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_nodes_cli_lists_the_registry(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "matter", "nodes"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 0, r.stderr
+        assert isinstance(json.loads(r.stdout), list)
+
+    def test_the_group_appears_in_the_root_help(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--help"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert "matter" in r.stdout

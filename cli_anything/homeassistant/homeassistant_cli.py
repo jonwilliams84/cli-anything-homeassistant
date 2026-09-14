@@ -93,6 +93,7 @@ from cli_anything.homeassistant.core import expose_entity as expose_entity_core
 from cli_anything.homeassistant.core import hacs as hacs_core
 from cli_anything.homeassistant.core import alarmo as alarmo_core
 from cli_anything.homeassistant.core import zwave_js as zwave_core
+from cli_anything.homeassistant.core import matter as matter_core
 from cli_anything.homeassistant.core import zha as zha_core
 from cli_anything.homeassistant.core import hardware_info as hardware_info_core
 from cli_anything.homeassistant.core import logger_ws as logger_ws_core
@@ -18914,6 +18915,131 @@ def zwave_lock_configuration(ctx, entity_id, operation_type, lock_timeout, auto_
             auto_relock_time=auto_relock_time,
         ),
     )
+
+
+# ─────────────────────────────────────────────────────────────── matter
+
+
+@cli.group()
+def matter():
+    """The matter integration — commissioning, node operations, fabrics."""
+
+
+@matter.command("available")
+@click.pass_context
+def matter_available(ctx):
+    """Is matter loaded? A read — 'no' is an answer, not an error."""
+    emit(ctx, matter_core.available(make_client(ctx)))
+
+
+@matter.command("nodes")
+@click.option("--pattern", default=None, help="Case-insensitive substring on the device name")
+@click.pass_context
+def matter_nodes(ctx, pattern):
+    """Every Matter node this instance knows, as device-registry rows."""
+    emit(ctx, matter_core.list_nodes(make_client(ctx), pattern=pattern))
+
+
+@matter.command("commission")
+@click.argument("code")
+@click.option(
+    "--network-only/--no-network-only",
+    default=True,
+    show_default=True,
+    help="Restrict the device to the network it is already on (HA's default).",
+)
+@click.pass_context
+def matter_commission(ctx, code, network_only):
+    """Pair a device via its QR payload or manual-pairing CODE.
+
+    Takes as long as the device takes — pass --timeout generously.
+    """
+    emit(ctx, matter_core.commission(make_client(ctx), code, network_only=network_only))
+
+
+@matter.command("commission-on-network")
+@click.argument("pin", type=int)
+@click.option("--ip", "ip_addr", default=None, help="The device's IP address (skips discovery)")
+@click.pass_context
+def matter_commission_on_network(ctx, pin, ip_addr):
+    """Pair a device already on the IP network by its setup PIN."""
+    emit(
+        ctx,
+        matter_core.commission_on_network(make_client(ctx), pin, ip_addr=ip_addr),
+    )
+
+
+@matter.command("set-wifi")
+@click.argument("network_name")
+@click.option("--password", prompt=True, hide_input=True, help="The Wi-Fi password")
+@click.pass_context
+def matter_set_wifi(ctx, network_name, password):
+    """Store the Wi-Fi credentials commissioned devices are told to join.
+
+    Sent to the controller, not to a device — it applies to commissioning
+    from now on and moves nothing already on the network.
+    """
+    emit(ctx, matter_core.set_wifi_credentials(make_client(ctx), network_name, password))
+
+
+@matter.command("set-thread")
+@click.argument("dataset")
+@click.pass_context
+def matter_set_thread(ctx, dataset):
+    """Store the Thread dataset commissioned devices are told to join.
+
+    The dataset is the TLV hex blob or TLR JSON as the border router reports
+    it — e.g. `thread dataset` on this CLI against an OTBR.
+    """
+    emit(ctx, matter_core.set_thread(make_client(ctx), dataset))
+
+
+@matter.command("node-diagnostics")
+@click.argument("ident")
+@click.pass_context
+def matter_node_diagnostics(ctx, ident):
+    """One node's full data-model dump (device id or entity id)."""
+    emit(ctx, matter_core.node_diagnostics(make_client(ctx), ident))
+
+
+@matter.command("ping")
+@click.argument("ident")
+@click.pass_context
+def matter_ping(ctx, ident):
+    """Round-trip to a node's known addresses (device id or entity id)."""
+    emit(ctx, matter_core.ping_node(make_client(ctx), ident))
+
+
+@matter.command("interview")
+@click.argument("ident")
+@click.pass_context
+def matter_interview(ctx, ident):
+    """Re-read a device's data model; fresh attributes become entity states."""
+    emit(ctx, matter_core.interview_node(make_client(ctx), ident))
+
+
+@matter.command("open-commissioning-window")
+@click.argument("ident")
+@click.pass_context
+def matter_open_commissioning_window(ctx, ident):
+    """Let ANOTHER controller pair this device — prints the parameters it needs."""
+    emit(ctx, matter_core.open_commissioning_window(make_client(ctx), ident))
+
+
+@matter.command("remove-fabric")
+@click.argument("ident")
+@click.argument("fabric_index", type=int)
+@click.confirmation_option(
+    prompt=(
+        "Erase this device's membership of that fabric? The device stops "
+        "responding to that controller until it is re-paired, and its "
+        "entities there stop working."
+    )
+)
+@click.pass_context
+def matter_remove_fabric(ctx, ident, fabric_index):
+    """Remove one Matter fabric (FABRIC_INDEX, 1..254) from a device."""
+    emit(ctx, matter_core.remove_fabric(make_client(ctx), ident, fabric_index))
 
 
 # ─────────────────────────────────────────────────────── zha

@@ -4,6 +4,83 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.56.0] — 2026-09-14
+
+A coverage-refine pass that closes the last missing mainstream integration
+surface: **Matter**. Every other integration with an API of its own already
+had a group — alarmo, HACS, MQTT, powercalc, the Supervisor, `zwave_js` — but
+Matter, the integration that runs the hub most smart-home purchases ship with,
+had nothing. This pass adds `core/matter.py` and a `matter` command group
+wrapping the nine websocket commands `homeassistant/components/matter/api.py`
+registers on 2026.8.x.
+
+### New group: `matter` (12 commands)
+
+- **Availability & inventory** — `available` (is `matter` loaded; 'no' is an
+  answer, not an error, checked against the loaded-components list — an
+  unreachable instance never masquerades as "not loaded"), `nodes` (device
+  registry, with `node_id`, `fabric_id` and — for bridged devices — `endpoint`
+  decoded out of HA's `("matter", "deviceid_<fabric:016X>-<node:016X>-…")`
+  identifiers).
+- **Commissioning** (admin) — `commission` (QR payload or manual pairing
+  code; `--no-network-only` to let the device change networks),
+  `commission-on-network` (setup PIN, `--ip` skips discovery),
+  `set-wifi` (password prompted hidden, never echoed), `set-thread` (TLV hex
+  or TLR JSON as the border router reports it). The Wi-Fi credentials and the
+  Thread dataset are stored on the CONTROLLER for later commissioning —
+  nothing already on the network moves, and the wrappers say so.
+- **Node operations** — `node-diagnostics` (full data-model dump), `ping`
+  (mesh round-trip), `interview` (re-read the data model),
+  `open-commissioning-window` (pair THIS device to a DIFFERENT controller —
+  the ack is the product: the parameters the other side needs),
+  `remove-fabric` (confirmation-gated; the prompt names what stops working).
+  Every node-scoped command accepts a device id or any entity id on the
+  device, resolved through the entity registry.
+
+### What the wire does that the wrappers now name
+
+- **A successful commissioning answers an EMPTY result** — no node id, no
+  device id. The wrapper wraps it as `{result, note}` pointing at `matter
+  nodes`, so the empty ack never reads as "nothing happened". The new device
+  row lands in the registry (via the generic registry commands, not a Matter
+  command) within seconds.
+- **`node_not_found` means two different things** — "no such device id" and
+  "that device id is not a Matter device" — and HA's message names neither
+  remedy. Both are re-raised as a `ValueError` pointing at `matter nodes`;
+  every other Matter error passes through with its code preserved.
+- **`unknown_command` has a Core-install second meaning.** Without the
+  `python-matter-server` package the integration cannot even be set up —
+  the absence note names both routes, and `matter available` turns the same
+  fact into an answer with exit 0 so scripts branch on it.
+- **HA's schema is looser than the truth, so the client is stricter**:
+  `pin` must be the 8- or 11-digit setup PIN as an integer (a pairing code
+  pasted into the wrong argument is refused here, not by the server),
+  `fabric_index` must be an integer in 1..254, a blank code or dataset is
+  refused before the wire.
+- **Commissioning takes as long as the device takes** — the client's
+  websocket timeout applies on top, and the command help says to raise it.
+
+### Tests
+
+- `tests/test_matter.py` (45) — payload shapes against the upstream schemas,
+  identifier decoding (including unparseable rows → `None`, never a wrong
+  zero), the absent-integration guard, `node_not_found` translation,
+  pin/fabric validation, empty-ack envelopes.
+- `tests/test_cli_matter_wiring.py` (20) — every command wired through the
+  real Click decorators; the confirmation gate on `remove-fabric`; the hidden
+  password prompt; the clean-error contract.
+- `tests/test_full_e2e.py` `TestLiveMatterAbsent` (9) — the premise proven
+  against a real Home Assistant: the websocket commands genuinely are
+  unregistered on the test instance, the listing still works off the device
+  registry, and the CLI turns the absence into one clean sentence.
+
+### Results
+
+```
+before ......................... 4855 passed, 31 skipped
+after .......................... 4928 passed, 32 skipped  (83.86% cover)
+```
+
 ## [1.55.0] — 2026-09-08
 
 - Updated `cli_anything/homeassistant/homeassistant_cli.py`. (1 file changed, 467 insertions(+))

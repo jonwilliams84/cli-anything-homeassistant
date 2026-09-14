@@ -159,6 +159,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `supervisor` | **The other half of a Home Assistant OS / Supervised install** (v1.52+) — add-ons, host, OS, network. `available`/`status` (versions side by side, what is stale), `info`, `component`, `stats`, `resolution`, `logs`/`boots` (journals over the HTTP proxy), `watch` (progress events), `api` (any Supervisor endpoint) + `addon list/info/start/stop/restart/rebuild/update/options/logs`. Writes are dry-run until `--apply`; `addon options` merges and validates because the POST REPLACES the whole options object |
 | `profiler` | Pass-through to the `profiler` integration's services: `start` (cProfile), `memory` (memray), `dump-log-objects --type Class`, `log-thread-frames`/`log-current-tasks`/`log-event-loop-scheduled`/`log-events`, `lru-stats`, `set-asyncio-debug`. `status` is a cheap "is the integration even loaded" probe. |
 | `zwave` | **The `zwave_js` integration's own WebSocket API** (v1.54) — what the Z-Wave configuration panel drives. `available` (a read: 'not loaded' is an answer, not an error), `nodes`, `status`, per-node `node` / `node-metadata` / `node-alerts` / `capabilities` / `config` / `config-set` (int, `0x…` hex or JSON bitmask), `refresh` / `refresh-values` / `rebuild-routes` / `begin-rebuild-routes` / `stop-rebuild-routes` / `remove-failed` / `hard-reset`, driver `log-config` / `log-config-set`, telemetry `data-collection` / `data-collection-opt`, device-database `config-updates` / `config-updates-install`, `integration-settings`, and the domain's services: `ping`, `lock-usercode` / `lock-clear-usercode` / `lock-configuration`. Node-scoped commands accept an entity id and resolve the device via the registry; an instance with no Z-Wave controller gets every command's refusal as one sentence instead of `unknown_command` |
+| `matter` | **The Matter integration's WebSocket API** (v1.56) — commissioning and node operations. `available` (a read: 'not loaded' is an answer, not an error), `nodes` (device registry with `node_id`/`fabric_id`/`endpoint` extracted from HA's hex identifiers), `commission` (QR / manual code), `commission-on-network` (setup PIN, `--ip` optional), `set-wifi` / `set-thread` (the network credentials later commissioning passes on), per-node `node-diagnostics` / `ping` / `interview` / `open-commissioning-window` / `remove-fabric` (confirmation-gated). Node-scoped commands accept an entity id and resolve the device via the registry; a device that is not a Matter device is named as such instead of HA's bare `node_not_found`; an instance with no Matter controller gets one clean sentence instead of `unknown_command` |
 
 ## Quick examples
 
@@ -384,6 +385,39 @@ cli-anything-homeassistant zwave lock-configuration lock.front \
 
 # Diagnose an unreachable device: is it the mesh or the lock?
 cli-anything-homeassistant --json zwave ping sensor.front_door_battery
+```
+
+```bash
+# The Matter integration (v1.56+) — commissioning and node operations
+# First question: is there even a Matter controller here? `available` is a
+# READ — 'not loaded' is an answer (exit 0), so scripts branch on it.
+cli-anything-homeassistant --json matter available | jq .available
+
+# Inventory: every node, with node id, fabric id and (for bridged devices)
+# the endpoint parsed out of HA's hex identifiers
+cli-anything-homeassistant --json matter nodes
+
+# Commission: by QR/manual pairing CODE, or by setup PIN for a device that
+# is already on the IP network. Takes as long as the device takes — the ack
+# carries no ids; `matter nodes` shows the device that joined.
+cli-anything-homeassistant --json matter commission 'MT:YYYYYYYYYY'
+cli-anything-homeassistant --json matter commission-on-network 12345678
+
+# The network credentials every LATER commissioning passes on. The Wi-Fi
+# password is prompted for hidden, never echoed:
+cli-anything-homeassistant --json matter set-wifi home-ssid
+cli-anything-homeassistant --json matter set-thread '1af303…'
+
+# Per-node: full data-model dump, a mesh round-trip, or a re-interview.
+# Node-scoped commands take a device id OR any entity id on that device.
+cli-anything-homeassistant --json matter node-diagnostics light.hall
+cli-anything-homeassistant --json matter ping sensor.hue_motion
+
+# Pair THIS device to a different controller — prints the parameters the
+# other side needs. Removing a fabric is confirmation-gated; the prompt says
+# what stops working.
+cli-anything-homeassistant --json matter open-commissioning-window light.hall
+cli-anything-homeassistant matter remove-fabric light.hall 2      # asks twice
 ```
 
 
