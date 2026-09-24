@@ -183,47 +183,37 @@ jobs:
       - name: Install pip-audit and scan dependencies
         run: |
           pip install -e . pip-audit
-          pip-audit -f json -o pip-audit.json || true
+          # pip-audit queries PyPI's JSON API per dependency. A transient 5xx
+          # ("503 Backend is unhealthy") raises ServiceError and pip-audit exits
+          # WITHOUT writing -o pip-audit.json, which made the SARIF conversion
+          # step below die on FileNotFoundError and turned a PyPI hiccup into a
+          # red Security Scan run. Retry a few times to ride out transient
+          # outages. A nonzero exit WITH a report means vulnerabilities were
+          # found (pip-audit exits 1 on findings) — that report is valid, keep
+          # it. The audit stays advisory, exactly as the previous `|| true`.
+          attempt=1
+          while [ "$attempt" -le 5 ]; do
+            rm -f pip-audit.json
+            if pip-audit -f json -o pip-audit.json; then
+              break
+            elif [ -f pip-audit.json ]; then
+              echo "pip-audit exited nonzero but wrote a report (vulnerabilities found); keeping it"
+              break
+            fi
+            echo "::warning::pip-audit attempt ${attempt} produced no report (PyPI outage?); retrying in 15s"
+            attempt=$((attempt + 1))
+            sleep 15
+          done
+          if [ ! -f pip-audit.json ]; then
+            echo "::warning::pip-audit produced no report after 5 attempts; continuing with an empty report"
+            echo '{"dependencies": []}' > pip-audit.json
+          fi
       - name: Convert pip-audit JSON to SARIF
-        run: |
-          python3 -c "
-          import json
-          with open('pip-audit.json') as f:
-              data = json.load(f)
-          rules = []
-          results = []
-          seen = set()
-          for dep in data.get('dependencies', []):
-              for vuln in dep.get('vulns', []):
-                  vid = vuln.get('id', 'unknown')
-                  if vid not in seen:
-                      seen.add(vid)
-                      rules.append({
-                          'id': vid,
-                          'shortDescription': {'text': vuln.get('description', '')[:200]},
-                      })
-                  results.append({
-                      'ruleId': vid,
-                      'level': 'error',
-                      'message': {'text': f\"{dep.get('name','?')} {dep.get('version','?')}: {vuln.get('description','')[:300]}\"},
-                      'locations': [{
-                          'physicalLocation': {
-                              'artifactLocation': {'uri': 'setup.py'},
-                              'region': {'startLine': 1}
-                          }
-                      }]
-                  })
-          sarif = {
-              'version': '2.1.0',
-              'runs': [{
-                  'tool': {'driver': {'name': 'pip-audit', 'rules': rules}},
-                  'results': results
-              }]
-          }
-          with open('pip-audit.sarif', 'w') as f:
-              json.dump(sarif, f, indent=2)
-          print(f'Converted {len(results)} pip-audit findings to SARIF')
-          "
+        # Use the reviewed converter in .github/scripts/ rather than inline
+        # YAML python: the inline copy crashed on a missing pip-audit.json
+        # (FileNotFoundError) instead of degrading to an empty SARIF the way
+        # the script does. Same reason publish_findings.py was extracted.
+        run: python .github/scripts/pip_audit_to_sarif.py pip-audit.json pip-audit.sarif
       - name: Upload pip-audit SARIF
         uses: github/codeql-action/upload-sarif@v4
         with:
