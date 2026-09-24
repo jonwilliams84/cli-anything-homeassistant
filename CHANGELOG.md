@@ -4,6 +4,22 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.56.1] — 2026-09-24
+
+### Fixed
+
+- **Security Scan / Dependency Audit no longer goes red on a transient PyPI
+  outage.** On 2026-09-24 PyPI answered `503 Backend is unhealthy`, pip-audit
+  raised `ServiceError` and exited without writing `pip-audit.json`, and the
+  SARIF-conversion step crashed with `FileNotFoundError`. The pip-audit job now
+  retries the scan (5 attempts, 15 s apart) and falls back to an empty report
+  if PyPI stays down; a nonzero exit that *did* write a report (i.e.
+  vulnerabilities were found) is still kept. The conversion step now runs the
+  reviewed `.github/scripts/pip_audit_to_sarif.py` — which degrades to a valid
+  empty SARIF when the report is absent or malformed — instead of the inline
+  YAML Python that had no such handling. No new commands; behaviour of the
+  audit itself is unchanged.
+
 ## [1.56.0] — 2026-09-14
 
 A coverage-refine pass that closes the last missing mainstream integration
