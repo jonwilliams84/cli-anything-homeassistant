@@ -4,6 +4,52 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.57.0] — 2026-10-02
+
+A pass that closes the last mainstream bus-integration surface: **KNX**. The
+pattern is the one v1.54 (`zwave_js`) and v1.56 (`matter`) established —
+`zwave_js`, `matter`, the Supervisor and `zha` all already had command groups,
+but KNX, the bus protocol most European building installations run on, was
+reachable only through raw state reads. This pass adds `core/knx.py` and a
+`knx` command group wrapping the 14 WS commands
+`homeassistant/components/knx/websocket.py` registers on 2025.1.x.
+
+### New group: `knx` (15 commands)
+
+- **Information** — `available` (an answer with exit 0 whether or not the
+  integration is loaded, checked against the loaded-components list), `info`
+  (xknx version, tunnel connection state, current address, loaded project
+  metadata), `group-monitor`, `group-telegrams` and `subscribe-telegrams`
+  (a LIVE telegram feed, `--max-events` bounded).
+- **ETS project** — `project-get` (the whole parsed project), `project-process`
+  (parse an ETS project file uploaded via `file upload`, `--password` for the
+  protected export) and `project-remove`.
+- **Entity store** — the surface the KNX panel's "Entities" view drives:
+  `validate-entity` (safe dry run, writes nothing), `create-entity`,
+  `update-entity`, `delete-entity` (destructive, confirmation-gated),
+  `entities` and `entity-config`. Platforms are limited upstream to switch and
+  light (`SUPPORTED_PLATFORMS_UI`); anything else is surfaced as the server's
+  validation error, with the failing action named.
+- **Devices** — `create-device`, a KNX pseudo-device row (`knx_vdev_…`
+  identifier) to collect entities under, with an optional area.
+
+### Notable behaviour
+
+- **The name/device_info one-of, stated up front.** The entity schema demands
+  one of `name` or `device_info` and the server's refusal ("One of `Device`
+  or `Name` is required") names neither option's CLI spelling. `validate` /
+  `create` / `update` reject that case client-side with a message that says
+  what to pass.
+- **When the integration is not loaded** (no bus configured, or the `xknx` /
+  `xknxproject` packages missing on a Core install), the `knx/…` commands are
+  never registered and the websocket layer answers `unknown_command` — the
+  same code a typo gets. Every core function turns that into an
+  `ABSENT_NOTE` naming both routes; `knx available` makes it a plain answer
+  with exit 0.
+- Everything is admin-only upstream (every command is `@require_admin`); the
+  client does not duplicate the check, it surfaces what a non-admin
+  connection gets back.
+
 ## [1.56.1] — 2026-09-24
 
 ### Fixed
