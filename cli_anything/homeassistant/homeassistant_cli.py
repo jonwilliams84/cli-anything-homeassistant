@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import shlex
@@ -94,6 +95,7 @@ from cli_anything.homeassistant.core import hacs as hacs_core
 from cli_anything.homeassistant.core import alarmo as alarmo_core
 from cli_anything.homeassistant.core import zwave_js as zwave_core
 from cli_anything.homeassistant.core import matter as matter_core
+from cli_anything.homeassistant.core import knx as knx_core
 from cli_anything.homeassistant.core import zha as zha_core
 from cli_anything.homeassistant.core import hardware_info as hardware_info_core
 from cli_anything.homeassistant.core import logger_ws as logger_ws_core
@@ -196,6 +198,23 @@ def emit(ctx: click.Context, data) -> None:
         pass
     else:
         click.echo(str(data))
+
+
+@contextlib.contextmanager
+def handle_json_arg(raw: str | None):
+    """Context manager for a command argument that must be a JSON object.
+
+    Parses *raw* and yields the dict; exits with click's standard error shape
+    (message to stderr, exit 1) when it is not valid JSON or not an object.
+    Keeps every command that takes an inline JSON object consistent.
+    """
+    try:
+        data = json.loads(raw) if raw else {}
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"argument must be valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise click.ClickException("argument must be a JSON object")
+    yield data
 
 
 def _validate_card_or_abort(
@@ -19040,6 +19059,223 @@ def matter_open_commissioning_window(ctx, ident):
 def matter_remove_fabric(ctx, ident, fabric_index):
     """Remove one Matter fabric (FABRIC_INDEX, 1..254) from a device."""
     emit(ctx, matter_core.remove_fabric(make_client(ctx), ident, fabric_index))
+
+
+# ──────────────────────────────────────────────────────── knx
+
+
+@cli.group()
+def knx():
+    """The knx integration — ETS project, group monitor, entity store."""
+
+
+@knx.command("available")
+@click.pass_context
+def knx_available(ctx):
+    """Is knx loaded? A read — 'no' is an answer, not an error."""
+    emit(ctx, knx_core.available(make_client(ctx)))
+
+
+@knx.command("info")
+@click.pass_context
+def knx_info(ctx):
+    """xknx version, tunnel connection state, current address, project info."""
+    emit(ctx, knx_core.info(make_client(ctx)))
+
+
+@knx.command("group-monitor")
+@click.pass_context
+def knx_group_monitor(ctx):
+    """The group monitor's recent telegrams + whether a project is loaded."""
+    emit(ctx, knx_core.group_monitor(make_client(ctx)))
+
+
+@knx.command("group-telegrams")
+@click.pass_context
+def knx_group_telegrams(ctx):
+    """The latest telegram per group address."""
+    emit(ctx, knx_core.group_telegrams(make_client(ctx)))
+
+
+@knx.command("subscribe-telegrams")
+@click.option(
+    "--max-events", type=int, default=10, show_default=True, help="Stop after N telegrams"
+)
+@click.pass_context
+def knx_subscribe_telegrams(ctx, max_events):
+    """Stream a LIVE telegram feed (in/out) and print each one."""
+    knx_core.subscribe_telegrams(
+        make_client(ctx),
+        lambda event: click.echo(json.dumps(event, default=str)),
+        max_events=max_events,
+    )
+    emit(ctx, {"stopped": True, "max_events": max_events})
+
+
+@knx.command("project-get")
+@click.pass_context
+def knx_project_get(ctx):
+    """The whole parsed ETS project (large)."""
+    emit(ctx, knx_core.project_get(make_client(ctx)))
+
+
+@knx.command("project-process")
+@click.argument("file_id")
+@click.option(
+    "--password",
+    default="",
+    show_default=True,
+    help="The ETS export password (empty for unprotected)",
+)
+@click.pass_context
+def knx_project_process(ctx, file_id, password):
+    """Parse an uploaded ETS project file (file_id from `file upload`)."""
+    emit(ctx, knx_core.project_process(make_client(ctx), file_id, password))
+
+
+@knx.command("project-remove")
+@click.confirmation_option(
+    prompt=(
+        "Remove the stored ETS project? The group monitor decodes to raw "
+        "addresses until another project is processed."
+    )
+)
+@click.pass_context
+def knx_project_remove(ctx):
+    """Drop the stored ETS project."""
+    emit(ctx, knx_core.project_remove(make_client(ctx)))
+
+
+def _entity_options(fn):
+    """Options shared by knx validate-entity / create-entity / update-entity."""
+    fn = click.option(
+        "--name", default=None, help="The entity's friendly name (one of name/device required)"
+    )(fn)
+    fn = click.option(
+        "--device", "device_info", default=None, help="device_info uuid to attach the entity to"
+    )(fn)
+    fn = click.option(
+        "--category",
+        "entity_category",
+        default=None,
+        type=click.Choice(["config", "diagnostic"]),
+    )(fn)
+    return fn
+
+
+@knx.command("validate-entity")
+@click.argument("platform", type=click.Choice(["switch", "light"]))
+@click.argument("data_json")
+@_entity_options
+@click.pass_context
+def knx_validate_entity(ctx, platform, data_json, name, device_info, entity_category):
+    """Validate an entity-store payload WITHOUT writing.
+
+    DATA_JSON is the platform's data object, e.g.
+    '{"ga_switch":{"write":[["1/1/7"]],"state":[["1/1/8"]]}}'. One of --name
+    or --device is required.
+    """
+    with handle_json_arg(data_json) as data:
+        emit(
+            ctx,
+            knx_core.validate_entity(
+                make_client(ctx),
+                platform,
+                data,
+                name=name,
+                device_info=device_info,
+                entity_category=entity_category,
+            ),
+        )
+
+
+@knx.command("create-entity")
+@click.argument("platform", type=click.Choice(["switch", "light"]))
+@click.argument("data_json")
+@_entity_options
+@click.pass_context
+def knx_create_entity(ctx, platform, data_json, name, device_info, entity_category):
+    """Create + load a switch/light entity in the KNX entity store.
+
+    Rehearse with `knx validate-entity` first — this WRITES.
+    """
+    with handle_json_arg(data_json) as data:
+        emit(
+            ctx,
+            knx_core.create_entity(
+                make_client(ctx),
+                platform,
+                data,
+                name=name,
+                device_info=device_info,
+                entity_category=entity_category,
+            ),
+        )
+
+
+@knx.command("update-entity")
+@click.argument("entity_id")
+@click.argument("platform", type=click.Choice(["switch", "light"]))
+@click.argument("data_json")
+@_entity_options
+@click.pass_context
+def knx_update_entity(ctx, entity_id, platform, data_json, name, device_info, entity_category):
+    """Update + reload an entity from the KNX entity store.
+
+    REPLACES the platform data (no merge) — `knx entity-config` reads the
+    current values to build the full payload on.
+    """
+    with handle_json_arg(data_json) as data:
+        emit(
+            ctx,
+            knx_core.update_entity(
+                make_client(ctx),
+                entity_id,
+                platform,
+                data,
+                name=name,
+                device_info=device_info,
+                entity_category=entity_category,
+            ),
+        )
+
+
+@knx.command("delete-entity")
+@click.argument("entity_id")
+@click.confirmation_option(
+    prompt=(
+        "Remove this entity from the KNX entity store? One-way: the entity "
+        "and its configuration are gone. `knx entities` lists the ids."
+    )
+)
+@click.pass_context
+def knx_delete_entity(ctx, entity_id):
+    """Remove an entity from the KNX entity store."""
+    emit(ctx, knx_core.delete_entity(make_client(ctx), entity_id))
+
+
+@knx.command("entities")
+@click.pass_context
+def knx_entities(ctx):
+    """Every entity the KNX entity store manages."""
+    emit(ctx, knx_core.list_entities(make_client(ctx)))
+
+
+@knx.command("entity-config")
+@click.argument("entity_id")
+@click.pass_context
+def knx_entity_config(ctx, entity_id):
+    """One store entity's full configuration (payload template for update-entity)."""
+    emit(ctx, knx_core.entity_config(make_client(ctx), entity_id))
+
+
+@knx.command("create-device")
+@click.argument("name")
+@click.option("--area", "area_id", default=None, help="Area id the device lands in")
+@click.pass_context
+def knx_create_device(ctx, name, area_id):
+    """Create a KNX pseudo-device row to group store entities under."""
+    emit(ctx, knx_core.create_device(make_client(ctx), name, area_id=area_id))
 
 
 # ─────────────────────────────────────────────────────── zha
