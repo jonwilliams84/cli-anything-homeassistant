@@ -42,6 +42,7 @@ from cli_anything.homeassistant.core import (
     template as template_core,
     zwave_js as zwave_js_core,
     matter as matter_core,
+    insteon as insteon_core,
 )
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
@@ -2635,3 +2636,109 @@ class TestLiveMatterAbsent:
             capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
         )
         assert "matter" in r.stdout
+
+
+class TestLiveInsteonAbsent:
+    """The test instance has no Insteon modem (and no `pyinsteon` package),
+    so `insteon` never loads.
+
+    Same discipline as TestLiveZwaveAbsent / TestLiveMatterAbsent: prove the
+    premise first (the websocket commands really are unregistered), then
+    check that every surface answers the absence cleanly instead of leaking
+    a bare `unknown_command` — and that `insteon available` turns the same
+    fact into an answer a script can branch on. On a Core install the
+    absence is DOUBLY real: no modem is configured AND the `pyinsteon`
+    package the integration imports is not installed.
+    """
+
+    def test_available_is_false_rather_than_an_error(self, live_client):
+        out = insteon_core.available(live_client)
+        assert out["available"] is False
+        assert "insteon" in out["note"]
+
+    def test_the_websocket_command_really_is_unregistered(self, live_client):
+        """The premise of every other assertion in this class."""
+        with pytest.raises(HomeAssistantError) as exc:
+            live_client.ws_call("insteon/config/get")
+        assert exc.value.code == "unknown_command"
+
+    def test_reads_raise_the_explanation_not_the_raw_code(self, live_client):
+        with pytest.raises(HomeAssistantError) as exc:
+            insteon_core.get_config(live_client)
+        assert "no Insteon modem" in str(exc.value)
+        assert "unknown_command" not in str(exc.value)
+
+    def test_device_commands_raise_it_too(self, live_client):
+        with pytest.raises(HomeAssistantError, match="no Insteon modem"):
+            insteon_core.get_aldb(live_client, "1a.2b.3c")
+        with pytest.raises(HomeAssistantError, match="no Insteon modem"):
+            insteon_core.get_scenes(live_client)
+
+    def test_writes_raise_it_before_any_queue_is_touched(self, live_client):
+        with pytest.raises(HomeAssistantError, match="no Insteon modem"):
+            insteon_core.add_aldb_record(
+                live_client,
+                "1a.2b.3c",
+                {
+                    "mem_addr": 4095,
+                    "in_use": True,
+                    "group": 0,
+                    "is_controller": True,
+                    "target": "44.45.55",
+                    "data1": 0,
+                    "data2": 0,
+                    "data3": 255,
+                },
+            )
+
+    def test_resolve_device_id_is_independent_of_the_integration(self, live_client):
+        """Entity→device resolution uses the registry, which works everywhere."""
+        entries = live_client.ws_call("config/entity_registry/list") or []
+        linked = [e["entity_id"] for e in entries if e.get("device_id")]
+        if not linked:  # a bare test HA may register no devices at all
+            pytest.skip("no registry-linked entities on this instance")
+        device_id = insteon_core.resolve_device_id(live_client, linked[0])
+        assert isinstance(device_id, str) and device_id
+
+    @staticmethod
+    def _env(hass_instance):
+        env = os.environ.copy()
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        env["HASS_VERIFY_SSL"] = "0"
+        return env
+
+    def test_available_cli_branch_point(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "insteon", "available"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 0, r.stderr
+        out = json.loads(r.stdout)
+        assert out["available"] is False
+        assert "pyinsteon" in out["note"]
+
+    def test_config_cli_says_so_cleanly(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "insteon", "config"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 1
+        assert "no Insteon modem" in r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_x10_cli_refuses_before_the_wire_when_the_input_is_bad(self, hass_instance):
+        """A bad housecode dies as click usage, with no HA round-trip."""
+        r = subprocess.run(
+            CLI_BASE + ["insteon", "add-x10", "z", "3", "light"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode != 0
+        assert "'z' is not one of 'a'" in (r.stderr + r.stdout)
+
+    def test_the_group_appears_in_the_root_help(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--help"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert "insteon" in r.stdout

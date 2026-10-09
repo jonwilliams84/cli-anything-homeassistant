@@ -96,6 +96,7 @@ from cli_anything.homeassistant.core import alarmo as alarmo_core
 from cli_anything.homeassistant.core import zwave_js as zwave_core
 from cli_anything.homeassistant.core import matter as matter_core
 from cli_anything.homeassistant.core import knx as knx_core
+from cli_anything.homeassistant.core import insteon as insteon_core
 from cli_anything.homeassistant.core import zha as zha_core
 from cli_anything.homeassistant.core import hardware_info as hardware_info_core
 from cli_anything.homeassistant.core import logger_ws as logger_ws_core
@@ -214,6 +215,22 @@ def handle_json_arg(raw: str | None):
         raise click.ClickException(f"argument must be valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise click.ClickException("argument must be a JSON object")
+    yield data
+
+
+@contextlib.contextmanager
+def handle_json_list_arg(raw: str | None):
+    """Context manager for a command argument that must be a JSON array.
+
+    Same shape as :func:`handle_json_arg`, for the few arguments that are a
+    LIST upstream (insteon scene links) rather than an object.
+    """
+    try:
+        data = json.loads(raw) if raw else []
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"argument must be valid JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise click.ClickException("argument must be a JSON array")
     yield data
 
 
@@ -19276,6 +19293,359 @@ def knx_entity_config(ctx, entity_id):
 def knx_create_device(ctx, name, area_id):
     """Create a KNX pseudo-device row to group store entities under."""
     emit(ctx, knx_core.create_device(make_client(ctx), name, area_id=area_id))
+
+
+# ──────────────────────────────────────────────────────── insteon
+
+
+@cli.group()
+def insteon():
+    """The insteon integration — devices, ALDB, properties, modem, scenes."""
+
+
+def _parse_scalar(raw: str):
+    """Parse a CLI scalar into the JSON-ish scalar the property expects.
+
+    JSON first (true/false/numbers/null/arrays), then a bare string — a
+    toggle mode like `on_off` IS just a string.
+    """
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return raw
+
+
+@insteon.command("available")
+@click.pass_context
+def insteon_available(ctx):
+    """Is insteon loaded? A read — 'no' is an answer, not an error."""
+    emit(ctx, insteon_core.available(make_client(ctx)))
+
+
+@insteon.command("device")
+@click.argument("ident")
+@click.pass_context
+def insteon_device(ctx, ident):
+    """One device's summary (device id or any entity id on it)."""
+    emit(ctx, insteon_core.get_device(make_client(ctx), ident))
+
+
+@insteon.command("device-add")
+@click.option("--address", default=None, help="Link THIS device only (address to press)")
+@click.option(
+    "--multiple",
+    is_flag=True,
+    help="Keep linking until every device has joined",
+)
+@click.pass_context
+def insteon_device_add(ctx, address, multiple):
+    """Start all-linking; waits for the device's set button.
+
+    Streams `device_added` events as devices join and ends on
+    `linking_stopped`. Linking waits for YOU — give `--timeout` a
+    generous value (e.g. 300s) or the wait dies at the client timeout.
+    """
+    emit(ctx, insteon_core.add_device(make_client(ctx), address=address, multiple=multiple))
+
+
+@insteon.command("device-add-cancel")
+@click.pass_context
+def insteon_device_add_cancel(ctx):
+    """Cancel a linking in progress."""
+    emit(ctx, insteon_core.cancel_add_device(make_client(ctx)))
+
+
+@insteon.command("device-remove")
+@click.argument("device_address")
+@click.option(
+    "--remove-all-refs",
+    is_flag=True,
+    help="Also scrub every ALDB record referencing the device",
+)
+@click.confirmation_option(
+    prompt=(
+        "Remove this Insteon device? With --remove-all-refs its link "
+        "references are scrubbed too; without them they linger as broken "
+        "links (`insteon broken-links` finds them)."
+    )
+)
+@click.pass_context
+def insteon_device_remove(ctx, device_address, remove_all_refs):
+    """Remove an Insteon (or X10) device from the integration."""
+    emit(
+        ctx,
+        insteon_core.remove_device(
+            make_client(ctx), device_address, remove_all_refs=remove_all_refs
+        ),
+    )
+
+
+@insteon.command("add-x10")
+@click.argument("housecode", type=click.Choice(list(insteon_core.X10_HOUSECODES)))
+@click.argument("unitcode", type=click.IntRange(1, 16))
+@click.argument("platform", type=click.Choice(list(insteon_core.X10_PLATFORMS)))
+@click.option("--dim-steps", type=click.IntRange(0, 255), default=None, help="Light dim steps")
+@click.pass_context
+def insteon_add_x10(ctx, housecode, unitcode, platform, dim_steps):
+    """Register an X10 HOUSECODE UNIT device (platform: switch/light/binary_sensor)."""
+    emit(
+        ctx,
+        insteon_core.add_x10_device(
+            make_client(ctx), housecode, unitcode, platform, dim_steps=dim_steps
+        ),
+    )
+
+
+@insteon.command("aldb")
+@click.argument("device_address")
+@click.pass_context
+def insteon_aldb(ctx, device_address):
+    """A device's link table — pending changes merged in and flagged dirty."""
+    emit(ctx, insteon_core.get_aldb(make_client(ctx), device_address))
+
+
+@insteon.command("aldb-add")
+@click.argument("device_address")
+@click.argument("record_json")
+@click.pass_context
+def insteon_aldb_add(ctx, device_address, record_json):
+    """Queue a NEW ALDB record (record_json: mem_addr/in_use/group/…)."""
+    with handle_json_arg(record_json) as record:
+        emit(ctx, insteon_core.add_aldb_record(make_client(ctx), device_address, record))
+
+
+@insteon.command("aldb-change")
+@click.argument("device_address")
+@click.argument("record_json")
+@click.pass_context
+def insteon_aldb_change(ctx, device_address, record_json):
+    """Queue a modification of an existing ALDB record (mem_addr selects it)."""
+    with handle_json_arg(record_json) as record:
+        emit(ctx, insteon_core.change_aldb_record(make_client(ctx), device_address, record))
+
+
+@insteon.command("aldb-write")
+@click.argument("device_address")
+@click.pass_context
+def insteon_aldb_write(ctx, device_address):
+    """Push the queued ALDB changes to the device (then reloads it)."""
+    emit(ctx, insteon_core.write_aldb(make_client(ctx), device_address))
+
+
+@insteon.command("aldb-load")
+@click.argument("device_address")
+@click.pass_context
+def insteon_aldb_load(ctx, device_address):
+    """Re-read the device's database from the bus."""
+    emit(ctx, insteon_core.load_aldb(make_client(ctx), device_address))
+
+
+@insteon.command("aldb-reset")
+@click.argument("device_address")
+@click.confirmation_option(
+    prompt="Discard ALL queued ALDB changes for this device? One-way for the queue."
+)
+@click.pass_context
+def insteon_aldb_reset(ctx, device_address):
+    """Discard ALL queued ALDB changes (the device is untouched)."""
+    emit(ctx, insteon_core.reset_aldb(make_client(ctx), device_address))
+
+
+@insteon.command("aldb-default-links")
+@click.argument("device_address")
+@click.confirmation_option(
+    prompt=(
+        "Queue the factory default links? Any ALDB changes still queued "
+        "are dropped first — `insteon aldb-write` pushes the result."
+    )
+)
+@click.pass_context
+def insteon_aldb_default_links(ctx, device_address):
+    """Clear the queue, then queue the factory default links."""
+    emit(ctx, insteon_core.add_default_links(make_client(ctx), device_address))
+
+
+@insteon.command("aldb-watch")
+@click.argument("device_address")
+@click.option("--max-events", type=int, default=10, show_default=True, help="Stop after N events")
+@click.pass_context
+def insteon_aldb_watch(ctx, device_address, max_events):
+    """Stream one device's LIVE ALDB status (record_loaded / status_changed)."""
+    insteon_core.subscribe_aldb_status(
+        make_client(ctx),
+        lambda event: click.echo(json.dumps(event, default=str)),
+        device_address,
+        max_events=max_events,
+    )
+    emit(ctx, {"stopped": True, "device_address": device_address, "max_events": max_events})
+
+
+@insteon.command("aldb-watch-all")
+@click.option("--max-events", type=int, default=10, show_default=True, help="Stop after N events")
+@click.pass_context
+def insteon_aldb_watch_all(ctx, max_events):
+    """Stream EVERY device's ALDB status — what the panel's spinner watches."""
+    insteon_core.subscribe_aldb_status_all(
+        make_client(ctx),
+        lambda event: click.echo(json.dumps(event, default=str)),
+        max_events=max_events,
+    )
+    emit(ctx, {"stopped": True, "max_events": max_events})
+
+
+@insteon.command("properties")
+@click.argument("device_address")
+@click.option("--advanced", is_flag=True, help="Include read-only + advanced flags")
+@click.pass_context
+def insteon_properties(ctx, device_address, advanced):
+    """A device's configurable properties + their per-property value schema."""
+    emit(ctx, insteon_core.get_properties(make_client(ctx), device_address, show_advanced=advanced))
+
+
+@insteon.command("property-set")
+@click.argument("device_address")
+@click.argument("name")
+@click.argument("value")
+@click.pass_context
+def insteon_property_set(ctx, device_address, name, value):
+    """Set one property (queued; `insteon properties-write` pushes it).
+
+    VALUE parses as JSON first (true/false/numbers/arrays) and falls back
+    to a bare string (e.g. a toggle mode like on_off).
+    """
+    emit(
+        ctx,
+        insteon_core.change_property(make_client(ctx), device_address, name, _parse_scalar(value)),
+    )
+
+
+@insteon.command("properties-write")
+@click.argument("device_address")
+@click.pass_context
+def insteon_properties_write(ctx, device_address):
+    """Push the queued property changes to the device."""
+    emit(ctx, insteon_core.write_properties(make_client(ctx), device_address))
+
+
+@insteon.command("properties-load")
+@click.argument("device_address")
+@click.pass_context
+def insteon_properties_load(ctx, device_address):
+    """Re-read the device's properties (overwrites the queued values)."""
+    emit(ctx, insteon_core.load_properties(make_client(ctx), device_address))
+
+
+@insteon.command("properties-reset")
+@click.argument("device_address")
+@click.confirmation_option(
+    prompt="Discard ALL queued property changes for this device? One-way for the queue."
+)
+@click.pass_context
+def insteon_properties_reset(ctx, device_address):
+    """Discard ALL queued property changes (the device is untouched)."""
+    emit(ctx, insteon_core.reset_properties(make_client(ctx), device_address))
+
+
+@insteon.command("config")
+@click.pass_context
+def insteon_config(ctx):
+    """The entry's modem config + X10 devices + overrides."""
+    emit(ctx, insteon_core.get_config(make_client(ctx)))
+
+
+@insteon.command("modem-schema")
+@click.pass_context
+def insteon_modem_schema(ctx):
+    """The modem-config form the panel shows (what modem-config-set accepts)."""
+    emit(ctx, insteon_core.get_modem_schema(make_client(ctx)))
+
+
+@insteon.command("modem-config-set")
+@click.argument("config_json")
+@click.confirmation_option(
+    prompt=(
+        "Re-point the Insteon modem with this config? The new connection is "
+        "tried first; only a success updates the entry. A PLM↔Hub switch "
+        "changes how EVERY device is reached."
+    )
+)
+@click.pass_context
+def insteon_modem_config_set(ctx, config_json):
+    """Re-point the modem (PLM/Hub) — config fields per `insteon modem-schema`."""
+    with handle_json_arg(config_json) as config:
+        emit(ctx, insteon_core.update_modem_config(make_client(ctx), config))
+
+
+@insteon.command("override-add")
+@click.argument("address")
+@click.option("--cat", default=None, help="Force the category byte (hex, e.g. 01)")
+@click.option("--subcat", default=None, help="Force the subcategory byte (hex)")
+@click.pass_context
+def insteon_override_add(ctx, address, cat, subcat):
+    """Force cat/subcat for an address the modem misreads."""
+    emit(ctx, insteon_core.add_device_override(make_client(ctx), address, cat=cat, subcat=subcat))
+
+
+@insteon.command("override-remove")
+@click.argument("address")
+@click.pass_context
+def insteon_override_remove(ctx, address):
+    """Drop a device override (platform re-derives from the modem identity)."""
+    emit(ctx, insteon_core.remove_device_override(make_client(ctx), address))
+
+
+@insteon.command("broken-links")
+@click.pass_context
+def insteon_broken_links(ctx):
+    """Controller records whose target device no longer exists."""
+    emit(ctx, insteon_core.get_broken_links(make_client(ctx)))
+
+
+@insteon.command("unknown-devices")
+@click.pass_context
+def insteon_unknown_devices(ctx):
+    """Addresses that appear in link records but are not registered."""
+    emit(ctx, insteon_core.get_unknown_devices(make_client(ctx)))
+
+
+@insteon.command("scenes")
+@click.pass_context
+def insteon_scenes(ctx):
+    """Every scene, keyed by scene number."""
+    emit(ctx, insteon_core.get_scenes(make_client(ctx)))
+
+
+@insteon.command("scene")
+@click.argument("scene_id", type=int)
+@click.pass_context
+def insteon_scene(ctx, scene_id):
+    """One scene's name, group and device links."""
+    emit(ctx, insteon_core.get_scene(make_client(ctx), scene_id))
+
+
+@insteon.command("scene-save")
+@click.argument("scene_id", type=int)
+@click.argument("name")
+@click.argument("links_json")
+@click.pass_context
+def insteon_scene_save(ctx, scene_id, name, links_json):
+    """Add-or-update a scene. LINKS_JSON: a list of
+    {"address": "1a.2b.3c", "data1": 0, "data2": 0, "data3": 255} objects —
+    it REPLACES the stored definition (a partial list drops devices).
+    """
+    with handle_json_list_arg(links_json) as links:
+        emit(ctx, insteon_core.save_scene(make_client(ctx), scene_id, name, links))
+
+
+@insteon.command("scene-delete")
+@click.argument("scene_id", type=int)
+@click.confirmation_option(
+    prompt="Delete this Insteon scene? One-way. The devices' ALDB records are untouched."
+)
+@click.pass_context
+def insteon_scene_delete(ctx, scene_id):
+    """Delete a scene."""
+    emit(ctx, insteon_core.delete_scene(make_client(ctx), scene_id))
 
 
 # ─────────────────────────────────────────────────────── zha
