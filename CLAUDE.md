@@ -8,10 +8,10 @@ logic or renders templates locally. Every command supports `--json`.
 
 ## Layout
 - `cli_anything/homeassistant/homeassistant_cli.py` — the Click CLI + REPL (~10k lines, single file; all commands wired here). Entry point: `main`.
-- `cli_anything/homeassistant/core/` — ~122 modules, one HA API surface each (states, registry, lovelace*, automation, backup, statistics, powercalc*, …). Each is pure function-per-operation, callable from Python directly or via the Click wrapper.
+- `cli_anything/homeassistant/core/` — ~123 modules, one HA API surface each (states, registry, lovelace*, automation, backup, statistics, powercalc*, …). Each is pure function-per-operation, callable from Python directly or via the Click wrapper.
 - `cli_anything/homeassistant/utils/homeassistant_backend.py` — the wire client: `requests.Session` (REST) + websocket-client (WS) + `download()` (streamed binary, for a multi-GB backup) and `upload()` (multipart). All core modules call through this. Three WS shapes, three methods: `ws_call` (request/response), `ws_subscribe` (open-ended, caller stops it), `ws_run_events` (run-to-completion — empty ack, then events, terminal condition read from the data; `on_ack` pushes binary audio on a daemon thread).
 - `cli_anything/homeassistant/skills/SKILL.md` — packaged self-contained skill manifest (full command docs); packaged via `package_data`.
-- `tests/` — 90 files, 4,550+ tests. `tests/conftest.py` defines `FakeClient` (records every REST/WS call, returns prepared responses). E2e tests boot a real HA in a temp config dir.
+- `tests/` — 135 test files, 5,100+ tests. `tests/conftest.py` defines `FakeClient` (records every REST/WS call, returns prepared responses). E2e tests boot a real HA in a temp config dir.
 - `HOMEASSISTANT.md` — SOP / agent operating guide. `CHANGELOG.md` — per-version detail.
 
 ## Commands

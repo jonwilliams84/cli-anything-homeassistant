@@ -4,6 +4,102 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.58.0] — 2026-10-09
+
+A coverage-refine pass that closes the last mainstream integration surface
+without a command group: **Insteon**. The pattern is the one v1.54
+(`zwave_js`), v1.56 (`matter`) and v1.57 (`knx`) established — Insteon, the
+whole-estate lighting protocol whose configuration is a separate
+`insteon_frontend` panel, was reachable only through raw state reads and
+registry dumps. This pass adds `core/insteon.py` and an `insteon` command
+group wrapping ALL 30 WS commands
+`homeassistant/components/insteon/api/*.py` registers (device, aldb,
+properties, config, scenes — 2026.8.x).
+
+Also fixed in passing: the KNX group landed in v1.57 without a README
+command-table row or SOP row; both now exist.
+
+### New group: `insteon` (31 commands, 30 WS commands + `available`)
+
+- **Devices** — `device` (an entity id or device id; the address, battery
+  flag and ALDB status the panel's row shows), `device-add` (start
+  all-linking; run-to-completion, `device_added` events collected and
+  `linking_stopped` ends it — linking waits for the device's set button, so
+  pass a long `--timeout`), `device-add-cancel`, `device-remove`
+  (destructive, confirmation-gated; `--remove-all-refs` scrubs the device's
+  ALDB references, without them they linger as broken links), `add-x10`
+  (housecode a–p, unitcode 1–16, platform switch/light/binary_sensor,
+  `--dim-steps` for lights).
+- **All-Link Database** — the change-then-write cycle the panel drives:
+  `aldb` (the table, with pending changes merged in and flagged `dirty`),
+  `aldb-add` / `aldb-change` (queue new / modified records — validated
+  client-side against the upstream schema, the missing or out-of-range key
+  named before HA ever sees it), `aldb-write` (push the queue + reload),
+  `aldb-load`, `aldb-reset` (drop the whole queue; confirmation-gated),
+  `aldb-default-links` (clears the queue first and says so;
+  confirmation-gated), and the two LIVE subscriptions `aldb-watch` /
+  `aldb-watch-all` (`record_loaded` / `status_changed` feeds,
+  `--max-events` bounded).
+- **Device properties** — `properties` (per-property values + the value
+  schema the panel renders its forms from; `--advanced` un-hides the
+  read-only and advanced flags), `property-set` (queued; VALUE parses as
+  JSON first and falls back to a bare string — a toggle mode IS a string),
+  `properties-write` / `properties-load` / `properties-reset`
+  (the reset is destructive to the queue and confirmation-gated).
+- **Modem configuration** — `config` (modem config + X10 + overrides),
+  `modem-schema` (the form the panel shows — the shape
+  `modem-config-set` wants), `modem-config-set` (re-points the modem; the
+  new connection is TRIED FIRST and a failure leaves the entry untouched;
+  confirmation-gated because it changes how every device is reached),
+  `override-add` / `override-remove` (force cat/subcat for an address the
+  modem misreads), `broken-links` and `unknown-devices` (the two halves of
+  the link-consistency scan — the fix for the first is
+  `device-remove --remove-all-refs`).
+- **Scenes** — `scenes`, `scene`, `scene-save` (a JSON list of
+  `{address, data1, data2, data3}` device links — validated client-side;
+  REPLACES the stored definition, a partial list drops devices),
+  `scene-delete` (confirmation-gated).
+
+### Notable behaviour
+
+- **`insteon available` is a READ** — 'not loaded' is an answer with exit 0,
+  checked against the loaded-components list. Every other command turns
+  `unknown_command` (no configured modem; on a Core install also the
+  `pyinsteon` / `insteon_frontend` packages being missing) into one sentence
+  naming both routes, instead of leaking the bare code a typo gets.
+- **Two queues, one habit**: both the ALDB and the device properties follow
+  pyinsteon's edit-then-push cycle, and `aldb get` is the only place the
+  difference between what the device holds and what is queued is visible
+  (the `dirty` flag). The destructive halves (`aldb-reset`,
+  `properties-reset`, `aldb-default-links`) name what they drop.
+- Everything is admin-only upstream (every command is `@require_admin`);
+  the client does not duplicate the check, it surfaces what a non-admin
+  connection gets back.
+
+### Tests
+
+- `tests/test_insteon.py` (62) — payload shapes against the upstream
+  schemas, ALDB record and scene-link validation refusals, X10 clamps,
+  entity→device resolution, the absent-integration guard on both
+  transports, and the scalar parsing of `property-set`.
+- `tests/test_cli_insteon_wiring.py` (33) — every command wired through the
+  real Click decorators, option parsing and Choice clamps; all six
+  destructive confirmation gates; subscription ergonomics; workflow
+  round-trips (read → queue → write → reload; broken links → remove with
+  references).
+- `tests/test_full_e2e.py` `TestLiveInsteonAbsent` (10) — proven against a
+  real Home Assistant the same way the supervisor/zwave/matter classes are:
+  the instance genuinely has no Insteon modem and no `pyinsteon` package, so
+  the premise (unregistered commands) is real, and `insteon available` is a
+  branch point a script can exit on while the CLI explains the install
+  rather than the code.
+
+### Results
+
+```
+5103 passed, 33 skipped, 84.17% cover (gate: --cov-fail-under=77)
+```
+
 ## [1.57.0] — 2026-10-02
 
 A pass that closes the last mainstream bus-integration surface: **KNX**. The

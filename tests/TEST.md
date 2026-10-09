@@ -1317,3 +1317,68 @@ Key behaviours pinned:
   "nothing happened", each naming where to look next.
 - `remove-fabric` requires confirmation; the prompt says what stops working.
   `set-wifi` prompts hidden for the password and never echoes it.
+
+## v1.58.0 refine pass — the `insteon` group (Insteon integration)
+
+The last mainstream integration surface without a command group: Insteon —
+the whole-estate lighting protocol whose configuration is a separate
+`insteon_frontend` panel, reachable only through raw state reads. v1.58 adds
+`core/insteon.py` and an `insteon` command group over ALL 30 WS commands
+`homeassistant/components/insteon/api/*.py` registers (device, aldb,
+properties, config, scenes — 2026.8.x).
+
+```
+before ........................ 4998 passed, 32 skipped
+after ......................... 5103 passed, 33 skipped  (84.17% cover)
+
+test_insteon.py ................ 62 passed   (payload shapes, ALDB record +
+                                              scene-link validation refusals,
+                                              X10 clamps, entity→device
+                                              resolution, absent guard on
+                                              both transports, scalar parsing)
+test_cli_insteon_wiring.py ..... 33 passed   (every command wired, Choice
+                                              clamps, six confirmation gates,
+                                              subscription ergonomics,
+                                              workflow round-trips)
+test_full_e2e.py ............... +10 in TestLiveInsteonAbsent (7 pass against
+                                              a real HA; the premise — no
+                                              modem AND no `pyinsteon` — is
+                                              real, 1 skip when the test
+                                              instance has no registry-linked
+                                              entities)
+```
+
+Key behaviours pinned:
+
+- `insteon available` is a READ — checked against the loaded components
+  list, so a missing integration is an answer (`available: false`, exit 0)
+  and a failed components probe surfaces the ORIGINAL error, not a wrong
+  "not loaded" claim.
+- Every other command turns `unknown_command` into one sentence naming the
+  integration AND the Core-install reason (`pyinsteon` /
+  `insteon_frontend` packages) — never the bare code a typo gets. The
+  guard covers the streaming commands too (`device-add` through
+  `ws_run_events`, the subscriptions through `ws_subscribe`).
+- ALDB records are validated client-side against the upstream schema
+  (mem_addr ≥ 0, in_use/is_controller strictly boolean, group 0–255,
+  data1/2/3 0–255, target non-empty, unknown keys refused) — the refusal
+  names the field instead of a bare `vol.Invalid` message.
+- The edit-then-push queues are stated in the notes: `aldb-add` /
+  `aldb-change` / `property-set` say `aldb-write` / `properties-write`
+  pushes them; `aldb-reset` / `properties-reset` / `aldb-default-links`
+  say what they drop (default-links clears the queue FIRST, then queues
+  the factory set).
+- `add-x10` validates housecode (a–p), unitcode (1–16), platform
+  (switch/light/binary_sensor) and `--dim-steps` (0–255) client-side; a
+  platform choice is also Clamped by Click for free.
+- Scene links follow upstream `DeviceLinkSchema`: a JSON LIST of
+  `{address, data1, data2, data3}` objects — a new `handle_json_list_arg`
+  context manager parses it (the shared one requires an object), and the
+  validation refusal names the missing key and its index.
+- `device-add` is the run-to-completion websocket shape: `device_added`
+  events collected, `linking_stopped` is the terminal predicate, and the
+  help says linking waits for the device's set button — pass a long
+  `--timeout`.
+- Six destructive commands are confirmation-gated, each prompt naming what
+  is lost: `device-remove`, `aldb-reset`, `aldb-default-links`,
+  `properties-reset`, `modem-config-set`, `scene-delete`.
