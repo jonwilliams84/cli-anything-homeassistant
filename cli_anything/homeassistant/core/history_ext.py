@@ -156,14 +156,18 @@ def history_with_stats_fallback(
     """
     if not entity_id:
         raise ValueError("entity_id is required")
-    if end is None:
-        end = datetime.now(timezone.utc)
-    if start >= end:
-        raise ValueError("start must be before end")
+    # Normalise naive/aware BEFORE comparing — issue #50's TypeError came
+    # from comparing a naive `start` with the aware default `end`
+    # (datetime.now(timezone.utc)). Naive input is treated as UTC, which
+    # matches the `history` command's `_iso` behaviour.
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
+    if end is None:
+        end = datetime.now(timezone.utc)
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
+    if start >= end:
+        raise ValueError("start must be before end")
 
     # 1. Try recorder first — it gives the precise values
     states_resp = _history.history(

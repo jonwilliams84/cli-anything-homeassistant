@@ -89,6 +89,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `state` / `service` / `event` | Live state machine, service calls, event bus fire |
 | `template` | Render Jinja against live state (`--file` for multi-line) |
 | `history` / `logbook` | Time-series and human-readable change logs |
+| `history-ext` | **Long-history fallback** — `with-stats-fallback` stitches recorder states and long-term statistics into one chronological `{when, value, source}` list (the recorder's `purge_keep_days` window plus a statistics back-fill for everything older), `retention-estimate` measures how far back the recorder actually keeps an entity, `stats-to-samples` flattens a `recorder/statistics_during_period` response (`--stats-json` / `--from-file`) to plain rows. `--start`/`--end` accept naive ISO-8601 (treated as **UTC**), RFC 3339 with `Z`, or an explicit offset — mixed naive/aware pairs compare correctly (issue #50) |
 | `system` | API status, config, core-state, components, **error-log triage** (`--since` / `--top --by` / `--watch`), health |
 | `lovelace` | Dashboard inventory + **surgical view/section/card edits**, search, paths, lint, prune, mirror |
 | `automation` / `script` | List, trigger, run, reload, **traces** + `get_trace` for both |
@@ -176,6 +177,11 @@ cli-anything-homeassistant --timeout 600 backup download <id> ./ --agent-id back
 
 # Why is this entity's history empty — quiet, or not recorded at all?
 cli-anything-homeassistant prefs recorded sensor.something
+
+# Months of trend from one command: recorder states + statistics back-fill
+# (naive --start is treated as UTC, so no offset-naive/aware crash — #50)
+cli-anything-homeassistant --json history-ext with-stats-fallback sensor.temperature \
+  --start 2026-01-01T00:00:00 --period day | jq '.'
 
 # Live triage: what's broken in the last hour?
 cli-anything-homeassistant system error-log --since 1h --errors-only \

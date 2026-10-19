@@ -4,6 +4,67 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.58.1] — 2026-10-19
+
+Bugfix release for **GitHub issue #50**: `history-ext with-stats-fallback`
+crashed with ``TypeError: can't compare offset-naive and offset-aware
+datetimes`` whenever `--start` was given without a timezone:
+
+    cli-anything-homeassistant history-ext with-stats-fallback sensor.temperature \
+      --start 2026-04-01T00:00:00
+
+The `--end` option defaults to *now* (UTC, timezone-aware), so comparing the
+naive `--start` against it raised before the command ever went to the wire.
+This mattered because naive ISO-8601 is what people type — the `history`
+command had always accepted it (treating it as UTC), so the same timestamp
+worked in `history` and crashed in `history-ext with-stats-fallback`.
+
+### What changed
+
+- **New shared time parser — `core/timeparse.py`** (the root fix, not a
+  workaround): `parse_time_arg()` and `parse_time_range()` give every
+  command that takes `--start`/`--end` identical parsing rules: naive
+  datetimes are treated as UTC, an explicit `Z`/`z` suffix is accepted,
+  offsets like `+02:00` are preserved, invalid input fails fast with an
+  error that names the offending option (e.g. `invalid --start`), and a
+  naive/aware pair is normalised on BOTH sides *before* any comparison —
+  the mixed `--start`/`--end` case that used to raise the offset-naive
+  vs offset-aware `TypeError`.
+- **`history-ext with-stats-fallback`** now parses its `--start`/`--end`
+  through `parse_time_range()` — the exact command from issue #50 works
+  with a bare naive `--start`, with naive or aware `--end`, and with them
+  mixed either way. `--start` after `--end` is still refused, now with a
+  clear message instead of a traceback.
+- **`history`** now parses `--start`/`--end` through the same parser too —
+  same naive-is-UTC semantics it always had, plus the previously missing
+  `Z`-suffix/whitespace/invalid-input handling.
+- **`core/history_ext.history_with_stats_fallback`** (the library layer)
+  was also reordered to normalise timezone-naive `start`/`end` to UTC
+  *before* the `start >= end` validation, so direct Python callers of the
+  API hit the same fix.
+
+### Checked, unaffected
+
+- `history-ext retention-estimate` and `history-ext stats-to-samples` take
+  no `--start`/`--end` (the first derives its probe window from `now()`,
+  the second reads epoch-ms buckets); their internal `_parse_dt` already
+  treats naive timestamps as UTC.
+- The `history-logbook` group (`history-during-period`, `history-stream`,
+  `logbook-events`, `logbook-stream`) forwards raw RFC 3339 strings
+  straight to HA's WebSocket API and never parses or compares start/end,
+  so the crash class does not apply.
+
+### Tests
+
+`tests/test_history_time_parsing.py` (25 tests) pins the regression: the
+shared parser (naive→UTC, `Z` suffix, offset preservation, defaults,
+option-named errors, ordering validation), the no-crash core path for
+naive/aware/mixed arguments, and end-to-end CLI runs of both
+`history-ext with-stats-fallback` and `history` with naive, aware,
+`Z`-suffixed and mixed timestamps.
+
+Fixes #50
+
 ## [1.58.0] — 2026-10-09
 
 A coverage-refine pass that closes the last mainstream integration surface

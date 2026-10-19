@@ -136,6 +136,7 @@ from cli_anything.homeassistant.core import energy_advanced as energy_advanced_c
 from cli_anything.homeassistant.core import statistics_admin as statistics_admin_core
 from cli_anything.homeassistant.core import helper_previews as helper_previews_core
 from cli_anything.homeassistant.core import history_ext as history_ext_core
+from cli_anything.homeassistant.core.timeparse import parse_time_arg, parse_time_range
 from cli_anything.homeassistant.core import history_logbook as history_logbook_core
 from cli_anything.homeassistant.core import lovelace_layout_lint as lovelace_layout_lint_core
 from cli_anything.homeassistant.core import lovelace_sections_ext as lovelace_sections_ext_core
@@ -2384,9 +2385,11 @@ def history_cmd(
     if hours is not None:
         start = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
     if start_iso:
-        start = datetime.fromisoformat(start_iso)
+        # Shared parser (issue #50): naive → UTC, Z suffix ok, fast-fail
+        # with an option-named error on bad input.
+        start = parse_time_arg(start_iso, field="--start")
     if end_iso:
-        end = datetime.fromisoformat(end_iso)
+        end = parse_time_arg(end_iso, field="--end")
     emit(
         ctx,
         history_core.history(
@@ -15401,10 +15404,10 @@ def history_ext():
 @click.pass_context
 def history_ext_with_stats_fallback(ctx, entity_id, start_iso, end_iso, period, value_field):
     """Return a unified history list (recorder + statistics back-fill)."""
-    from datetime import datetime as _dt
-
-    start = _dt.fromisoformat(start_iso.replace("Z", "+00:00"))
-    end = _dt.fromisoformat(end_iso.replace("Z", "+00:00")) if end_iso else None
+    # Shared parser (issue #50): a naive --start is treated as UTC so it
+    # compares cleanly with the aware default --end (now) instead of
+    # raising offset-naive/aware TypeError.
+    start, end = parse_time_range(start_iso, end_iso)
     emit(
         ctx,
         history_ext_core.history_with_stats_fallback(
