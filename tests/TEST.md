@@ -1382,3 +1382,46 @@ Key behaviours pinned:
 - Six destructive commands are confirmation-gated, each prompt naming what
   is lost: `device-remove`, `aldb-reset`, `aldb-default-links`,
   `properties-reset`, `modem-config-set`, `scene-delete`.
+
+## v1.58.1 bugfix — shared `--start`/`--end` time parsing (issue #50)
+
+`history-ext with-stats-fallback` crashed with ``TypeError: can't compare
+offset-naive and offset-aware datetimes`` when `--start` had no timezone
+and `--end` was left at its aware default (`now()`). Root fix: a new
+`core/timeparse.py` (`parse_time_arg` / `parse_time_range`) shared by the
+`history` command and every `history-ext` / `history-logbook` entry point
+that parses times — naive = UTC, `Z` suffix accepted, offsets preserved,
+invalid input named with its option, and naive/aware pairs normalised on
+both sides before any comparison.
+
+```
+test_history_time_parsing.py ... 25 passed  (shared parser unit tests,
+                                              naive/aware/mixed core
+                                              no-crash paths, CLI runs of
+                                              with-stats-fallback and
+                                              history with naive, aware,
+                                              Z-suffixed and mixed inputs)
+after .......................... 5128 passed, 33 skipped  (84.27% cover)
+```
+
+Pinned behaviours:
+
+- The exact issue-#50 invocation — `history-ext with-stats-fallback
+  sensor.temp --start 2026-05-01T00:00:00` with no `--end` — exits 0 and
+  emits the statistics back-fill instead of raising.
+- Naive + aware mix in BOTH directions (naive start/aware end and aware
+  start/naive end) reach the same result; naive `--start`/`--end` pairs
+  work standalone; `Z`-suffixed RFC 3339 works everywhere.
+- `history --start`/`--end` uses the same parser: a naive pair is sent to
+  HA as `...+00:00` (same UTC semantics it always had), and invalid input
+  fails fast with `error: invalid --start (...)` naming the option.
+- `--start` after `--end` is refused with
+  `error: --start must be before --end` (previously a ValueError
+  traceback from the core validation path).
+- At the library layer, `history_with_stats_fallback` normalises naive
+  `start`/`end` to UTC BEFORE the `start >= end` check, so direct Python
+  callers get the same fix.
+- Checked, unaffected: `history-ext retention-estimate` and
+  `history-ext stats-to-samples` take no `--start`/`--end`; the
+  `history-logbook` group forwards RFC 3339 strings straight to the
+  WebSocket API without parsing or comparing them.
