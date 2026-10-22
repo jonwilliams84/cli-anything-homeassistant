@@ -86,7 +86,8 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `config`           | Connection profile: `show`, `set`, `save`, `test`.                                              |
 | `system`           | Server introspection (REST): info, config, core-state, error-log, components, manifest/analytics/issue/usb-scan/zha-permit-join/hardware-info/log. |
 | `state`            | Entity state read/write: `list`, `get`, `set`, `delete`, `domains`, `counts`.                  |
-| `service`          | Service registry + calls: `list`, `domains`, `describe`, `call -D key=value -T entity_id=…`.    |
+| `http`             | Home Assistant's own HTTP server config: `config` (stable vs pending), `set KEY=VALUE` (stores a pending config and RESTARTS HA), `promote` (make the pending config stable). |
+| `service`          | Service registry + calls: `list`, `domains`, `describe`, `call -D key=value -T entity_id=…`; `--raw key=value` sends a value **verbatim as a string** (a JSON-looking payload stays a string — what `mqtt.publish` wants).    |
 | `event`            | Event bus: `list`, `fire`, `subscribe --limit N`.                                              |
 | `template`         | Render Jinja against live state; `-V key=value` to inject vars.                                |
 | `area`/`floor`/`label`/`category` | Full CRUD on each registry (WebSocket).                                          |
@@ -102,13 +103,13 @@ Environment overrides: `HASS_URL`, `HASS_TOKEN`, `HASS_VERIFY_SSL`,
 | `config-entry`     | List/get/reload/delete/update + options flows (`options-init`/`options-configure`/`options-set`). |
 | `config-flow`      | Create new integrations: `init`, `configure`, `create`, `get`, `abort`, `walk` (multi-step driver). |
 | `subentry`         | Manage config-entry subentries.                                                                |
-| `mqtt`             | `publish`, `subscribe` (diagnostics).                                                          |
+| `mqtt`             | `publish <topic> [payload] [--retain] [--qos]`, `subscribe` (diagnostics). The payload is always sent as a STRING.                                                          |
 | `mqtt-discovery`   | List/show/republish discovery topics.                                                          |
 | `history`/`logbook`| Time-series + human-readable change logs (use `--hours`, `--start`, `-e entity_id`).            |
 | `recorder`         | Recorder introspection — entity history depth checks.                                          |
 | `statistics`       | Long-term stats: `list`, `metadata`, `series`, `update-metadata`, `clear`.                     |
-| `backup`           | `list`, `create`, `show`, `delete`, `restore` (HA 2024.6+).                                     |
-| `repairs`          | `list`, `show`, `ignore`, `fix` on HA's repairs feed.                                          |
+| `backup`           | `list`, `create`, `show`, `delete`, `restore` (HA 2024.6+). `create` sends `agent_ids` (every configured agent unless `--agent` says otherwise) and `include_database` — HA 2026.10 rejects the old `database_included` name.                                     |
+| `repairs`          | `list`, `show`, `ignore` (`repairs ignore DOMAIN ISSUE_ID`), `fix` on HA's repairs feed.                                          |
 | `diagnostics`      | Per-integration + per-device diagnostic JSON downloads.                                        |
 | `lovelace`         | Dashboards: `dashboards`, `config`, `view`, `section`, `resources`, `card`, `badge` — surgical edits. |
 | `lovelace-tools`   | Backup/diff utilities for dashboards.                                                          |
@@ -392,6 +393,22 @@ cli-anything-homeassistant entity bulk-update \
 cli-anything-homeassistant backup create --name "pre-rotation snapshot"
 cli-anything-homeassistant backup list --json
 ```
+
+`backup create` targets every configured backup agent by default
+(`backup.local` and friends). Narrow it with `--agent backup.local`, or skip
+the recorder database with `--no-database` (smaller, faster).
+
+### Change the web server's own settings (bind address, TLS, proxies)
+
+```bash
+cli-anything-homeassistant http config                 # stable vs PENDING
+cli-anything-homeassistant http set server_host=0.0.0.0 --yes   # restarts HA
+cli-anything-homeassistant http promote --yes          # accept it as stable
+```
+
+The new config is a TRIAL: it is stored as pending, HA restarts with it, and
+it is reverted automatically unless you promote it. Check `http config` first
+when a setting "did not take".
 
 ### Render templates without poking automations
 
@@ -803,18 +820,44 @@ These are paid in lost time. Read them before mutating anything.
   command. Newly added in v1.39: `automation save`, `script save`,
   `lovelace card insert/delete` all carry `--dry-run` (diff against live).
 - **Destructive verbs require `--yes` when scripted.** Affects (v1.39+):
-  `automation save`, `script save`, `lovelace config save`, `shopping-list
-  remove`/`clear-completed`, `todo remove`/`clear-completed`, `system
-  reload-core-config`/`reload-all`, `state delete`, `tag delete`,
-  `alarmo sensor-remove`/`sensor-update`/`area-delete`/`config-set`. Without
-  `--yes` and without a TTY, the command aborts rather than blocking.
+  `automation save`, `automation delete`, `script save`, `script delete`,
+  `lovelace config save`, `config-entry delete`, `config-entry remove-device`,
+  `shopping-list remove`/`clear-completed`, `todo remove`/`clear-completed`,
+  `system reload-core-config`/`reload-all`, `state delete`, `tag delete`,
+  `alarmo sensor-remove`/`sensor-update`/`area-delete`/`config-set`, and
+  `http set`/`http promote`. Without `--yes` and without a TTY, the command
+  aborts rather than blocking.
+- **`backup create` sends the 2026.10 payload, and the OLD one is a 400.**
+  HA now REQUIRES `agent_ids` on `backup/generate` (every configured agent —
+  e.g. `backup.local` — unless `--agent` narrows it) and names the database
+  flag `include_database`. The pre-2025 `database_included` / `addons_included`
+  / `folders_included` names are rejected as extra keys, with an error that
+  says nothing useful. `backup create` and `backup create --no-database`
+  both work against 2026.10.
+- **`service call -D` JSON-decodes; some services want a STRING.**
+  `-D 'payload={"id":"x"}'` sends an OBJECT and `mqtt.publish` answers 400
+  (its payload is a string). Use `--raw 'payload={"id":"x"}'` — the value is
+  sent exactly as typed. `mqtt publish <topic> <payload>` always sends a
+  string and is the friendlier door.
+- **`lovelace prune --entity-prefix` removes ENTRIES, not whole cards.**
+  A card holding many entities (an `entities: [...]` list, a picture-elements
+  card's `elements: [...]`) loses only the matching entries; the card is
+  dropped only when nothing is left in it. A card with a single `entity` is
+  still dropped whole.
+- **`http set` RESTARTS Home Assistant, and the change is a TRIAL.** The new
+  config is stored as PENDING and HA restarts to apply it. If it is not
+  promoted with `http promote` it is reverted automatically after a few
+  minutes — a config that "did not take" is usually an unpromoted pending one
+  (`http config`, or `prefs http`, shows which slot is active).
 - **`automation delete <entity_id>` / `script delete <entity_id>`** (v1.46.3+)
   hit HA's UI-managed-config DELETE endpoints directly (`DELETE
   config/automation/config/{id}` / `DELETE config/script/config/{object_id}`)
   — the correct way to remove an automation/script, as opposed to the
   generic `entity remove` (which only tears the registry entry out, not the
   underlying automation/script config). Both are confirmation-gated like the
-  other destructive verbs above; pass `--yes` when scripted.
+  other destructive verbs above; pass `--yes` when scripted. `automation
+  delete` also accepts the automation's numeric CONFIG id (the `id` the UI
+  shows) instead of its entity_id.
 - **`action run` is not `service call`.** `action run` goes through HA's
   *script engine* (WS `execute_script`, admin-only): the run is traced, gets a
   script context, honours full script syntax (`choose`/`repeat`/`delay`/

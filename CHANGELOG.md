@@ -4,6 +4,56 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.59.0] — 2026-10-22
+
+Refine pass "ha-1", driven by gaps found against a live Home Assistant
+2026.10.2.
+
+### What changed
+
+- **`backup create` now sends the 2026.10 payload** (fixes #52). HA's
+  `backup/generate` REQUIRES `agent_ids` — the harness now sends every
+  configured agent (`backup.local` and friends, read from
+  `backup/agents/info`) unless `--agent` narrows the list — and the
+  database flag is `include_database`, not the pre-2025
+  `database_included`, which HA rejects as an extra key (likewise
+  `include_addons` / `include_folders` for the old `addons_included` /
+  `folders_included`). A pre-2025 HA that answers "extra keys not allowed"
+  is retried with the old field names, so older installs still work.
+- **`service call --raw key=value`** sends the value **verbatim as a
+  string**, with no JSON decoding. `-D 'payload={"id":"x"}'` still turns
+  the value into an object, which `mqtt.publish` answers 400 to; the
+  dedicated `mqtt publish <topic> [payload] [--retain] [--qos]` command
+  already sent a string and is documented as such.
+- **`lovelace prune --entity-prefix` now removes ENTRIES**, not whole
+  cards: the matching members of an `entities: [...]` list and of a
+  picture-elements card's `elements: [...]` are dropped, and the card is
+  dropped only when nothing is left in it. A card with a single `entity`
+  is still dropped whole. The counters gained `removed_entities` and
+  `removed_elements`.
+- **`automation delete` accepts the automation's numeric config id** as
+  well as its entity_id. The destructive commands (`automation delete`,
+  `config-entry delete`, `config-entry remove-device`, `lovelace config
+  save`) all take `--yes`; the first two already did, and the set is now
+  pinned by tests.
+- **New `http` group** — Home Assistant's own HTTP server configuration:
+  `http config` (stable vs pending), `http set KEY=VALUE` (stores a
+  pending config and restarts HA) and `http promote` (accepts the pending
+  config as stable), over the `http/config`, `http/config/configure` and
+  `http/config/promote` websocket commands.
+- **`repairs ignore` uses the real websocket command.** It was sending
+  `repairs/ignore`, which does not exist; HA's command is
+  `repairs/ignore_issue`. The CLI also takes the domain positionally —
+  `repairs ignore DOMAIN ISSUE_ID` — with the old
+  `repairs ignore ISSUE_ID --domain DOMAIN` still working.
+
+### Tests
+
+`tests/test_refine_ha1.py` (25 tests) pins the new behaviour end to end
+through the CLI; `tests/test_backup.py` and `tests/test_coverage_boost.py`
+were extended for the new payloads and the new prune semantics, and
+`tests/test_repairs.py` for the corrected websocket command.
+
 ## [1.58.1] — 2026-10-19
 
 Bugfix release for **GitHub issue #50**: `history-ext with-stats-fallback`

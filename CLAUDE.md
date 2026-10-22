@@ -25,6 +25,38 @@ logic or renders templates locally. Every command supports `--json`.
 - Versioning: bump `version` in `setup.py`, add a `CHANGELOG.md` entry. Work happens on `feat/*` branches → PR → merge to `main` (see git history). Tags like `v1.42.0` per release.
 - Powercalc commands are safety wrappers over HA footguns (REPLACE-on-write options flow, binary_sensor no-op); preserve the backup-first / dry-run-by-default / `--apply`-to-commit pattern when extending them (mirrored in `entity prune`).
 
+## Gotchas from the v1.59.0 refine pass (ha-1)
+
+- **`backup/generate` HAS A SCHEMA AND IT CHANGED.** Since 2025.1 it is
+  `vol.Required("agent_ids"): [str]` plus `include_addons` /
+  `include_database` / `include_folders` / `include_homeassistant` /
+  `name` / `password`. The pre-2025 names (`database_included`,
+  `addons_included`, `folders_included`) are EXTRA keys and HA refuses the
+  whole message — the error names the offending key, not the fix. The
+  harness sends `agent_ids` (every agent from `backup/agents/info`, whose
+  ids look like `backup.local`) and retries with the old names when HA
+  answers "extra keys not allowed".
+- **`repairs/ignore` IS NOT A COMMAND.** The real one is
+  `repairs/ignore_issue` (`repairs/list_issues` and
+  `repairs/get_issue_data` are the other two). A command name that no
+  HA source contains is a `unknown_command`, not a schema error.
+- **`http/config/configure` takes `{"config": {...}}` — the WHOLE config,
+  validated against `HTTP_STORAGE_SCHEMA`.** Extra keys (including the
+  store's own `created_at` / `error` / `error_message`) are refused, and
+  `use_x_forwarded_for` without `trusted_proxies` is refused by HA's own
+  validator. The command STORES A PENDING config and RESTARTS HA; the
+  pending config is reverted automatically unless `http/config/promote`
+  promotes it, so "the setting did not take" usually means "it was never
+  promoted".
+- **`-D key=value` JSON-decodes, and several services want a STRING.**
+  `mqtt.publish` answers 400 to an object payload. The harness now has
+  `--raw key=value` for the verbatim case.
+- **A lovelace card can hold MANY entities.** `entity_prefixes` in
+  `prune` is ENTRY-level for `entities: [...]` and for a
+  picture-elements card's `elements: [...]`: the matching entries go, the
+  card stays unless it is emptied. A card with a single `entity` is still
+  dropped whole. The two rules are not the same rule.
+
 ## Gotchas from the v1.52.0 refine pass (the Supervisor)
 
 - **A COVERAGE SCAN THAT MATCHES LITERALS LIES ABOUT CONSTANTS.** The v1.51.0

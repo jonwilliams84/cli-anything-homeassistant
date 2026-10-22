@@ -37,6 +37,7 @@ from cli_anything.homeassistant.core import events as events_core
 from cli_anything.homeassistant.core import helpers as helpers_core
 from cli_anything.homeassistant.core import helper_integrations as helper_integrations_core
 from cli_anything.homeassistant.core import history as history_core
+from cli_anything.homeassistant.core import http_config as http_config_core
 from cli_anything.homeassistant.core import lovelace as lovelace_core
 from cli_anything.homeassistant.core import areas as areas_core
 from cli_anything.homeassistant.core import assist as assist_core
@@ -326,6 +327,26 @@ def parse_kv_pairs(pairs: tuple[str, ...]) -> dict:
             out[key] = json.loads(val)
         except json.JSONDecodeError:
             out[key] = val
+    return out
+
+
+def parse_raw_pairs(pairs: tuple[str, ...]) -> dict:
+    """Parse `key=value` pairs whose values are sent VERBATIM.
+
+    Unlike :func:`parse_kv_pairs` the value is never JSON-decoded, so
+    `payload={"id":"x"}` stays the STRING `{"id":"x"}` instead of becoming a
+    dict. Several services (mqtt.publish, notify.*) take their payload as a
+    string and answer 400 when they are handed a JSON object.
+    """
+    out: dict = {}
+    for raw in pairs:
+        if "=" not in raw:
+            raise click.BadParameter(f"Expected key=value, got: {raw!r}")
+        key, val = raw.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise click.BadParameter(f"Empty key in: {raw!r}")
+        out[key] = val
     return out
 
 
@@ -1161,6 +1182,14 @@ def service_describe(ctx, domain_arg, service_arg):
     "--data", "-D", multiple=True, help="Service data key=value (JSON values supported, repeatable)"
 )
 @click.option(
+    "--raw",
+    "raw",
+    multiple=True,
+    help="Service data key=value sent VERBATIM as a string, with no JSON "
+    "decoding (repeatable). Overrides the same key given with -D. "
+    'E.g. --raw \'payload={"id":"x"}\'',
+)
+@click.option(
     "--target",
     "-T",
     multiple=True,
@@ -1179,9 +1208,17 @@ def service_describe(ctx, domain_arg, service_arg):
     help="Print what would be sent without invoking the service",
 )
 @click.pass_context
-def service_call(ctx, domain_arg, service_arg, data, target, return_response, dry_run):
-    """Call a service: `service call light turn_on -T entity_id=light.kitchen`."""
+def service_call(ctx, domain_arg, service_arg, data, raw, target, return_response, dry_run):
+    """Call a service: `service call light turn_on -T entity_id=light.kitchen`.
+
+    `-D` JSON-decodes its values, so `payload={"id":"x"}` becomes an object.
+    Some services (mqtt.publish, notify.*) want a STRING — use `--raw` for
+    those: the value is sent exactly as typed.
+    """
     sd = parse_kv_pairs(data) if data else None
+    if raw:
+        sd = dict(sd or {})
+        sd.update(parse_raw_pairs(raw))
     tgt = parse_kv_pairs(target) if target else None
     if dry_run:
         emit(
@@ -4113,13 +4150,17 @@ def automation_save(ctx, entity_id, config_file, dry_run, yes):
 
 
 @automation.command("delete")
-@click.argument("entity_id")
+@click.argument("entity_or_config_id", metavar="ENTITY_ID_OR_CONFIG_ID")
 @click.confirmation_option(prompt="Delete this automation?")
 @click.pass_context
-def automation_delete(ctx, entity_id):
-    """Delete a UI-managed automation."""
-    result = automation_core.delete_config(make_client(ctx), entity_id)
-    emit(ctx, {"deleted": entity_id, "result": result})
+def automation_delete(ctx, entity_or_config_id):
+    """Delete a UI-managed automation.
+
+    Accepts the automation's entity_id (automation.my_automation) or its
+    numeric config id (the `id` the UI shows). --yes skips the prompt.
+    """
+    result = automation_core.delete_config(make_client(ctx), entity_or_config_id)
+    emit(ctx, {"deleted": entity_or_config_id, "result": result})
 
 
 @script.command("get")
@@ -6187,11 +6228,16 @@ def backup_show(ctx, backup_id):
     "--agent",
     "agent_ids",
     multiple=True,
-    help="Limit to specific backup agents (repeatable, HA 2024.7+)",
+    help="Limit to specific backup agents (repeatable, e.g. backup.local). "
+    "Default: every configured agent.",
 )
 @click.pass_context
 def backup_create(ctx, name, password, no_database, agent_ids):
-    """Trigger a backup. Returns the job descriptor — the backup itself runs async."""
+    """Trigger a backup. Returns the job descriptor — the backup itself runs async.
+
+    HA requires the agent list (`agent_ids`, e.g. `backup.local`) on every
+    generate; without `--agent` every configured agent is used.
+    """
     emit(
         ctx,
         backup_core.generate(
@@ -6404,7 +6450,81 @@ def system_safe_restart(ctx, wait_secs):
     emit(ctx, control_core.safe_restart(make_client(ctx), wait_check_secs=wait_secs))
 
 
-# 3. REPAIRS
+# 3. HTTP CONFIG (the web server's own settings)
+@cli.group()
+def http():
+    """Home Assistant's HTTP server configuration (bind address, TLS, proxies)."""
+
+
+@http.command("config")
+@click.pass_context
+def http_config(ctx):
+    """Show the HTTP server config: stable, pending and the built-in default.
+
+    `pending` is an unconfirmed config that HA is already running (or trying
+    to run); it is reverted automatically unless you promote it with
+    `http promote`.
+    """
+    emit(ctx, http_config_core.describe(make_client(ctx)))
+
+
+@http.command("set")
+@click.argument("assignments", nargs=-1, required=True)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation (required for scripted use). Applying a new "
+    "HTTP config RESTARTS Home Assistant.",
+)
+@click.pass_context
+def http_set(ctx, assignments, yes):
+    """Change the HTTP server config, e.g. `http set server_port=8123`.
+
+    The new config is stored as PENDING and Home Assistant is restarted to
+    apply it. Check that HA came back up, then `http promote` to make the
+    new config the stable one — otherwise it is reverted automatically after
+    a few minutes.
+
+    Keys: server_host, server_port, ssl_certificate, ssl_peer_certificate,
+    ssl_key, cors_allowed_origins, use_x_forwarded_for, trusted_proxies,
+    login_attempts_threshold, ip_ban_enabled, ssl_profile,
+    use_x_frame_options.
+    """
+    updates = parse_kv_pairs(assignments)
+    if not yes and not click.confirm(
+        "Store a new HTTP config and RESTART Home Assistant to apply it?",
+        default=False,
+    ):
+        raise click.ClickException("aborted")
+    emit(ctx, http_config_core.set_config_from_pairs(make_client(ctx), updates))
+
+
+@http.command("promote")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation (required for scripted use).",
+)
+@click.pass_context
+def http_promote(ctx, yes):
+    """Promote the pending HTTP config to stable.
+
+    Only do this once HA is serving correctly with the new config: the
+    stable config is what recovery mode falls back to.
+    """
+    if not yes and not click.confirm(
+        "Promote the pending HTTP config to stable?",
+        default=False,
+    ):
+        raise click.ClickException("aborted")
+    emit(ctx, http_config_core.promote(make_client(ctx)))
+
+
+# 4. REPAIRS
 @cli.group()
 def repairs():
     """The Repairs feed — what HA thinks is wrong."""
@@ -6450,13 +6570,32 @@ def repairs_show(ctx, issue_id, domain):
 
 
 @repairs.command("ignore")
-@click.argument("issue_id")
-@click.option("--domain", required=True, help="The issue's domain (run `repairs list` to see)")
+@click.argument("args", nargs=-1, required=True, metavar="[DOMAIN] ISSUE_ID")
+@click.option("--domain", default=None, help="The issue's domain (run `repairs list` to see)")
 @click.option(
     "--undismiss", is_flag=True, default=False, help="Un-dismiss an issue you previously ignored"
 )
 @click.pass_context
-def repairs_ignore(ctx, issue_id, domain, undismiss):
+def repairs_ignore(ctx, args, domain, undismiss):
+    """Dismiss (ignore) a repair issue.
+
+    Two forms are accepted:
+      repairs ignore DOMAIN ISSUE_ID
+      repairs ignore ISSUE_ID --domain DOMAIN
+
+    The domain is not optional in HA's API: the same issue_id can exist
+    under more than one domain.
+    """
+    if len(args) == 2:
+        domain, issue_id = args
+    elif len(args) == 1:
+        issue_id = args[0]
+    else:  # pragma: no cover — click enforces at least one argument
+        raise click.BadParameter("expected ISSUE_ID, or DOMAIN and ISSUE_ID")
+    if not domain:
+        raise click.BadParameter(
+            "the issue's domain is required: pass DOMAIN ISSUE_ID, or ISSUE_ID --domain DOMAIN"
+        )
     emit(
         ctx,
         repairs_core.ignore(

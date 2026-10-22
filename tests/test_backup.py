@@ -168,13 +168,17 @@ class TestDetails:
 
 class TestGenerate:
     def test_minimal_payload(self, fake_client):
+        """HA requires agent_ids; with none given, every agent is used."""
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
         fake_client.set_ws("backup/generate", {"job_id": "job-1"})
         result = backup.generate(fake_client)
         assert result == {"job_id": "job-1"}
-        # Payload should be empty when no options given
-        assert fake_client.ws_calls[-1]["payload"] == {}
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload["agent_ids"] == ["backup.local"]
+        assert payload["include_database"] is True
 
     def test_full_payload(self, fake_client):
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
         fake_client.set_ws("backup/generate", {})
         backup.generate(
             fake_client,
@@ -188,21 +192,106 @@ class TestGenerate:
         payload = fake_client.ws_calls[-1]["payload"]
         assert payload["name"] == "Weekly Backup"
         assert payload["password"] == "secret"
-        assert payload["addons_included"] == ["core"]
-        assert payload["folders_included"] == ["config"]
-        assert payload["database_included"] is False
+        assert payload["include_addons"] == ["core"]
+        assert payload["include_folders"] == ["config"]
+        assert payload["include_database"] is False
         assert payload["agent_ids"] == ["local"]
 
     def test_database_included_true_omitted(self, fake_client):
-        """When database_included is True (default), it's not in the payload."""
+        """The database flag is sent as `include_database` — never as
+        `database_included`, which HA rejects as an extra key."""
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
         fake_client.set_ws("backup/generate", {})
         backup.generate(fake_client, name="X")
         payload = fake_client.ws_calls[-1]["payload"]
         assert "database_included" not in payload
+        assert payload["include_database"] is True
+
+    def test_no_database_uses_include_database_false(self, fake_client):
+        """--no-database sends include_database=False, not the old name."""
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
+        fake_client.set_ws("backup/generate", {})
+        backup.generate(fake_client, database_included=False)
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload["include_database"] is False
+        assert "database_included" not in payload
+
+    def test_explicit_agent_ids_win(self, fake_client):
+        """An explicit --agent is used verbatim, agents/info is not consulted."""
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
+        fake_client.set_ws("backup/generate", {})
+        backup.generate(fake_client, agent_ids=["backup.cloud"])
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload["agent_ids"] == ["backup.cloud"]
+
+    def test_all_agents_used_by_default(self, fake_client):
+        """Without an explicit agent, EVERY configured agent is included."""
+        fake_client.set_ws(
+            "backup/agents/info",
+            {"agents": [{"agent_id": "backup.local"}, {"agent_id": "backup.cloud"}]},
+        )
+        fake_client.set_ws("backup/generate", {})
+        backup.generate(fake_client)
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload["agent_ids"] == ["backup.local", "backup.cloud"]
+
+    def test_no_agents_raises(self, fake_client):
+        """No agents configured → a clear error, not a schema error from HA."""
+        fake_client.set_ws("backup/agents/info", {"agents": []})
+        with pytest.raises(ValueError, match="no backup agents"):
+            backup.generate(fake_client)
 
     def test_empty_response_returns_empty_dict(self, fake_client):
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
         fake_client.set_ws("backup/generate", None)
         assert backup.generate(fake_client) == {}
+
+    def test_legacy_schema_falls_back(self, fake_client):
+        """HA older than 2025.1 rejects agent_ids/include_database — retry with
+        the pre-2025 field names."""
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
+
+        calls = []
+
+        def ws_call(msg_type, payload=None):
+            calls.append((msg_type, payload))
+            if msg_type == "backup/agents/info":
+                return {"agents": [{"agent_id": "backup.local"}]}
+            if msg_type == "backup/generate" and "agent_ids" in (payload or {}):
+                raise RuntimeError("extra keys not allowed @ data['agent_ids']")
+            return {"ok": True}
+
+        fake_client.ws_call = ws_call
+        backup.generate(fake_client, database_included=False)
+        legacy = calls[-1][1]
+        assert "agent_ids" not in legacy
+        assert "include_database" not in legacy
+        assert legacy["database_included"] is False
+
+
+# ── list_agent_ids ───────────────────────────────────────────────────────────
+
+
+class TestListAgentIds:
+    def test_dict_shape(self, fake_client):
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
+        assert backup.list_agent_ids(fake_client) == ["backup.local"]
+
+    def test_id_key_fallback(self, fake_client):
+        fake_client.set_ws("backup/agents/info", {"agents": [{"id": "backup.cloud"}]})
+        assert backup.list_agent_ids(fake_client) == ["backup.cloud"]
+
+    def test_plain_strings(self, fake_client):
+        fake_client.set_ws("backup/agents/info", {"agents": ["backup.local"]})
+        assert backup.list_agent_ids(fake_client) == ["backup.local"]
+
+    def test_bare_list_response(self, fake_client):
+        fake_client.set_ws("backup/agents/info", ["backup.local"])
+        assert backup.list_agent_ids(fake_client) == ["backup.local"]
+
+    def test_empty(self, fake_client):
+        fake_client.set_ws("backup/agents/info", {"agents": []})
+        assert backup.list_agent_ids(fake_client) == []
 
 
 # ── remove ───────────────────────────────────────────────────────────────────

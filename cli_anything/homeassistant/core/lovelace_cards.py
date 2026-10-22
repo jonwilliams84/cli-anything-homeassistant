@@ -518,6 +518,26 @@ def validate_templates(client, cfg: dict, *, skip_paths: tuple[str, ...] = ()) -
 # ─── prune — recursive bulk-drop of cards ────────────────────────────
 
 
+def _entity_of(entry) -> str | None:
+    """Return the entity id of a card entry.
+
+    An entry is either a bare entity id string (``"light.kitchen"``) or a
+    dict with an ``entity`` key (``{"entity": "light.kitchen", "name": …}``).
+    """
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        eid = entry.get("entity")
+        if isinstance(eid, str):
+            return eid
+    return None
+
+
+def _entity_matches(entry, entity_prefixes: set[str]) -> bool:
+    eid = _entity_of(entry)
+    return bool(eid) and any(eid.startswith(p) for p in entity_prefixes)
+
+
 def _card_matches_block(
     card: dict,
     types: set[str] | None,
@@ -527,22 +547,44 @@ def _card_matches_block(
     if types and card.get("type") in types:
         return True
     if entity_prefixes:
+        # A card with a single `entity` is dropped whole — it IS that entity.
         eid = card.get("entity")
         if isinstance(eid, str) and any(eid.startswith(p) for p in entity_prefixes):
             return True
-        ents = card.get("entities")
-        if isinstance(ents, list):
-            for e in ents:
-                eid = (
-                    e if isinstance(e, str) else (e.get("entity") if isinstance(e, dict) else None)
-                )
-                if isinstance(eid, str) and any(eid.startswith(p) for p in entity_prefixes):
-                    return True
     if markdown_contains and card.get("type") == "markdown":
         content = card.get("content", "") or ""
         if any(s in content for s in markdown_contains):
             return True
     return False
+
+
+def _strip_matching_entities(card: dict, entity_prefixes: set[str], counters) -> bool:
+    """Remove the entity references inside a card that match a prefix.
+
+    Handles the two places a card can hold MANY entities:
+
+      * ``entities: [...]`` — a list of bare entity ids and/or dicts.
+      * ``elements: [...]`` — a picture-elements card's rows.
+
+    The individual entries are removed; the card itself survives unless
+    nothing is left in it, in which case the caller drops it.
+
+    Returns True when the card has been emptied of entities and should go.
+    """
+    emptied = False
+    for key in ("entities", "elements"):
+        entries = card.get(key)
+        if not isinstance(entries, list):
+            continue
+        kept = [e for e in entries if not _entity_matches(e, entity_prefixes)]
+        removed = len(entries) - len(kept)
+        if not removed:
+            continue
+        counters[f"removed_{key}"] = counters.get(f"removed_{key}", 0) + removed
+        card[key] = kept
+        if not kept:
+            emptied = True
+    return emptied
 
 
 def _prune_cards_list(cards, types, entity_prefixes, markdown_contains, counters):
@@ -557,6 +599,14 @@ def _prune_cards_list(cards, types, entity_prefixes, markdown_contains, counters
             counters["dropped_cards"] += 1
             continue
         new = dict(c)
+        if entity_prefixes:
+            # Remove the matching entities INSIDE the card first: an
+            # `entities: [...]` list or a picture-elements `elements: [...]`
+            # list loses only the matching entries, and the card is dropped
+            # only when nothing is left in it.
+            if _strip_matching_entities(new, entity_prefixes, counters):
+                counters["dropped_cards"] += 1
+                continue
         for key in ("cards", "sections"):
             if key in new and isinstance(new[key], list):
                 new[key] = _prune_cards_list(
@@ -605,9 +655,12 @@ def prune(
 
     Pass any combination of:
       - ``types``: drop every card whose ``type`` is in the set
-      - ``entity_prefixes``: drop every card whose ``entity`` or any
-        ``entities[*].entity`` starts with one of these prefixes (e.g.
-        ``{"climate."}`` drops all thermostat-style cards)
+      - ``entity_prefixes``: drop every card whose ``entity`` starts with one
+        of these prefixes (e.g. ``{"climate."}`` drops all thermostat-style
+        cards). Inside a card that holds MANY entities — an ``entities: [...]``
+        list or a picture-elements ``elements: [...]`` list — the matching
+        ENTRIES are removed and the card is kept; it is dropped only when
+        nothing is left in it.
       - ``markdown_contains``: drop every ``markdown`` card whose
         ``content`` contains any of these substrings
       - ``blocked_subheadings``: in every section's flat cards list,
@@ -617,7 +670,13 @@ def prune(
     Recurses through nested ``cards``/``sections`` arrays. Empty stacks
     left behind are also dropped.
     """
-    counters = {"dropped_cards": 0, "dropped_empty_stacks": 0, "dropped_subheading_groups": 0}
+    counters = {
+        "dropped_cards": 0,
+        "dropped_empty_stacks": 0,
+        "dropped_subheading_groups": 0,
+        "removed_entities": 0,
+        "removed_elements": 0,
+    }
     new_cfg = dict(cfg)
     new_views = []
     for view in cfg.get("views", []):
