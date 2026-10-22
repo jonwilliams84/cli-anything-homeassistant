@@ -302,6 +302,7 @@ class TestBackup:
         assert backup_core.list_backups(fake_client) == []
 
     def test_generate_passes_through(self, fake_client):
+        fake_client.set_ws("backup/agents/info", {"agents": [{"agent_id": "backup.local"}]})
         fake_client.set_ws("backup/generate", {"job_id": "x"})
         out = backup_core.generate(fake_client, name="my-backup",
                                      password="secret")
@@ -309,6 +310,7 @@ class TestBackup:
         assert last["type"] == "backup/generate"
         assert last["payload"]["name"] == "my-backup"
         assert last["payload"]["password"] == "secret"
+        assert last["payload"]["agent_ids"] == ["backup.local"]
         assert out == {"job_id": "x"}
 
     def test_remove_requires_id(self):

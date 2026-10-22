@@ -1,3 +1,3 @@
 """cli-anything-homeassistant — CLI harness for Home Assistant."""
 
-__version__ = "1.58.1"
+__version__ = "1.59.0"

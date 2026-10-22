@@ -131,16 +131,18 @@ class TestShow:
 
 class TestIgnore:
     def test_sends_ignore_payload(self, fake_client):
-        fake_client.set_ws("repairs/ignore", {"ok": True})
+        """HA's command is `repairs/ignore_issue` — `repairs/ignore` is not
+        a real websocket command."""
+        fake_client.set_ws("repairs/ignore_issue", {"ok": True})
         result = repairs.ignore(fake_client, issue_id="abc", domain="light")
         assert result == {"ok": True}
-        assert fake_client.ws_calls[-1]["type"] == "repairs/ignore"
+        assert fake_client.ws_calls[-1]["type"] == "repairs/ignore_issue"
         assert fake_client.ws_calls[-1]["payload"] == {
             "issue_id": "abc", "domain": "light", "ignore": True,
         }
 
     def test_un_ignore_passes_false(self, fake_client):
-        fake_client.set_ws("repairs/ignore", {"ok": True})
+        fake_client.set_ws("repairs/ignore_issue", {"ok": True})
         repairs.ignore(fake_client, issue_id="abc", domain="light", ignore_value=False)
         assert fake_client.ws_calls[-1]["payload"]["ignore"] is False
 

@@ -68,6 +68,8 @@ class TestPrune:
         assert counters["dropped_cards"] == 1
 
     def test_prune_by_entity_prefix_checks_entities_list(self):
+        """A bare entity id in `entities: [...]` is removed on its own; the
+        card survives while it still has entities."""
         cfg = {
             "views": [
                 {
@@ -84,10 +86,14 @@ class TestPrune:
             ]
         }
         result, counters = cards_core.prune(cfg, entity_prefixes={"sensor.old_"})
-        assert counters["dropped_cards"] == 1
-        assert result["views"][0]["cards"] == []
+        cards = result["views"][0]["cards"]
+        assert len(cards) == 1
+        assert cards[0]["entities"] == ["sensor.new_1"]
+        assert counters["removed_entities"] == 1
+        assert counters["dropped_cards"] == 0
 
     def test_prune_by_entity_prefix_handles_dict_entities(self):
+        """A dict entry in `entities: [...]` is removed on its own too."""
         cfg = {
             "views": [
                 {
@@ -104,7 +110,75 @@ class TestPrune:
             ]
         }
         result, counters = cards_core.prune(cfg, entity_prefixes={"sensor.old_"})
+        cards = result["views"][0]["cards"]
+        assert len(cards) == 1
+        assert cards[0]["entities"] == [{"entity": "sensor.new_1", "name": "New"}]
+        assert counters["removed_entities"] == 1
+
+    def test_prune_drops_card_when_all_entities_removed(self):
+        """Every entity matched → the card has nothing left and is dropped."""
+        cfg = {
+            "views": [
+                {
+                    "cards": [
+                        {"type": "entities", "entities": ["sensor.old_1"]},
+                        {"type": "entities", "entities": ["sensor.new_1"]},
+                    ],
+                }
+            ]
+        }
+        result, counters = cards_core.prune(cfg, entity_prefixes={"sensor.old_"})
+        cards = result["views"][0]["cards"]
+        assert len(cards) == 1
+        assert cards[0]["entities"] == ["sensor.new_1"]
         assert counters["dropped_cards"] == 1
+
+    def test_prune_removes_picture_elements_entries(self):
+        """picture-elements `elements: [...]` loses only the matching rows."""
+        cfg = {
+            "views": [
+                {
+                    "cards": [
+                        {
+                            "type": "picture-elements",
+                            "image": "/local/x.png",
+                            "elements": [
+                                {"type": "entity", "entity": "sensor.old_1"},
+                                {"type": "entity", "entity": "sensor.new_1"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        result, counters = cards_core.prune(cfg, entity_prefixes={"sensor.old_"})
+        cards = result["views"][0]["cards"]
+        assert len(cards) == 1
+        assert cards[0]["elements"] == [{"type": "entity", "entity": "sensor.new_1"}]
+        assert counters["removed_elements"] == 1
+        assert counters["dropped_cards"] == 0
+
+    def test_prune_drops_picture_elements_when_no_elements_left(self):
+        """A picture-elements card with no elements left is dropped."""
+        cfg = {
+            "views": [
+                {
+                    "cards": [
+                        {
+                            "type": "picture-elements",
+                            "image": "/local/x.png",
+                            "elements": [
+                                {"type": "entity", "entity": "sensor.old_1"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        result, counters = cards_core.prune(cfg, entity_prefixes={"sensor.old_"})
+        assert result["views"][0]["cards"] == []
+        assert counters["dropped_cards"] == 1
+        assert counters["removed_elements"] == 1
 
     def test_prune_by_markdown_contains(self):
         cfg = {

@@ -86,12 +86,12 @@ disable), `HASS_TIMEOUT` (seconds).
 
 | Group | Coverage |
 |---|---|
-| `state` / `service` / `event` | Live state machine, service calls, event bus fire |
+| `state` / `service` / `event` | Live state machine, service calls, event bus fire. `service call -D key=value` JSON-decodes its values; `--raw key=value` sends the value **verbatim as a string** (what `mqtt.publish` and `notify.*` want) |
 | `template` | Render Jinja against live state (`--file` for multi-line) |
 | `history` / `logbook` | Time-series and human-readable change logs |
 | `history-ext` | **Long-history fallback** — `with-stats-fallback` stitches recorder states and long-term statistics into one chronological `{when, value, source}` list (the recorder's `purge_keep_days` window plus a statistics back-fill for everything older), `retention-estimate` measures how far back the recorder actually keeps an entity, `stats-to-samples` flattens a `recorder/statistics_during_period` response (`--stats-json` / `--from-file`) to plain rows. `--start`/`--end` accept naive ISO-8601 (treated as **UTC**), RFC 3339 with `Z`, or an explicit offset — mixed naive/aware pairs compare correctly (issue #50) |
 | `system` | API status, config, core-state, components, **error-log triage** (`--since` / `--top --by` / `--watch`), health |
-| `lovelace` | Dashboard inventory + **surgical view/section/card edits**, search, paths, lint, prune, mirror |
+| `lovelace` | Dashboard inventory + **surgical view/section/card edits**, search, paths, lint, prune, mirror. `lovelace prune --entity-prefix` also removes the matching entries of an `entities: [...]` list and of a picture-elements card's `elements: [...]` (the card is dropped only when nothing is left in it) |
 | `automation` / `script` | List, trigger, run, reload, **traces** + `get_trace` for both |
 | `area` / `floor` / `label` | **Full CRUD** on every registry |
 | `entity` | List + **bulk-update** (rename / move-area / label / disable) + `inspect` (one-shot combined view) |
@@ -100,9 +100,9 @@ disable), `HASS_TIMEOUT` (seconds).
 | `helpers` / `template-helper` | Create / update / show input_*/template helpers |
 | `config-entry` / `config-flow` | List / reload / options-flow + **create new integrations** via single-shot or multi-step flow |
 | `mqtt` / `mqtt-discovery` | Publish, subscribe, MQTT-discovery list/show/republish |
-| `repairs` | What HA thinks is wrong; list / show / ignore / fix |
+| `repairs` | What HA thinks is wrong; list / show / **ignore** (`repairs ignore DOMAIN ISSUE_ID`) / fix |
 | `notifications` | Persistent notifications create / list / dismiss |
-| `backup` | Snapshot list / create / show / delete / restore (HA 2024.6+) + **`download` / `upload`** — the tarball off the box and back, which is the only half that matters for disaster recovery |
+| `backup` | Snapshot list / create / show / delete / restore (HA 2024.6+) + **`download` / `upload`** — the tarball off the box and back, which is the only half that matters for disaster recovery. `backup create` sends the 2026.10 payload: `agent_ids` is **required** (every configured agent, e.g. `backup.local`, unless `--agent` says otherwise) and the database flag is `include_database`, not `database_included` (fixes #52) |
 | `statistics` | Long-term recorder stats: list / metadata / **series** (chart data) / update-metadata / clear |
 | `diagnostics` | Per-integration + per-device JSON downloads (same as UI's "Download diagnostics") |
 | `blueprint` | List / import / save / delete / substitute (dry-run render) |
@@ -153,6 +153,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `entity source` | Which integration actually supplies an entity (WS `entity/source`) — provenance, `--by-integration` to group, and a strong orphan signal when a registry entry has no source |
 | `target` | **What a target actually hits** — `extract` (the entities a service call would reach, plus the areas/labels HA cannot resolve and would silently ignore), `services`/`triggers`/`conditions` (what can be done with it), `slugify` |
 | `labs` | HA 2026 preview features — `list` (`--enabled-only` is the one that explains odd behaviour), `show`, `set` with an explicit `--create-backup` because a preview feature can migrate storage |
+| `http` | Home Assistant's own HTTP server config — `http config` (stable vs pending), `http set KEY=VALUE` (stores a pending config and restarts HA), `http promote` (accept the pending config as stable) |
 | `prefs` | Instance preferences with outsized effects — `ai-task` (which model a job reaches), `http` (stable vs **pending** config; a change that "did not take" is usually unpromoted), `entity-naming` + `auto-entity-id` (what HA WOULD call an entity — run before renaming), `recorded` (`recording_disabled_by` — the reason a history is empty rather than quiet) |
 | `device-links` | Composite splits and linked devices — topology the flat registry cannot show. A device-scoped target applies to ONE registry entry, so a split device is a silent partial hit |
 | `intent` | Fire an intent by name, skipping the sentence parser — what separates a sentence-match failure from a handler failure |

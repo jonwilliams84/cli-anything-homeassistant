@@ -30,7 +30,7 @@ def list_issues(
     items = raw if isinstance(raw, list) else []
     out: list[dict] = []
     for it in items:
-        if not include_dismissed and it.get("dismissed_version"):
+        if not include_dismissed and (it.get("dismissed_version") or it.get("ignored")):
             continue
         if severity and it.get("severity") != severity:
             continue
@@ -58,11 +58,14 @@ def show(client, issue_id: str, *, domain: Optional[str] = None) -> Optional[dic
 
 
 def ignore(client, *, issue_id: str, domain: str, ignore_value: bool = True) -> Any:
-    """Dismiss an issue. Pass `ignore_value=False` to un-dismiss."""
+    """Dismiss an issue. Pass `ignore_value=False` to un-dismiss.
+
+    The websocket command is `repairs/ignore_issue` (not `repairs/ignore`).
+    """
     if not issue_id or not domain:
         raise ValueError("issue_id and domain are required")
     return client.ws_call(
-        "repairs/ignore",
+        "repairs/ignore_issue",
         {
             "issue_id": issue_id,
             "domain": domain,

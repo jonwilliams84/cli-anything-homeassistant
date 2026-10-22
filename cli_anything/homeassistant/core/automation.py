@@ -131,12 +131,23 @@ def delete_config(client, entity_id: str):
     """Delete a UI-managed automation.
 
     Uses the same REST endpoint as `save_config` (DELETE instead of POST).
-    Resolves the numeric `id` via `_automation_item_id` (same lookup the
-    trace API uses).
+
+    Accepts EITHER the automation's entity_id (``automation.my_automation``)
+    or its config id (the numeric ``id`` the UI uses, e.g. ``1723456789``).
+    The entity_id is resolved to that numeric id via `_automation_item_id`
+    (the same lookup the trace API uses); a config id is used as it is.
     """
-    if not entity_id.startswith("automation."):
-        raise ValueError(f"Expected an automation entity_id, got: {entity_id}")
-    item_id = _automation_item_id(client, entity_id)
+    if not entity_id:
+        raise ValueError("an automation entity_id or config id is required")
+    if entity_id.startswith("automation."):
+        item_id = _automation_item_id(client, entity_id)
+    elif entity_id.isdigit():
+        item_id = entity_id
+    else:
+        raise ValueError(
+            f"Expected an automation entity_id (automation.my_automation) or a "
+            f"numeric config id, got: {entity_id!r}"
+        )
     return client.delete(f"config/automation/config/{item_id}")
 
 

@@ -85,6 +85,28 @@ def details(client, backup_id: str) -> dict:
     return _enrich(d)
 
 
+def list_agent_ids(client) -> list[str]:
+    """Return the id of every configured backup agent (e.g. ``backup.local``).
+
+    HA answers ``backup/agents/info`` with ``{"agents": [{"agent_id": ...}]}``
+    on current versions and with plain strings on some older ones, so both
+    shapes are accepted. The order is HA's own.
+    """
+    data = client.ws_call("backup/agents/info") or {}
+    agents = data.get("agents") if isinstance(data, dict) else data
+    if not isinstance(agents, list):
+        return []
+    out: list[str] = []
+    for agent in agents:
+        if isinstance(agent, str):
+            out.append(agent)
+        elif isinstance(agent, dict):
+            aid = agent.get("agent_id") or agent.get("id")
+            if aid:
+                out.append(str(aid))
+    return out
+
+
 def generate(
     client,
     *,
@@ -97,23 +119,62 @@ def generate(
 ) -> dict:
     """Trigger a backup. Returns the job descriptor.
 
-    `agent_ids` is for HA 2024.7+'s multi-agent backups (local, network, etc.).
-    Older HA installs can leave it unset.
+    HA's ``backup/generate`` schema (2025.1 onwards, unchanged in 2026.10):
+
+      * ``agent_ids`` is REQUIRED — a list of agent ids such as
+        ``["backup.local"]``. Omitting it is answered with
+        ``required key not provided @ data['agent_ids']``.
+      * the recorder database is included/excluded with ``include_database``
+        (NOT ``database_included`` — HA rejects the old name as an extra
+        key).
+      * the addons/folders selections are ``include_addons`` /
+        ``include_folders``.
+
+    When ``agent_ids`` is not given, EVERY configured agent is used, which is
+    what the HA UI does for a plain "create backup".
     """
     payload: dict[str, Any] = {}
+    selected = list(agent_ids) if agent_ids else list_agent_ids(client)
+    if not selected:
+        raise ValueError(
+            "no backup agents are available — HA requires at least one "
+            "agent id for backup/generate. Check `backup agents`."
+        )
+    payload["agent_ids"] = selected
+    payload["include_database"] = bool(database_included)
+    if addons_included is not None:
+        payload["include_addons"] = list(addons_included)
+    if folders_included is not None:
+        payload["include_folders"] = list(folders_included)
     if name:
         payload["name"] = name
     if password:
         payload["password"] = password
-    if addons_included is not None:
-        payload["addons_included"] = addons_included
-    if folders_included is not None:
-        payload["folders_included"] = folders_included
-    if not database_included:
-        payload["database_included"] = False
-    if agent_ids:
-        payload["agent_ids"] = agent_ids
-    return client.ws_call("backup/generate", payload) or {}
+    try:
+        return client.ws_call("backup/generate", payload) or {}
+    except Exception as exc:  # noqa: BLE001 — re-raised unless it is a schema mismatch
+        # HA older than 2025.1 knows neither `agent_ids` nor `include_database`
+        # and answers "extra keys not allowed @ data['…']". Retry with the
+        # pre-2025 field names for those installs.
+        msg = str(exc)
+        if "extra keys not allowed" not in msg:
+            raise
+        legacy = {
+            k: v
+            for k, v in payload.items()
+            if k not in ("agent_ids", "include_database", "include_addons", "include_folders")
+        }
+        if not database_included:
+            legacy["database_included"] = False
+        if addons_included is not None:
+            legacy["addons_included"] = list(addons_included)
+        if folders_included is not None:
+            legacy["folders_included"] = list(folders_included)
+        _LOGGER.debug(
+            "backup/generate rejected the current schema (%s); retrying with %s", msg, legacy
+        )
+        return client.ws_call("backup/generate", legacy) or {}
+        raise
 
 
 def remove(client, backup_id: str, *, agent_ids: Optional[list[str]] = None) -> dict:
