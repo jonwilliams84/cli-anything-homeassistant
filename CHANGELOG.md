@@ -4,6 +4,70 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.60.0] — 2026-10-26
+
+Refine pass "ha-2", driven by a websocket-command diff against the installed
+Home Assistant: the last bus integration without a command group was **LCN** —
+the European building-automation bus that sits beside KNX (v1.57) and Insteon
+(v1.58). The harness could read its raw states and registry rows, but nothing
+the `lcn` config panel actually does.
+
+### New group: `lcn` (8 commands, 7 WS commands + `available`)
+
+All seven websocket commands `homeassistant/components/lcn/websocket.py`
+registers, all admin-only upstream, against the `lcn` config entry:
+
+- **Devices** — `devices` (address triple, name, hardware/software serial, hw
+  type — the panel's Devices view), `scan` (a device per address pchk knows,
+  serials refreshed; also REWRITES the device and entity registries from the
+  bus), `device-add` (one address by hand; an exact duplicate is an *answer*,
+  not an error) and `device-delete` (the child entities go with it;
+  confirmation-gated).
+- **Entities** — `entities` (`--address` drill-down, like the panel's row
+  click), `entity-add` (`--domain` binary_sensor/sensor/switch/light/climate/
+  cover/scene plus `--data` domain_data JSON — required keys are checked
+  client-side, allowed port/register values left to LCN's server-side schema,
+  which names the offending key) and `entity-delete` (address + domain +
+  resource; confirmation-gated).
+- **`available`** — a read that answers with exit 0 either way, like every
+  integration group before it.
+
+### The address and the two False traps
+
+- An LCN address is the triple `(segment, address, is_group)`. The CLI form is
+  `SEG.ADDR` for a module (`1.7`) and `SEG.gADDR` for a group (`1.g12`,
+  case-insensitive); the JSON 3-list wire form is accepted everywhere. Only
+  segment ≥ 0 and address ≥ 1 are checked client-side — LCN's own ranges
+  stay with HA.
+- HA answers bare `result: False` — success with a false payload — in three
+  different situations: an **unknown `entry_id`**, a **duplicate**
+  `device-add`, and an **unknown or duplicate** `entity-add` (no device at
+  that address, or the unique_id already taken). Read as JSON that is all
+  "no devices" / "no rows"; the harness names which of the three happened,
+  with the drill-down (`lcn entities`) in the message.
+
+### Why it matters
+
+The bus-integration set — zwave_js, matter, knx, insteon, zha — now has no
+obvious hole: every integration that ships its own websocket configuration
+surface is reachable through a matching command group, and LCN owners can
+finally build their entities from a script (`lcn scan` → `lcn entity-add`)
+the way they can build KNX entity-store rows with `knx create-entity`.
+
+### Tests
+
+`tests/test_core.py` gained 53 tests: the address parser (module/group/list
+forms, bounds, refusals naming the expected shape), the absent-integration
+guard (unknown_command → one clean sentence, unrelated codes untouched),
+payload shapes for every WS command, the three False traps, and 13 CLI wiring
+tests (confirmation gates fire before the wire, `--domain` enforced by
+Click, bad JSON in the consistent error shape, no tracebacks). E2E:
+`tests/test_full_e2e.py::TestLiveLcnAbsent` proves against the live instance
+that the WS commands really are unregistered, that every command answers the
+absence cleanly, that client-side refusals need no integration, and that
+`lcn available` is a script branch point (exit 0, `available: false`).
+
+
 ## [1.59.0] — 2026-10-22
 
 Refine pass "ha-1", driven by gaps found against a live Home Assistant

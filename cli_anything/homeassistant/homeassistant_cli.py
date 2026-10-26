@@ -98,6 +98,7 @@ from cli_anything.homeassistant.core import zwave_js as zwave_core
 from cli_anything.homeassistant.core import matter as matter_core
 from cli_anything.homeassistant.core import knx as knx_core
 from cli_anything.homeassistant.core import insteon as insteon_core
+from cli_anything.homeassistant.core import lcn as lcn_core
 from cli_anything.homeassistant.core import zha as zha_core
 from cli_anything.homeassistant.core import hardware_info as hardware_info_core
 from cli_anything.homeassistant.core import logger_ws as logger_ws_core
@@ -19788,6 +19789,157 @@ def insteon_scene_save(ctx, scene_id, name, links_json):
 def insteon_scene_delete(ctx, scene_id):
     """Delete a scene."""
     emit(ctx, insteon_core.delete_scene(make_client(ctx), scene_id))
+
+
+# ─────────────────────────────────────────────────────── lcn
+
+
+@cli.group()
+def lcn():
+    """The lcn integration — devices, entities and the bus scan."""
+
+
+def _lcn_address(_ctx, _param, raw):
+    """Parse an LCN address: '1.7' module, '1.g12' group, or a JSON 3-list."""
+    try:
+        return lcn_core.parse_address(raw)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+@lcn.command("available")
+@click.pass_context
+def lcn_available(ctx):
+    """Is lcn set up? A read — 'no' is an answer, not an error."""
+    emit(ctx, lcn_core.available(make_client(ctx)))
+
+
+@lcn.command("devices")
+@click.argument("entry_id")
+@click.pass_context
+def lcn_devices(ctx, entry_id):
+    """Every LCN device config in the entry (address, name, serials, hw type)."""
+    emit(ctx, lcn_core.devices(make_client(ctx), entry_id))
+
+
+@lcn.command("entities")
+@click.argument("entry_id")
+@click.option(
+    "--address",
+    default=None,
+    metavar="ADDR",
+    help="Narrow to one address: '1.7' module, '1.g12' group",
+)
+@click.pass_context
+def lcn_entities(ctx, entry_id, address):
+    """Every LCN entity config in the entry, with resolved names."""
+    emit(ctx, lcn_core.entities(make_client(ctx), entry_id, address=address))
+
+
+@lcn.command("scan")
+@click.argument("entry_id")
+@click.pass_context
+def lcn_scan(ctx, entry_id):
+    """Scan the bus: create/update a device per address pchk knows.
+
+    WRITES: also re-derives the device and entity registries, so addresses
+    that disappeared lose their devices.
+    """
+    emit(ctx, lcn_core.scan_devices(make_client(ctx), entry_id))
+
+
+@lcn.command("device-add")
+@click.argument("entry_id")
+@click.argument("address")
+@click.pass_context
+def lcn_device_add(ctx, entry_id, address):
+    """Add one address as an LCN device, by hand.
+
+    ADDRESS is 'SEG.ADDR' for a module or 'SEG.gADDR' for a group. False is
+    reported when the address is already configured, not an error.
+    """
+    emit(ctx, lcn_core.add_device(make_client(ctx), entry_id, address))
+
+
+@lcn.command("device-delete")
+@click.argument("entry_id")
+@click.argument("address")
+@click.confirmation_option(
+    prompt=(
+        "Delete this LCN device? The device AND all its child entities are "
+        "removed from the entry and purged from the registries. One-way."
+    )
+)
+@click.pass_context
+def lcn_device_delete(ctx, entry_id, address):
+    """Delete an LCN device and all its child entities (destructive)."""
+    emit(ctx, lcn_core.delete_device(make_client(ctx), entry_id, address))
+
+
+@lcn.command("entity-add")
+@click.argument("entry_id")
+@click.argument("address")
+@click.option(
+    "--domain",
+    type=click.Choice(list(lcn_core.SUPPORTED_DOMAINS)),
+    required=True,
+    help="The platform the entity is built on",
+)
+@click.option("--name", required=True, help="The entity's friendly name")
+@click.option(
+    "--data",
+    "domain_data",
+    required=True,
+    help='The platform\'s domain_data JSON object, e.g. \'{"output":"output1"}\'',
+)
+@click.pass_context
+def lcn_entity_add(ctx, entry_id, address, domain, name, domain_data):
+    """Create an entity around a configured LCN device address.
+
+    The device must exist first (`lcn scan` or `lcn device-add`). Required
+    domain_data keys are checked here; allowed port/register values are
+    validated server-side and the refusal names the key.
+    """
+    with handle_json_arg(domain_data) as data:
+        emit(
+            ctx,
+            lcn_core.add_entity(
+                make_client(ctx),
+                entry_id,
+                address,
+                name=name,
+                domain=domain,
+                domain_data=data,
+            ),
+        )
+
+
+@lcn.command("entity-delete")
+@click.argument("entry_id")
+@click.argument("address")
+@click.option(
+    "--domain",
+    type=click.Choice(list(lcn_core.SUPPORTED_DOMAINS)),
+    required=True,
+    help="The platform the entity lives on",
+)
+@click.option(
+    "--resource",
+    required=True,
+    help="The lowercase resource key the store recorded (read it off `lcn entities`)",
+)
+@click.confirmation_option(
+    prompt=("Delete this LCN entity? The entity registry row is purged too. One-way.")
+)
+@click.pass_context
+def lcn_entity_delete(ctx, entry_id, address, domain, resource):
+    """Delete one LCN entity by (address, domain, resource). Destructive."""
+    emit(
+        ctx,
+        lcn_core.delete_entity(
+            make_client(ctx), entry_id, address, domain=domain, resource=resource
+        ),
+    )
 
 
 # ─────────────────────────────────────────────────────── zha
