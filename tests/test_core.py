@@ -5306,6 +5306,7 @@ class TestCardTypes:
 # `{"result": "ok", "data": …}` envelope before it returns.
 
 from cli_anything.homeassistant.core import supervisor as supervisor_core  # noqa: E402
+from cli_anything.homeassistant.core import lcn as lcn_core  # noqa: E402
 
 
 def _addon(slug="core_ssh", **over):
@@ -6005,3 +6006,393 @@ class TestSupervisorWatch:
         subscribing_client.ws_subscribe = boom
         with pytest.raises(HomeAssistantError, match="has no Supervisor"):
             supervisor_core.watch(subscribing_client, duration=5)
+
+
+# ─────────────────────────────────────────────────────────────── lcn (v1.60.0)
+
+
+class TestLcnAddress:
+    """The address parser: CLI forms, wire form, bounds."""
+
+    def test_module_form(self):
+        assert lcn_core.parse_address("1.7") == [1, 7, False]
+
+    def test_group_form(self):
+        assert lcn_core.parse_address("1.g12") == [1, 12, True]
+
+    def test_group_form_uppercase(self):
+        assert lcn_core.parse_address("3.G1") == [3, 1, True]
+
+    def test_list_form_passes_through_coerced(self):
+        assert lcn_core.parse_address([3, 10, 0]) == [3, 10, False]
+        assert lcn_core.parse_address((0, 5, True)) == [0, 5, True]
+
+    def test_segment_zero_is_the_broadcast_segment(self):
+        assert lcn_core.parse_address("0.10") == [0, 10, False]
+
+    @pytest.mark.parametrize("bad", ["7", "a.b", "1.x", "1.", ".7", "1.0"])
+    def test_invalid_addresses_are_refused_with_the_cli_form_named(self, bad):
+        with pytest.raises(ValueError, match="SEG|integer|address"):
+            lcn_core.parse_address(bad)
+
+    def test_negative_segment_refused(self):
+        with pytest.raises(ValueError, match="segment"):
+            lcn_core.parse_address("-1.5")
+
+    def test_zero_address_refused(self):
+        with pytest.raises(ValueError, match="address"):
+            lcn_core.parse_address("1.0")
+
+    def test_short_list_form_refused_with_the_wire_form_named(self):
+        with pytest.raises(ValueError, match="seg_id"):
+            lcn_core.parse_address([1, 7])
+
+
+class TestLcnAvailable:
+    def _cfg(self, client, components):
+        client.set_ws("get_config", {"components": components})
+        return lcn_core.available(client)
+
+    def test_loaded(self, fake_client):
+        out = self._cfg(fake_client, ["lcn", "hue"])
+        assert out["available"] is True
+        assert "works here" in out["note"]
+
+    def test_not_loaded(self, fake_client):
+        out = self._cfg(fake_client, ["hue"])
+        assert out["available"] is False
+        assert "pchk" in out["note"]
+
+    def test_an_unreachable_instance_raises_not_a_false_answer(self, fake_client):
+        fake_client.set_ws_error("get_config", "unknown_error", "boom")
+        with pytest.raises(HomeAssistantError, match="boom"):
+            lcn_core.available(fake_client)
+
+
+class TestLcnAbsentGuard:
+    """unknown_command (no LCN entry configured) becomes the explanation."""
+
+    def test_reads_raise_the_note(self, fake_client):
+        fake_client.set_ws_error("lcn/devices", "unknown_command", "Invalid")
+        with pytest.raises(HomeAssistantError, match="no LCN bus"):
+            lcn_core.devices(fake_client, "entry1")
+
+    def test_writes_raise_it_too(self, fake_client):
+        fake_client.set_ws_error("lcn/devices/add", "unknown_command", "Invalid")
+        with pytest.raises(HomeAssistantError, match="no LCN bus"):
+            lcn_core.add_device(fake_client, "entry1", "1.7")
+
+    def test_the_note_points_at_the_independent_check(self, fake_client):
+        fake_client.set_ws_error("lcn/entities", "unknown_command", "")
+        with pytest.raises(HomeAssistantError, match="system components"):
+            lcn_core.entities(fake_client, "entry1")
+
+    def test_unrelated_errors_pass_through(self, fake_client):
+        fake_client.set_ws_error("lcn/devices", "unauthorized", "nope")
+        with pytest.raises(HomeAssistantError, match="unauthorized"):
+            lcn_core.devices(fake_client, "entry1")
+
+
+class TestLcnDevices:
+    def test_devices_sends_entry_id_only(self, fake_client):
+        fake_client.set_ws("lcn/devices", [{"address": [1, 7, False]}])
+        out = lcn_core.devices(fake_client, "entry1")
+        assert out == [{"address": [1, 7, False]}]
+        assert fake_client.ws_calls[-1]["payload"] == {"entry_id": "entry1"}
+
+    def test_unknown_entry_id_is_named_not_read_as_empty(self, fake_client):
+        fake_client.set_ws("lcn/devices", False)
+        with pytest.raises(ValueError, match="entry1"):
+            lcn_core.devices(fake_client, "entry1")
+
+    def test_scan_sends_the_scan_command(self, fake_client):
+        fake_client.set_ws("lcn/devices/scan", [{"address": [1, 7, False]}])
+        out = lcn_core.scan_devices(fake_client, "entry1")
+        assert isinstance(out, list)
+        assert fake_client.ws_calls[-1]["type"] == "lcn/devices/scan"
+
+
+class TestLcnEntityReads:
+    def test_entities_without_address_sends_no_address_key(self, fake_client):
+        fake_client.set_ws("lcn/entities", [])
+        lcn_core.entities(fake_client, "entry1")
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload == {"entry_id": "entry1"}
+        assert "address" not in payload
+
+    def test_entities_with_address_narrows(self, fake_client):
+        fake_client.set_ws("lcn/entities", [])
+        lcn_core.entities(fake_client, "entry1", address="2.g4")
+        assert fake_client.ws_calls[-1]["payload"] == {
+            "entry_id": "entry1",
+            "address": [2, 4, True],
+        }
+
+
+class TestLcnDeviceAddDelete:
+    def test_add_device_sends_the_wire_address(self, fake_client):
+        fake_client.set_ws("lcn/devices/add", True)
+        out = lcn_core.add_device(fake_client, "entry1", "1.7")
+        assert out["added"] is True
+        assert out["address"] == [1, 7, False]
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload == {"entry_id": "entry1", "address": [1, 7, False]}
+
+    def test_add_device_duplicate_is_an_answer_not_an_error(self, fake_client):
+        fake_client.set_ws("lcn/devices/add", False)
+        out = lcn_core.add_device(fake_client, "entry1", "1.7")
+        assert out["added"] is False
+        assert "already configured" in out["note"]
+
+    def test_delete_device_is_recorded_with_the_registry_consequence(self, fake_client):
+        fake_client.set_ws("lcn/devices/delete", [])
+        out = lcn_core.delete_device(fake_client, "entry1", "1.g2")
+        assert out["deleted"] is True
+        assert out["address"] == [1, 2, True]
+        assert "registries" in out["note"]
+        assert fake_client.ws_calls[-1]["type"] == "lcn/devices/delete"
+
+
+class TestLcnEntityAdd:
+    DATA = {"output": "output1"}
+
+    def _ok(self, client):
+        client.set_ws("lcn/entities/add", True)
+
+    def test_happy_path_builds_the_full_payload(self, fake_client):
+        self._ok(fake_client)
+        out = lcn_core.add_entity(
+            fake_client, "entry1", "1.7", name="Lamp", domain="light",
+            domain_data={"output": "OUTPUT1", "dimmable": True},
+        )
+        assert out["added"] is True
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload["address"] == [1, 7, False]
+        assert payload["name"] == "Lamp"
+        assert payload["domain"] == "light"
+        assert payload["domain_data"] == {"output": "OUTPUT1", "dimmable": True}
+
+    def test_every_supported_domain_is_accepted_in_principle(self, fake_client):
+        for domain, data in [
+            ("binary_sensor", {"source": "A1"}),
+            ("sensor", {"source": "R1VARSETPOINT"}),
+            ("switch", {"output": "OUTPUT1"}),
+            ("climate", {"source": "R1VARSETPOINT", "setpoint": "R1VARSETPOINT"}),
+            ("cover", {"motor": "MOTOR1"}),
+            ("scene", {"register": 0, "scene": 1}),
+        ]:
+            self._ok(fake_client)
+            out = lcn_core.add_entity(
+                fake_client, "e", "1.7", name="x", domain=domain, domain_data=data
+            )
+            assert out["added"] is True
+
+    def test_unsupported_domain_is_refused_with_the_list(self, fake_client):
+        with pytest.raises(ValueError, match="scene|cover"):
+            lcn_core.add_entity(
+                fake_client, "e", "1.7", name="x", domain="input_boolean",
+                domain_data={},
+            )
+        assert fake_client.ws_calls == []
+
+    def test_missing_required_domain_data_keys_are_named(self, fake_client):
+        with pytest.raises(ValueError, match="setpoint"):
+            lcn_core.add_entity(
+                fake_client, "e", "1.7", name="x", domain="climate",
+                domain_data={"source": "R1VARSETPOINT"},
+            )
+
+    def test_blank_name_refused(self, fake_client):
+        with pytest.raises(ValueError, match="name"):
+            lcn_core.add_entity(
+                fake_client, "e", "1.7", name="  ", domain="switch",
+                domain_data={"output": "OUTPUT1"},
+            )
+
+    def test_non_object_domain_data_refused(self, fake_client):
+        with pytest.raises(ValueError, match="object"):
+            lcn_core.add_entity(
+                fake_client, "e", "1.7", name="x", domain="switch",
+                domain_data=[],  # type: ignore[arg-type]
+            )
+
+    def test_ha_refusal_false_is_an_explanation_not_a_silent_noop(self, fake_client):
+        fake_client.set_ws("lcn/entities/add", False)
+        out = lcn_core.add_entity(
+            fake_client, "e", "1.7", name="x", domain="switch",
+            domain_data={"output": "OUTPUT1"},
+        )
+        assert out["added"] is False
+        assert "no configured" in out["note"] or "unique_id" in out["note"]
+
+    def test_unknown_device_address_would_com_here_as_false_too(self, fake_client):
+        """The False branch covers both upstream refusals; document it."""
+        fake_client.set_ws("lcn/entities/add", False)
+        out = lcn_core.add_entity(
+            fake_client, "e", "9.9", name="x", domain="cover",
+            domain_data={"motor": "MOTOR1"},
+        )
+        assert out["added"] is False
+
+
+class TestLcnEntityDelete:
+    def test_delete_sends_the_triple(self, fake_client):
+        fake_client.set_ws("lcn/entities/delete", [])
+        out = lcn_core.delete_entity(
+            fake_client, "e", "1.7", domain="switch", resource="output1"
+        )
+        assert out["deleted"] is True
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload == {
+            "entry_id": "e",
+            "address": [1, 7, False],
+            "domain": "switch",
+            "resource": "output1",
+        }
+
+    def test_blank_resource_refused(self, fake_client):
+        with pytest.raises(ValueError, match="resource"):
+            lcn_core.delete_entity(fake_client, "e", "1.7", domain="switch", resource=" ")
+
+    def test_no_match_is_an_answer_naming_the_drill_down(self, fake_client):
+        fake_client.set_ws("lcn/entities/delete", False)
+        out = lcn_core.delete_entity(
+            fake_client, "e", "1.7", domain="switch", resource="output1"
+        )
+        assert out["deleted"] is False
+        assert "lcn entities" in out["note"]
+
+
+class TestLcnCli:
+    """Wiring: the real Click decorators + FakeClient (no live HA)."""
+
+    @pytest.fixture
+    def runner(self, monkeypatch, fake_client):
+        from click.testing import CliRunner
+
+        from cli_anything.homeassistant import homeassistant_cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "make_client", lambda ctx: fake_client)
+        self.cli_mod = cli_mod
+        return CliRunner()
+
+    def _invoke(self, runner, *args, json_out=True, input=None):
+        full = ["--json", *list(args)] if json_out else list(args)
+        return runner.invoke(
+            self.cli_mod.cli,
+            full,
+            obj={
+                "url": "http://x",
+                "token": "t",
+                "verify_ssl": False,
+                "timeout": 5,
+                "as_json": json_out,
+                "config_path": None,
+            },
+            input=input,
+        )
+
+    def test_available_json(self, runner, fake_client):
+        fake_client.set_ws("get_config", {"components": ["lcn"]})
+        r = self._invoke(runner, "lcn", "available")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output) == {
+            "available": True,
+            "note": "lcn is loaded; every `lcn` command works here.",
+        }
+
+    def test_devices_json_roundtrip(self, runner, fake_client):
+        fake_client.set_ws("lcn/devices", [{"address": [1, 7, False], "name": ""}])
+        r = self._invoke(runner, "lcn", "devices", "entry1")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output) == [{"address": [1, 7, False], "name": ""}]
+        assert fake_client.ws_calls[-1]["payload"] == {"entry_id": "entry1"}
+
+    def test_entities_with_address_flag(self, runner, fake_client):
+        fake_client.set_ws("lcn/entities", [])
+        r = self._invoke(runner, "lcn", "entities", "entry1", "--address", "2.g4")
+        assert r.exit_code == 0, r.output
+        assert fake_client.ws_calls[-1]["payload"]["address"] == [2, 4, True]
+
+    def test_scan_builds_the_scan_payload(self, runner, fake_client):
+        fake_client.set_ws("lcn/devices/scan", [])
+        r = self._invoke(runner, "lcn", "scan", "entry1")
+        assert r.exit_code == 0, r.output
+        assert fake_client.ws_calls[-1]["type"] == "lcn/devices/scan"
+
+    def test_device_add(self, runner, fake_client):
+        fake_client.set_ws("lcn/devices/add", True)
+        r = self._invoke(runner, "lcn", "device-add", "entry1", "1.7")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["added"] is True
+
+    def test_device_delete_is_confirmation_gated(self, runner, fake_client):
+        fake_client.set_ws("lcn/devices/delete", [])
+        r = self._invoke(runner, "lcn", "device-delete", "entry1", "1.7", input="n")
+        assert r.exit_code != 0
+        assert fake_client.ws_calls == []
+        r = self._invoke(runner, "lcn", "device-delete", "entry1", "1.7", input="y")
+        assert r.exit_code == 0, r.output
+        assert fake_client.ws_calls[-1]["type"] == "lcn/devices/delete"
+
+    def test_entity_add(self, runner, fake_client):
+        fake_client.set_ws("lcn/entities/add", True)
+        r = self._invoke(
+            runner, "lcn", "entity-add", "entry1", "1.7",
+            "--domain", "light", "--name", "Lamp",
+            "--data", '{"output": "output1"}',
+        )
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["added"] is True
+
+    def test_entity_add_domain_choice_is_enforced_by_click(self, runner, fake_client):
+        r = self._invoke(
+            runner, "lcn", "entity-add", "entry1", "1.7", "--domain",
+            "input_boolean", "--name", "x", "--data", "{}",
+        )
+        assert r.exit_code != 0
+        assert fake_client.ws_calls == []
+
+    def test_entity_add_bad_json_is_the_consistent_error_shape(self, runner, fake_client):
+        r = self._invoke(
+            runner, "lcn", "entity-add", "entry1", "1.7", "--domain", "light",
+            "--name", "x", "--data", "{oops",
+        )
+        assert r.exit_code != 0
+        assert fake_client.ws_calls == []
+
+    def test_entity_add_missing_required_key_names_it(self, runner, fake_client):
+        r = self._invoke(
+            runner, "lcn", "entity-add", "entry1", "1.7", "--domain", "switch",
+            "--name", "x", "--data", "{}",
+        )
+        assert r.exit_code != 0
+        assert "output" in r.output
+
+    def test_entity_delete_is_confirmation_gated_and_builds_the_triple(
+        self, runner, fake_client
+    ):
+        fake_client.set_ws("lcn/entities/delete", [])
+        r = self._invoke(
+            runner, "lcn", "entity-delete", "entry1", "1.7",
+            "--domain", "switch", "--resource", "output1", input="y",
+        )
+        assert r.exit_code == 0, r.output
+        assert fake_client.ws_calls[-1]["payload"] == {
+            "entry_id": "entry1",
+            "address": [1, 7, False],
+            "domain": "switch",
+            "resource": "output1",
+        }
+
+    def test_bad_address_argument_is_a_click_error(self, runner, fake_client):
+        r = self._invoke(runner, "lcn", "device-add", "entry1", "bogus")
+        assert r.exit_code != 0
+        assert "SEG" in r.output
+
+    def test_domain_errors_never_leak_a_traceback(self, runner, fake_client):
+        fake_client.set_ws_error("lcn/devices", "unknown_command", "Invalid")
+        r = self._invoke(runner, "lcn", "devices", "entry1")
+        assert r.exit_code != 0
+        assert "Traceback" not in r.output
+        assert "no LCN bus" in r.output

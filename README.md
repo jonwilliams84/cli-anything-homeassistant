@@ -164,6 +164,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `matter` | **The Matter integration's WebSocket API** (v1.56) — commissioning and node operations. `available` (a read: 'not loaded' is an answer, not an error), `nodes` (device registry with `node_id`/`fabric_id`/`endpoint` extracted from HA's hex identifiers), `commission` (QR / manual code), `commission-on-network` (setup PIN, `--ip` optional), `set-wifi` / `set-thread` (the network credentials later commissioning passes on), per-node `node-diagnostics` / `ping` / `interview` / `open-commissioning-window` / `remove-fabric` (confirmation-gated). Node-scoped commands accept an entity id and resolve the device via the registry; a device that is not a Matter device is named as such instead of HA's bare `node_not_found`; an instance with no Matter controller gets one clean sentence instead of `unknown_command` |
 | `knx` | **The KNX integration's WebSocket API** (v1.57) — ETS project, group monitor, entity store. `available` (a read: 'not loaded' is an answer, not an error), `info` (xknx version, tunnel state), `group-monitor` / `group-telegrams` / `subscribe-telegrams` (live telegram feed), `project-get` / `project-process` / `project-remove` (the parsed ETS project), the entity store (`validate-entity` — the always-safe rehearsal, `create-entity` / `update-entity` / `delete-entity` / `entities` / `entity-config`) and `create-device`. One of name or device is required — refused client-side with the CLI spellings in the message |
 | `insteon` | **The Insteon integration's WebSocket API** (v1.58) — everything the `insteon_frontend` panel drives: devices (`device`, `device-add` — all-linking as a run-to-completion stream that ends on `linking_stopped`, `device-remove`, `add-x10`), the All-Link Database edit-then-push cycle (`aldb`, `aldb-add` / `aldb-change` queue, `aldb-write` commits, `aldb-load`, `aldb-reset` / `aldb-default-links` confirmation-gated, `aldb-watch(-all)` live feeds), device properties (`properties`, `property-set`, `properties-write` / `load` / `reset`), the modem connection (`config`, `modem-schema`, `modem-config-set` — connect-first, entry updated only on success), link hygiene (`broken-links`, `unknown-devices`, `override-add` / `override-remove`) and scenes (`scenes`, `scene`, `scene-save`, `scene-delete`). ALDB records and scene links are validated client-side against the upstream schema — the bad key or byte range is named before HA sees it; every command is admin-only upstream; `available` is a read with exit 0 when absent |
+| `lcn` | **The LCN integration's WebSocket API** (v1.60) — the device and entity stores the `lcn` config panel drives, sibling of `knx`/`insteon`. `available` (a read: 'not loaded' is an answer, not an error), `devices`, `entities` (`--address 1.g12` drill-down), `scan` (creates/updates a device per known bus address and re-derives the registries), `device-add` / `device-delete` (child entities go with it; confirmation-gated) and `entity-add` / `entity-delete` (keyed by address + domain + resource; the 7 upstream platforms; required `domain_data` keys are checked client-side, allowed port/register values server-side). Addresses are `SEG.ADDR` for a module and `SEG.gADDR` for a group. Admin-only upstream; an instance with no pchk connection gets one clean sentence instead of `unknown_command`, and `available` is a read with exit 0 when absent |
 
 ## Quick examples
 
@@ -427,6 +428,30 @@ cli-anything-homeassistant --json matter ping sensor.hue_motion
 # what stops working.
 cli-anything-homeassistant --json matter open-commissioning-window light.hall
 cli-anything-homeassistant matter remove-fabric light.hall 2      # asks twice
+
+
+
+
+# LCN — the device/entity stores around the `lcn` config entry.
+```bash
+# Is the integration even loaded? Exit 0 either way — a script branch point.
+cli-anything-homeassistant --json lcn available | jq .available
+
+# Everything the panel's Devices and Entities views show; --address drills in.
+cli-anything-homeassistant --json lcn devices <entry_id>
+cli-anything-homeassistant --json lcn entities <entry_id> --address 1.7
+
+# Scan the bus: a device per address pchk knows, serials refreshed, then
+# build an entity on one of them.
+cli-anything-homeassistant lcn scan <entry_id>
+cli-anything-homeassistant lcn entity-add <entry_id> 1.7 \
+  --domain light --name 'Kitchen counter' --data '{"output": "output1"}'
+
+# Groups are addresses too — 'SEG.gADDR' — and both destructive paths ask.
+cli-anything-homeassistant lcn device-add <entry_id> 1.g12
+cli-anything-homeassistant lcn entity-delete <entry_id> 1.7 \
+  --domain light --resource output1
+```
 
 
 # INSTEON — the ALDB edit-then-push cycle and link hygiene.

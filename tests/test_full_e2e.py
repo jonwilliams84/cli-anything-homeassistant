@@ -43,6 +43,7 @@ from cli_anything.homeassistant.core import (
     zwave_js as zwave_js_core,
     matter as matter_core,
     insteon as insteon_core,
+    lcn as lcn_core,
 )
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
@@ -2742,3 +2743,102 @@ class TestLiveInsteonAbsent:
             capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
         )
         assert "insteon" in r.stdout
+
+
+class TestLiveLcnAbsent:
+    """The test instance has no LCN bus (and no pchk connection), so `lcn`
+    never loads.
+
+    Same discipline as TestLiveInsteonAbsent: prove the premise first (the
+    websocket commands really are unregistered), then check that every
+    surface answers the absence cleanly instead of leaking a bare
+    `unknown_command` — and that `lcn available` turns the same fact into
+    an answer a script can branch on (exit 0). Address parsing and the
+    client-side refusals work with NO integration at all, because they
+    never touch the wire.
+    """
+
+    def test_available_is_false_rather_than_an_error(self, live_client):
+        out = lcn_core.available(live_client)
+        assert out["available"] is False
+        assert "lcn" in out["note"]
+
+    def test_the_websocket_command_really_is_unregistered(self, live_client):
+        """The premise of every other assertion in this class."""
+        with pytest.raises(HomeAssistantError) as exc:
+            live_client.ws_call("lcn/devices", {"entry_id": "none"})
+        assert exc.value.code == "unknown_command"
+
+    def test_reads_raise_the_explanation_not_the_raw_code(self, live_client):
+        with pytest.raises(HomeAssistantError) as exc:
+            lcn_core.devices(live_client, "abc123")
+        assert "no LCN bus" in str(exc.value)
+        assert "unknown_command" not in str(exc.value)
+
+    def test_writes_raise_it_too(self, live_client):
+        with pytest.raises(HomeAssistantError, match="no LCN bus"):
+            lcn_core.add_device(live_client, "abc123", "1.7")
+
+    def test_address_parsing_needs_no_integration(self, live_client):
+        """Pure client-side: same answers with or without an LCN bus."""
+        assert lcn_core.parse_address("1.7") == [1, 7, False]
+        assert lcn_core.parse_address("1.g12") == [1, 12, True]
+        with pytest.raises(ValueError):
+            lcn_core.parse_address("bogus")
+
+    def test_entity_add_refuses_before_the_wire_when_the_payload_is_bad(
+        self, live_client
+    ):
+        """A blank name dies client-side even on a real connection."""
+        with pytest.raises(ValueError, match="name"):
+            lcn_core.add_entity(live_client, "abc123", "1.7", name="", domain="light",
+                            domain_data={"output": "OUTPUT1"})
+        with pytest.raises(ValueError, match="scene"):
+            lcn_core.add_entity(live_client, "abc123", "1.7", name="x", domain="scene",
+                            domain_data={"register": 0})
+
+    @staticmethod
+    def _env(hass_instance):
+        env = os.environ.copy()
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        env["HASS_VERIFY_SSL"] = "0"
+        return env
+
+    def test_available_cli_says_so_with_exit_0(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "lcn", "available"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 0, r.stderr
+        out = json.loads(r.stdout)
+        assert out["available"] is False
+        assert "lcn" in out["note"]
+
+    def test_devices_cli_says_so_cleanly(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "lcn", "devices", "abc123"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 1
+        assert "no LCN bus" in r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_entity_add_cli_refuses_before_the_wire_when_the_input_is_bad(
+        self, hass_instance
+    ):
+        """A bad domain dies as click usage, with no HA round-trip."""
+        r = subprocess.run(
+            CLI_BASE + ["lcn", "entity-add", "abc123", "1.7", "--domain",
+                        "input_boolean", "--name", "x", "--data", "{}"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode != 0
+        assert "input_boolean" in (r.stderr + r.stdout)
+
+    def test_the_group_appears_in_the_root_help(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--help"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert "lcn" in r.stdout
