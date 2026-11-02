@@ -6,6 +6,8 @@ and entity-registry resolution — all the uncovered branches.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from cli_anything.homeassistant.core import template_helpers
@@ -118,7 +120,7 @@ class TestUpdate:
                 {"name": "unit_of_measurement", "description": {"suggested_value": "W"}},
             ],
         })
-        fake_client.set("POST", f"config/config_entries/flow/{FLOW_ID}", {})
+        fake_client.set("POST", f"config/config_entries/options/flow/{FLOW_ID}", {})
 
         template_helpers.update(
             fake_client, ENTRY_ID,
@@ -140,7 +142,7 @@ class TestUpdate:
                 {"name": "state", "description": {"suggested_value": "{{ old }}"}},
             ],
         })
-        fake_client.set("POST", f"config/config_entries/flow/{FLOW_ID}", {})
+        fake_client.set("POST", f"config/config_entries/options/flow/{FLOW_ID}", {})
 
         template_helpers.update(
             fake_client, ENTRY_ID,
@@ -174,11 +176,31 @@ class TestUpdate:
             "flow_id": FLOW_ID,
             "data_schema": [],
         })
-        fake_client.set("POST", f"config/config_entries/flow/{FLOW_ID}", {})
+        fake_client.set("POST", f"config/config_entries/options/flow/{FLOW_ID}", {})
 
         template_helpers.update(fake_client, ENTRY_ID, name="Only Name")
         submit = [c for c in fake_client.calls if c["verb"] == "POST"][-1]["payload"]
         assert submit == {"name": "Only Name"}
+
+    def test_update_submits_to_the_options_flow(self, fake_client):
+        """The submit must go to the options flow it opened, not the config flow.
+
+        Regression: it posted to config/config_entries/flow/<id>, which Home
+        Assistant answers with 404 "Invalid flow specified", so every update
+        failed and nothing changed.
+        """
+        fake_client.set("POST", "config/config_entries/options/flow", {
+            "flow_id": FLOW_ID,
+            "data_schema": [{"name": "state", "description": {"suggested_value": "{{ old }}"}}],
+        })
+        fake_client.set("POST", f"config/config_entries/options/flow/{FLOW_ID}", {"type": "create_entry"})
+
+        template_helpers.update(fake_client, ENTRY_ID, state_template="{{ new }}")
+        paths = [c["path"] for c in fake_client.calls if c["verb"] == "POST"]
+        assert paths == [
+            "config/config_entries/options/flow",
+            f"config/config_entries/options/flow/{FLOW_ID}",
+        ]
 
 
 # ── show ──────────────────────────────────────────────────────────────────────
@@ -203,6 +225,23 @@ class TestShow:
         assert result["domain"] == "template"
         assert result["options"]["name"] == "My Helper"
         assert result["options"]["state"] == "{{ states('sensor.x') }}"
+
+    def test_show_aborts_the_options_flow_it_opened(self, fake_client, caplog):
+        """Regression: the abort called a non-existent client.request(), so the
+        AttributeError was logged as a warning and every show left an options
+        flow open on the server."""
+        fake_client.set("POST", "config/config_entries/options/flow", {
+            "flow_id": FLOW_ID,
+            "data_schema": [{"name": "state", "description": {"suggested_value": "{{ 1 }}"}}],
+        })
+        fake_client.set_ws("config_entries/get", {"title": "T", "domain": "template"})
+
+        with caplog.at_level(logging.WARNING, logger=template_helpers.__name__):
+            template_helpers.show(fake_client, ENTRY_ID)
+
+        deletes = [c["path"] for c in fake_client.calls if c["verb"] == "DELETE"]
+        assert deletes == [f"config/config_entries/options/flow/{FLOW_ID}"]
+        assert not caplog.records, [r.message for r in caplog.records]
 
     def test_show_by_entity_id_resolves_via_registry(self, fake_client):
         """When ident contains a dot, it's resolved via entity registry."""

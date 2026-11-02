@@ -4,6 +4,20 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.61.1] — 2026-11-02
+
+### Fixed
+
+- **`template-helper update` never updated anything.** It opened an OPTIONS
+  flow and then submitted to the CONFIG-flow endpoint
+  (`config/config_entries/flow/<id>`), which does not know that flow id, so
+  every call failed with 404 "Invalid flow specified" and nothing changed.
+  It now submits to `config/config_entries/options/flow/<id>`. The unit
+  tests had asserted the wrong endpoint, which is how it shipped.
+- **`template-helper show` left an options flow open on every call.** Its
+  abort called `client.request()`, which the client does not have; the
+  `AttributeError` was logged as a warning. It now calls `client.delete()`.
+
 ## [1.61.0] — 2026-11-02
 
 Refine pass driven the same way as the last one: enumerate every

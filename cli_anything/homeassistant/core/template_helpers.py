@@ -141,7 +141,10 @@ def update(
     if extra:
         current.update(extra)
 
-    return client.post(f"config/config_entries/flow/{flow_id}", current)
+    # Submit to the OPTIONS flow that was opened above. The config-flow
+    # endpoint (config/config_entries/flow/<id>) does not know this flow id
+    # and answers 404 "Invalid flow specified".
+    return client.post(f"config/config_entries/options/flow/{flow_id}", current)
 
 
 def show(client, ident: str) -> dict:
@@ -181,7 +184,7 @@ def show(client, ident: str) -> dict:
     # Abort the flow so we don't leave it hanging.
     if flow_id:
         try:
-            client.request("DELETE", f"config/config_entries/options/flow/{flow_id}")
+            client.delete(f"config/config_entries/options/flow/{flow_id}")
         except Exception:
             logging.getLogger(__name__).warning(
                 "Failed to abort options flow %s for entry %s",
