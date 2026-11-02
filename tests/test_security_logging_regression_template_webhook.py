@@ -38,10 +38,10 @@ class TestTemplateHelpersShowLogsAbortFailure:
         )
         fake_client.set_ws("config_entries/get", {"title": "T", "domain": "template"})
 
-        def request(method, path):
+        def delete(path, params=None):
             raise RuntimeError("DELETE refused")
 
-        fake_client.request = request  # type: ignore[assignment]
+        fake_client.delete = delete  # type: ignore[assignment]
 
         with caplog.at_level(logging.WARNING, logger=template_helpers.__name__):
             out = template_helpers.show(fake_client, "entry-1")
