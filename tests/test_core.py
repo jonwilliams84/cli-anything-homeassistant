@@ -6396,3 +6396,281 @@ class TestLcnCli:
         assert r.exit_code != 0
         assert "Traceback" not in r.output
         assert "no LCN bus" in r.output
+
+
+# ─────────────────────────────────────────────────────── dynalite (v1.61.0)
+#
+# Dynalite is the last bundled integration with its own websocket commands:
+# the two of its config panel (`dynalite/get-config`, `dynalite/save-config`).
+# The write REPLACES the entry's whole data, so the unit tests pin the
+# merge-by-default behaviour, the client-side refusals (empty config, keys
+# HA would silently drop, a missing host) and the two silent-failure shapes
+# upstream answers instead of error frames.
+
+from cli_anything.homeassistant.core import dynalite as dynalite_core  # noqa: E402
+
+
+def _dynalite_read(entries):
+    return {"config": entries, "default": {"DEFAULT_PORT": 12345}}
+
+
+class TestDynaliteAvailable:
+    def _cfg(self, client, components):
+        client.set_ws("get_config", {"components": components})
+        return dynalite_core.available(client)
+
+    def test_loaded(self, fake_client):
+        out = self._cfg(fake_client, ["dynalite", "hue"])
+        assert out["available"] is True
+        assert "works here" in out["note"]
+
+    def test_not_loaded(self, fake_client):
+        out = self._cfg(fake_client, ["hue"])
+        assert out["available"] is False
+        assert "Dynalite" in out["note"]
+
+    def test_an_unreachable_instance_raises_not_a_false_answer(self, fake_client):
+        fake_client.set_ws_error("get_config", "unknown_error", "boom")
+        with pytest.raises(HomeAssistantError, match="boom"):
+            dynalite_core.available(fake_client)
+
+
+class TestDynaliteRead:
+    def test_read_sends_the_payload_less_shape(self, fake_client):
+        fake_client.set_ws("dynalite/get-config", _dynalite_read({}))
+        out = dynalite_core.read(fake_client)
+        assert out["default"]["DEFAULT_PORT"] == 12345
+        assert fake_client.ws_calls[-1] == {
+            "type": "dynalite/get-config",
+            "payload": {},
+        }
+
+    def test_absent_integration_raises_the_note_not_the_code(self, fake_client):
+        fake_client.set_ws_error("dynalite/get-config", "unknown_command", "")
+        with pytest.raises(HomeAssistantError, match="no Dynalite bridge"):
+            dynalite_core.read(fake_client)
+
+
+class TestDynaliteCheckConfig:
+    """The client-side refusals before anything leaves the process."""
+
+    def test_non_object_refused(self):
+        with pytest.raises(ValueError, match="JSON object"):
+            dynalite_core.check_config([])
+
+    def test_empty_refused_with_the_cli_forms_named(self):
+        with pytest.raises(ValueError, match="--set|--data"):
+            dynalite_core.check_config({})
+
+    def test_unknown_key_is_refused_not_silently_dropped(self):
+        with pytest.raises(ValueError, match="'bogus'"):
+            dynalite_core.check_config({"host": "bridge", "bogus": 1})
+
+    def test_all_relevant_keys_are_accepted(self):
+        cfg = {"name": "Dynalite", "host": "192.168.1.2", "port": 12345,
+               "autodiscover": True, "area": {"1": {"name": "Living"}},
+               "default": {"fade": 0.3}, "active": "on",
+               "preset": {"1": None}, "template": {"room": {"room_on": "1"}}}
+        assert dynalite_core.check_config(cfg) is cfg
+
+    def test_missing_host_refused_before_the_wire(self, fake_client):
+        fake_client.set_ws("dynalite/save-config", {})
+        with pytest.raises(ValueError, match="host"):
+            dynalite_core.check_config({"port": 12345})
+        assert fake_client.ws_calls == []
+
+
+class TestDynaliteMerge:
+    def test_overlay_keeps_keys_you_did_not_name(self):
+        current = {"host": "bridge", "name": "D", "area": {"1": {"name": "L"}}}
+        merged = dynalite_core.merge_config(current, {"port": 12346})
+        assert merged["host"] == "bridge"
+        assert merged["port"] == 12346
+        assert merged["area"] == {"1": {"name": "L"}}
+
+    def test_none_deletes_like_supervisor_options(self):
+        merged = dynalite_core.merge_config({"host": "b", "area": {"1": 1}},
+                                            {"area": None})
+        assert merged == {"host": "b"}
+
+    def test_updates_must_be_an_object(self):
+        with pytest.raises(ValueError, match="JSON object"):
+            dynalite_core.merge_config({}, ["host=b"])
+
+
+class TestDynaliteSave:
+    def _entry(self, client, entry_id="entry1", **extra):
+        current = {"name": "dynalite", "host": "bridge", "port": 12345}
+        current.update(extra)
+        client.set_ws("dynalite/get-config", _dynalite_read({entry_id: current}))
+
+    def test_merge_reads_first_then_sends_the_overlay(self, fake_client):
+        self._entry(fake_client)
+        out = dynalite_core.save(fake_client, "entry1", {"port": 12346})
+        assert out == {"saved": True, "entry_id": "entry1", "replaced": False,
+                       "host": "bridge", "keys": ["host", "name", "port"]}
+        read_call, save_call = fake_client.ws_calls
+        assert read_call["type"] == "dynalite/get-config"
+        assert save_call["type"] == "dynalite/save-config"
+        # the WHOLE merged config goes, not just the delta
+        assert save_call["payload"] == {
+            "entry_id": "entry1",
+            "config": {"name": "dynalite", "host": "bridge", "port": 12346},
+        }
+
+    def test_unknown_entry_id_is_refused_before_the_wire(self, fake_client):
+        self._entry(fake_client)
+        with pytest.raises(ValueError, match="entryX.*get-config"):
+            dynalite_core.save(fake_client, "entryX", {"port": 1})
+        assert [c["type"] for c in fake_client.ws_calls] == ["dynalite/get-config"]
+
+    def test_replace_sends_exactly_what_was_given(self, fake_client):
+        fake_client.set_ws("dynalite/save-config", {})
+        out = dynalite_core.save(
+            fake_client, "entry1", {"host": "bridge", "port": 12345}, replace=True
+        )
+        assert out["replaced"] is True
+        (save_call,) = fake_client.ws_calls
+        assert save_call["payload"]["config"] == {"host": "bridge", "port": 12345}
+
+    def test_replace_still_refuses_a_hostless_config(self, fake_client):
+        fake_client.set_ws("dynalite/save-config", {})
+        with pytest.raises(ValueError, match="host"):
+            dynalite_core.save(fake_client, "entry1", {"port": 1}, replace=True)
+        assert fake_client.ws_calls == []
+
+    def test_merge_refuses_when_the_current_entry_has_no_host(self, fake_client):
+        self._entry(fake_client, host=None)
+        fake_client.set_ws("dynalite/save-config", {})
+        with pytest.raises(ValueError, match="host"):
+            dynalite_core.save(fake_client, "entry1", {"port": 12346})
+
+    def test_upstream_silent_error_is_raised_not_ignored(self, fake_client):
+        self._entry(fake_client)
+        fake_client.set_ws("dynalite/save-config", {"error": True})
+        with pytest.raises(ValueError, match="entry1"):
+            dynalite_core.save(fake_client, "entry1", {"port": 2})
+
+    def test_success_is_an_empty_dict_upstream(self, fake_client):
+        self._entry(fake_client)
+        fake_client.set_ws("dynalite/save-config", {})
+        out = dynalite_core.save(fake_client, "entry1", {"port": 2})
+        assert out["saved"] is True
+
+    def test_absent_integration_raises_the_note(self, fake_client):
+        fake_client.set_ws_error("dynalite/get-config", "unknown_command", "")
+        with pytest.raises(HomeAssistantError, match="no Dynalite bridge"):
+            dynalite_core.save(fake_client, "entry1", {"host": "x", "port": 1})
+
+
+class TestDynaliteCli:
+    """Wiring: the real Click decorators + FakeClient (no live HA)."""
+
+    @pytest.fixture
+    def runner(self, monkeypatch, fake_client):
+        from click.testing import CliRunner
+
+        from cli_anything.homeassistant import homeassistant_cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "make_client", lambda ctx: fake_client)
+        self.cli_mod = cli_mod
+        return CliRunner()
+
+    def _invoke(self, runner, *args, json_out=True, input=None):
+        full = ["--json", *list(args)] if json_out else list(args)
+        return runner.invoke(
+            self.cli_mod.cli,
+            full,
+            obj={
+                "url": "http://x",
+                "token": "t",
+                "verify_ssl": False,
+                "timeout": 5,
+                "as_json": json_out,
+                "config_path": None,
+            },
+            input=input,
+        )
+
+    def test_available_json(self, runner, fake_client):
+        fake_client.set_ws("get_config", {"components": ["dynalite"]})
+        r = self._invoke(runner, "dynalite", "available")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["available"] is True
+
+    def test_get_config_roundtrip(self, runner, fake_client):
+        fake_client.set_ws("dynalite/get-config", _dynalite_read({}))
+        r = self._invoke(runner, "dynalite", "get-config")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["default"]["DEFAULT_PORT"] == 12345
+
+    def test_save_config_set_values_json_decode(self, runner, fake_client):
+        fake_client.set_ws("dynalite/get-config", _dynalite_read(
+            {"entry1": {"host": "bridge", "port": 12345}}))
+        fake_client.set_ws("dynalite/save-config", {})
+        r = self._invoke(
+            runner, "dynalite", "save-config", "entry1",
+            "--set", "port=12346", "--set", "autodiscover=true", input="y",
+        )
+        assert r.exit_code == 0, r.output
+        payload = fake_client.ws_calls[-1]["payload"]
+        assert payload["config"] == {
+            "host": "bridge", "port": 12346, "autodiscover": True,
+        }
+
+    def test_save_config_data_object_merges(self, runner, fake_client):
+        fake_client.set_ws("dynalite/get-config", _dynalite_read(
+            {"entry1": {"host": "bridge", "area": {"1": {"name": "L"}}}}))
+        fake_client.set_ws("dynalite/save-config", {})
+        r = self._invoke(
+            runner, "dynalite", "save-config", "entry1",
+            "--data", '{"port": 12346}', input="y",
+        )
+        assert r.exit_code == 0, r.output
+        assert fake_client.ws_calls[-1]["payload"]["config"] == {
+            "host": "bridge", "port": 12346, "area": {"1": {"name": "L"}},
+        }
+
+    def test_save_config_is_confirmation_gated(self, runner, fake_client):
+        fake_client.set_ws("dynalite/get-config", _dynalite_read(
+            {"entry1": {"host": "bridge"}}))
+        r = self._invoke(
+            runner, "dynalite", "save-config", "entry1", "--set", "port=2",
+            input="n",
+        )
+        assert r.exit_code != 0
+        assert fake_client.ws_calls == []
+
+    def test_save_config_replace_skips_the_merge_read(self, runner, fake_client):
+        fake_client.set_ws("dynalite/save-config", {})
+        r = self._invoke(
+            runner, "dynalite", "save-config", "entry1",
+            "--replace", "--set", "host=bridge", input="y",
+        )
+        assert r.exit_code == 0, r.output
+        assert len(fake_client.ws_calls) == 1
+        assert fake_client.ws_calls[0]["payload"]["config"] == {"host": "bridge"}
+
+    def test_save_config_bad_set_form_is_a_click_error(self, runner, fake_client):
+        r = self._invoke(
+            runner, "dynalite", "save-config", "entry1", "--set", "port",
+            input="y",
+        )
+        assert r.exit_code != 0
+        assert "key=value" in r.output
+        assert fake_client.ws_calls == []
+
+    def test_save_config_unknown_key_refused_before_the_wire(self, runner, fake_client):
+        r = self._invoke(
+            runner, "dynalite", "save-config", "entry1",
+            "--set", "bogus=1", "--set", "host=bridge", input="y",
+        )
+        assert r.exit_code != 0
+        assert "bogus" in r.output
+        assert fake_client.ws_calls == []
+
+    def test_absent_integration_is_one_clean_sentence(self, runner, fake_client):
+        fake_client.set_ws_error("get_config", "unknown_command", "")
+        r = self._invoke(runner, "dynalite", "available")
+        assert r.exit_code != 0
+        assert "Traceback" not in r.output

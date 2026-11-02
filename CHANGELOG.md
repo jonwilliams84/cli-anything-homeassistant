@@ -4,6 +4,62 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.61.0] — 2026-11-02
+
+Refine pass driven the same way as the last one: enumerate every
+`websocket_command` the installed Home Assistant registers and diff it
+against a string the harness sends. Of 236 commands on 2025.1.4, exactly
+two belonged to an integration with no command group — **`dynalite/
+get-config` and `dynalite/save-config`**, the config panel of the Dynalite
+lighting bus. The v1.60 pass called LCN the last hole in the bus-integration
+set; it was the second-to-last.
+
+### New group: `dynalite` (3 commands, 2 WS commands + `available`)
+
+- **`available`** — a read that answers with exit 0 either way, like every
+  integration group before it: the integration's presence in the loaded-
+  components list, not a round-trip to a command that does not exist.
+- **`get-config`** — every Dynalite config entry's config (the panel's
+  `RELEVANT_CONFS` per entry, keyed by entry_id) plus the panel's built-in
+  defaults (default name and port, the cover device classes an area's
+  `class` may take). The per-entry keys are EXACTLY what a write keeps, so
+  a read is a valid template for a write.
+- **`save-config <entry_id>`** — write the entry's config with repeatable
+  `--set KEY=VALUE` (values JSON-decode: `port=12346` arrives an int,
+  `autodiscover=true` a bool) and/or a `--data` JSON object.
+
+### The write is a REPLACE, so the harness makes it a merge by default
+
+`save-config` calls `async_update_entry` with the message's config — the
+entry's ENTIRE data goes, the same class of footgun as Supervisor's options
+POST (v1.52) and the powercalc options flow. The default therefore reads the
+entry's current config back and overlays the given keys on top;
+`--replace` is the explicit verbatim escape hatch. Confirmation is always
+asked. Two more traps are handled client-side, because upstream is silent
+about both:
+
+- **HA drops keys outside `RELEVANT_CONFS` without a word.** The client
+  refuses them instead, naming the offenders and the allowed list.
+- **An unknown `entry_id` answers `{"error": True}` with the success flag
+  STILL SET** — the handler logs it and sends a success result. Surfaced as
+  a real error naming the id and `dynalite get-config`.
+
+`host` — the one key HA's `BRIDGE_SCHEMA` requires — is checked on the
+config that actually goes out, i.e. POST-merge: a delta that omits `host`
+is fine when the entry already has one.
+
+### Why it matters
+
+With this, a diff of the installed HA's registered websocket commands
+against the harness finds no integration-scoped commands left: every
+bundled integration that registers any (`zwave_js`, `matter`, `knx`,
+`insteon`, `lcn`, `dynalite`) has a matching group, and the generic
+`websocket_api` commands still uncovered are all reachable through the
+harness's REST surface. Dynalite owners get what the config panel gives —
+and, for the first time, a scripted write with guardrails the panel does
+not have (it lets you paste any JSON; the harness validates keys, merges
+unless you insist, and asks).
+
 ## [1.60.0] — 2026-10-26
 
 Refine pass "ha-2", driven by a websocket-command diff against the installed

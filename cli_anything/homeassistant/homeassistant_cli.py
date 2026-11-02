@@ -132,6 +132,7 @@ from cli_anything.homeassistant.core import backup_advanced as backup_advanced_c
 from cli_anything.homeassistant.core import calendar_ws as calendar_ws_core
 from cli_anything.homeassistant.core import diagnostics_dl as diagnostics_dl_core
 from cli_anything.homeassistant.core import entity_registry_extras as entity_registry_extras_core
+from cli_anything.homeassistant.core import dynalite as dynalite_core
 from cli_anything.homeassistant.core import frontend_prefs as frontend_prefs_core
 from cli_anything.homeassistant.core import network as network_core
 from cli_anything.homeassistant.core import energy_advanced as energy_advanced_core
@@ -19939,6 +19940,98 @@ def lcn_entity_delete(ctx, entry_id, address, domain, resource):
         lcn_core.delete_entity(
             make_client(ctx), entry_id, address, domain=domain, resource=resource
         ),
+    )
+
+
+# ────────────────────────────────────────────── dynalite
+
+
+@cli.group()
+def dynalite():
+    """The dynalite integration — its config panel's read and write."""
+
+
+def _dynalite_updates(data, sets):
+    """Fold --data and one or more --set k=v into one updates object."""
+    updates: dict = {}
+    if data:
+        with handle_json_arg(data) as parsed:
+            if not isinstance(parsed, dict):
+                raise click.BadParameter("--data must be a JSON object", param_hint="--data")
+            updates.update(parsed)
+    for pair in sets or ():
+        key, _, raw = pair.partition("=")
+        if not key.strip() or not _:
+            raise click.BadParameter(f"--set expects key=value, got {pair!r}", param_hint="--set")
+        try:
+            updates[key.strip()] = json.loads(raw)
+        except ValueError:
+            updates[key.strip()] = raw
+    return updates
+
+
+@dynalite.command("available")
+@click.pass_context
+def dynalite_available(ctx):
+    """Is dynalite set up? A read — 'no' is an answer, not an error."""
+    emit(ctx, dynalite_core.available(make_client(ctx)))
+
+
+@dynalite.command("get-config")
+@click.pass_context
+def dynalite_get_config(ctx):
+    """Every Dynalite entry's config, plus the panel's built-in defaults.
+
+    The per-entry keys are exactly what `save-config` keeps, so a read is
+    a valid template for a write.
+    """
+    emit(ctx, dynalite_core.read(make_client(ctx)))
+
+
+@dynalite.command("save-config")
+@click.argument("entry_id")
+@click.option(
+    "--set",
+    "sets",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="One key to overlay (values JSON-decode: port=12345 is an int, "
+    "autodiscover=true a bool). Repeatable. Merge with the entry's "
+    "current config unless --replace.",
+)
+@click.option(
+    "--data",
+    default=None,
+    metavar="JSON",
+    help='A JSON object of keys to overlay, e.g. \'{"host": "10.0.0.8", "port": 12346}\'',
+)
+@click.option(
+    "--replace",
+    is_flag=True,
+    help="Send exactly the --data/--set keys as the WHOLE config, without "
+    "merging the entry's current one. HA REPLACES the entry's data with "
+    "what you send — you almost never want this without first reading "
+    "`dynalite get-config`.",
+)
+@click.confirmation_option(
+    prompt=(
+        "Write this Dynalite entry config? HA REPLACES the entry's whole "
+        "data (the panel's keys; areas, presets and templates not merged "
+        "in go)."
+    )
+)
+@click.pass_context
+def dynalite_save_config(ctx, entry_id, sets, data, replace):
+    """Write a Dynalite entry's config.
+
+    By default the given keys are MERGED on top of the entry's current
+    config (read live first), because the write upstream REPLACES the
+    whole data object. Requires 'host' to be present after the merge.
+    """
+    updates = _dynalite_updates(data, sets)
+    emit(
+        ctx,
+        dynalite_core.save(make_client(ctx), entry_id, updates, replace=replace),
     )
 
 

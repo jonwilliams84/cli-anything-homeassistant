@@ -274,6 +274,26 @@ logic or renders templates locally. Every command supports `--json`.
   on the read too. `prefs entity-naming` reads with no options and confirms
   inline only when `--set-parts` is given.
 
+## Gotchas from the v1.61.0 refine pass (dynalite)
+
+- **"LAST integration with websocket commands" claims need the full diff,
+  not a domain name.** The v1.60 pass called LCN the last hole in the bus-
+  integration set; the same diff in v1.61 found `dynalite/get-config` and
+  `dynalite/save-config` still uncovered. "The remaining misses are KNX/
+  LCN/dynalite-style bus integrations" is a claim about WHICH groups, and
+  each refine pass closes part of that list — re-run the enumeration
+  instead of citing the previous pass's conclusion.
+- **`dynalite/save-config` REPLACES the entry's whole data and answers
+  TWO kinds of silence.** (1) Keys outside the panel's `RELEVANT_CONFS`
+  are dropped without a word — refuse them client-side. (2) An unknown
+  `entry_id` answers `{"error": True}` with `success` still true — an
+  error FLAG in a success RESULT, not an error frame; a wrapper that
+  only checks the exception path reads a failed write as success.
+- **Validate `host` on sent config, not the delta.** The merge exists in
+  the first place so `--set port=…` doesn't wipe the entry; requiring the
+  delta to carry `host` would defeat it. Check the MERGED config, after
+  the read, before the write.
+
 ## Gotchas
 - `homeassistant_cli.py` is one huge file — grep for the command name; new commands go alongside existing siblings. They must be defined **above** the trailing `if __name__ == "__main__": main()` guard: anything after it never registers when the CLI runs as `python -m cli_anything.homeassistant.homeassistant_cli` (the e2e fallback path), because `main()` executes before the rest of the module body.
 - Never commit a token: `.gitignore` excludes the connection-profile JSON.
