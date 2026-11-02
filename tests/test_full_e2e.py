@@ -44,6 +44,7 @@ from cli_anything.homeassistant.core import (
     matter as matter_core,
     insteon as insteon_core,
     lcn as lcn_core,
+    dynalite as dynalite_core,
 )
 from cli_anything.homeassistant.utils.homeassistant_backend import (
     HomeAssistantClient,
@@ -2842,3 +2843,97 @@ class TestLiveLcnAbsent:
             capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
         )
         assert "lcn" in r.stdout
+
+
+class TestLiveDynaliteAbsent:
+    """The test instance has no Dynalite bridge (and no config entry), so
+    `dynalite` never loads.
+
+    Same discipline as TestLiveLcnAbsent: prove the premise first (the
+    websocket commands really are unregistered), then check that every
+    surface answers the absence cleanly instead of leaking a bare
+    `unknown_command` — and that `dynalite available` turns the same fact
+    into an answer a script can branch on (exit 0).
+    """
+
+    def test_available_is_false_rather_than_an_error(self, live_client):
+        out = dynalite_core.available(live_client)
+        assert out["available"] is False
+        assert "dynalite" in out["note"]
+
+    def test_the_websocket_command_really_is_unregistered(self, live_client):
+        """The premise of every other assertion in this class."""
+        with pytest.raises(HomeAssistantError) as exc:
+            live_client.ws_call("dynalite/get-config", {})
+        assert exc.value.code == "unknown_command"
+
+    def test_read_raises_the_explanation_not_the_raw_code(self, live_client):
+        with pytest.raises(HomeAssistantError) as exc:
+            dynalite_core.read(live_client)
+        assert "no Dynalite bridge" in str(exc.value)
+        assert "unknown_command" not in str(exc.value)
+
+    def test_a_merge_refuses_on_the_read_before_anything_writes(self, live_client):
+        with pytest.raises(HomeAssistantError, match="no Dynalite bridge"):
+            dynalite_core.save(live_client, "abc123", {"port": 12346})
+
+    def test_a_replace_reaches_wire_and_gets_the_same_fate(self, live_client):
+        """--replace skips the read, so the wire refusal lands directly."""
+        with pytest.raises(HomeAssistantError, match="no Dynalite bridge"):
+            dynalite_core.save(
+                live_client, "abc123", {"host": "bridge"}, replace=True
+            )
+
+    def test_key_validation_needs_no_integration(self, live_client):
+        """Pure client-side: same answers with or without a bridge."""
+        with pytest.raises(ValueError, match="'bogus'"):
+            dynalite_core.check_keys({"host": "bridge", "bogus": 1})
+        with pytest.raises(ValueError, match="host"):
+            dynalite_core.check_config({"port": 1})
+
+    @staticmethod
+    def _env(hass_instance):
+        env = os.environ.copy()
+        env["HASS_URL"] = hass_instance["url"]
+        env["HASS_TOKEN"] = hass_instance["token"]
+        env["HASS_VERIFY_SSL"] = "0"
+        return env
+
+    def test_available_cli_says_so_with_exit_0(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "dynalite", "available"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 0, r.stderr
+        out = json.loads(r.stdout)
+        assert out["available"] is False
+        assert "dynalite" in out["note"]
+
+    def test_get_config_cli_says_so_cleanly(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "dynalite", "get-config"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 1
+        assert "no Dynalite bridge" in r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_save_config_cli_refuses_before_the_wire_when_the_input_is_bad(
+        self, hass_instance
+    ):
+        """An unknown key dies as click usage, with no HA round-trip."""
+        r = subprocess.run(
+            CLI_BASE + ["dynalite", "save-config", "abc123",
+                        "--set", "bogus=1", "--set", "host=bridge"],
+            capture_output=True, text=True, env=self._env(hass_instance),
+            timeout=60, input="y\n",
+        )
+        assert r.returncode != 0
+        assert "bogus" in (r.stderr + r.stdout)
+
+    def test_the_group_appears_in_the_root_help(self, hass_instance):
+        r = subprocess.run(
+            CLI_BASE + ["--help"],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert "dynalite" in r.stdout

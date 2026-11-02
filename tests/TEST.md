@@ -1425,3 +1425,61 @@ Pinned behaviours:
   `history-ext stats-to-samples` take no `--start`/`--end`; the
   `history-logbook` group forwards RFC 3339 strings straight to the
   WebSocket API without parsing or comparing them.
+
+---
+
+## v1.61.0 refine pass — the `dynalite` group (Dynalite config panel)
+
+### Scope
+
+Re-enumerated the installed HA 2025.1.4's websocket-command registrations and
+diffed every one against a string the harness sends. Of the 236 commands,
+exactly two belonged to an integration with no harness group:
+`dynalite/get-config` and `dynalite/save-config` — the config panel of the
+Dynalite bus, which made LCN (v1.60) the second-to-last, not the last. The
+other misses in the diff are generic `websocket_api` commands already
+reachable through the REST surface (`get_states`, `get_services`,
+`fire_event`), subscriptions the harness reaches through `watch`/`template`
+machinery, and dynalite's dead sibling `dynalite`-panel commands — nothing
+else. This pass closes the surface.
+
+### The three things a FakeClient run alone would have missed
+
+- **The write is a REPLACE, not a patch.** `save-config` calls
+  `async_update_entry` with the message's config — the entry's ENTIRE data.
+  Same family as Supervisor's options POST, so the default is a merge
+  against the entry's current config read live first, `--replace` is the
+  explicit verbatim path, and the write is confirmation-gated.
+- **HA silently drops unknown keys.** The handler keeps only
+  `RELEVANT_CONFS` (name/host/port/autodiscover/area/default/active/preset/
+  template). Anything else is discarded without a word — refused client-side
+  instead, naming the offenders and the allowed list.
+- **An unknown entry id answers `{"error": True}` with `success` still true.**
+  Not an error frame — the handler logs and answers a success result with an
+  error flag. Surfaced as a ValueError naming the id and `dynalite
+  get-config`; tested against the FakeClient AND stated in the SOP.
+
+### New core module — `core/dynalite.py`
+
+`available` (components-list read, exit 0 when absent), `read` (absent-guarded
+`dynalite/get-config`), `save` (merge default / replace flag, `check_keys` /
+`check_config` split so a merged delta may omit `host` as long as the entry
+already has one, `{"error": True}` surfaced), `check_keys` / `check_config`
+/ `merge_config` (None deletes, like Supervisor options).
+
+### New tests
+
+```
+test_core.py       30 passed  (address-free group: available 3, read 2,
+                              check_keys/config 5, merge 3, save 8 incl.
+                              unknown-entry, silent-error, replace semantics,
+                              CLI wiring 9 + confirmation gate)
+test_full_e2e.py   10 passed  (premise: `dynalite/get-config` really is
+                              unregistered on the Core test instance;
+                              absent note on every surface; merge refuses on
+                              the read, --replace reaches the wire; key
+                              validation works with no integration; CLI
+                              available exit 0, get-config clean exit 1,
+                              bad --set is click usage, group in root help)
+after .......................... 5281 passed, 33 skipped
+```

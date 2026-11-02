@@ -165,6 +165,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `knx` | **The KNX integration's WebSocket API** (v1.57) — ETS project, group monitor, entity store. `available` (a read: 'not loaded' is an answer, not an error), `info` (xknx version, tunnel state), `group-monitor` / `group-telegrams` / `subscribe-telegrams` (live telegram feed), `project-get` / `project-process` / `project-remove` (the parsed ETS project), the entity store (`validate-entity` — the always-safe rehearsal, `create-entity` / `update-entity` / `delete-entity` / `entities` / `entity-config`) and `create-device`. One of name or device is required — refused client-side with the CLI spellings in the message |
 | `insteon` | **The Insteon integration's WebSocket API** (v1.58) — everything the `insteon_frontend` panel drives: devices (`device`, `device-add` — all-linking as a run-to-completion stream that ends on `linking_stopped`, `device-remove`, `add-x10`), the All-Link Database edit-then-push cycle (`aldb`, `aldb-add` / `aldb-change` queue, `aldb-write` commits, `aldb-load`, `aldb-reset` / `aldb-default-links` confirmation-gated, `aldb-watch(-all)` live feeds), device properties (`properties`, `property-set`, `properties-write` / `load` / `reset`), the modem connection (`config`, `modem-schema`, `modem-config-set` — connect-first, entry updated only on success), link hygiene (`broken-links`, `unknown-devices`, `override-add` / `override-remove`) and scenes (`scenes`, `scene`, `scene-save`, `scene-delete`). ALDB records and scene links are validated client-side against the upstream schema — the bad key or byte range is named before HA sees it; every command is admin-only upstream; `available` is a read with exit 0 when absent |
 | `lcn` | **The LCN integration's WebSocket API** (v1.60) — the device and entity stores the `lcn` config panel drives, sibling of `knx`/`insteon`. `available` (a read: 'not loaded' is an answer, not an error), `devices`, `entities` (`--address 1.g12` drill-down), `scan` (creates/updates a device per known bus address and re-derives the registries), `device-add` / `device-delete` (child entities go with it; confirmation-gated) and `entity-add` / `entity-delete` (keyed by address + domain + resource; the 7 upstream platforms; required `domain_data` keys are checked client-side, allowed port/register values server-side). Addresses are `SEG.ADDR` for a module and `SEG.gADDR` for a group. Admin-only upstream; an instance with no pchk connection gets one clean sentence instead of `unknown_command`, and `available` is a read with exit 0 when absent |
+| `dynalite` | **The Dynalite integration's config panel** (v1.61) — the last bundled integration that registers its own websocket commands: `dynalite/get-config` and `dynalite/save-config`. `available` (a read: 'not loaded' is an answer, not an error), `get-config` (every entry's config — exactly the keys a write keeps, so a read is a write template — plus the panel's built-in defaults) and `save-config` (`--set k=v` repeatable and/or `--data` JSON; values JSON-decode, so `port=12346` arrives an int). The write REPLACES the entry's whole data upstream, so the default MERGES against the entry's current config read live first and `--replace` is the explicit verbatim escape hatch; unknown keys are refused client-side because HA drops them silently; `host` (the one required key) is checked post-merge; confirmation-gated. HA answers an unknown entry id with `{"error": True}` and the success flag STILL SET — surfaced as a real error naming the id. An instance with no Dynalite bridge gets one clean sentence instead of `unknown_command` |
 
 ## Quick examples
 
@@ -451,6 +452,28 @@ cli-anything-homeassistant lcn entity-add <entry_id> 1.7 \
 cli-anything-homeassistant lcn device-add <entry_id> 1.g12
 cli-anything-homeassistant lcn entity-delete <entry_id> 1.7 \
   --domain light --resource output1
+```
+
+
+# DYNALITE — the config panel of the Dynalite lighting bus.
+```bash
+# Is the integration even loaded? Exit 0 either way — a script branch point.
+cli-anything-homeassistant --json dynalite available | jq .available
+
+# Every entry's config plus the panel's built-in defaults. The per-entry
+# keys are exactly what a write accepts, so a read is a write template.
+cli-anything-homeassistant --json dynalite get-config
+
+# Change the bridge port — MERGED on top of the entry's current config,
+# because the write upstream REPLACES the whole data object. Values
+# JSON-decode: 12346 arrives an int, true a bool. It asks before writing.
+cli-anything-homeassistant dynalite save-config <entry_id> \
+  --set port=12346 --set autodiscover=true
+
+# Replace the whole config by hand (you rarely want this) — and HA's
+# silent refusal for an unknown entry id is surfaced as a real error.
+cli-anything-homeassistant dynalite save-config <entry_id> --replace \
+  --data '{"host": "10.0.0.8", "port": 12345, "active": "on"}'
 ```
 
 
