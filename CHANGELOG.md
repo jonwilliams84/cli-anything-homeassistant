@@ -4,6 +4,19 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.61.2] — 2026-11-04
+
+### Fixed
+
+- **The release pipeline refused to cut v1.61.1.** The v1.61.1 commit bumped
+  `setup.py` but left `__version__ = "1.61.0"` in
+  `cli_anything/homeassistant/__init__.py`, so the Release workflow's
+  "Read the version main declares" step failed loudly — a package that
+  reports one version while pip installs another is a bug, not something
+  to paper over. Both now agree (and a test pins that agreement so a
+  future bump that touches only one file fails the suite, not the
+  release).
+
 ## [1.61.1] — 2026-11-02
 
 ### Fixed
