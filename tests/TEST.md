@@ -42,6 +42,17 @@ prepared responses. No real Home Assistant required.
 ### `core/events.py`
 - `list_listeners()` returns list.
 - `fire_event()` sends payload to the right path.
+- `stream_events()` (v1.62) — the REST event bus (`GET /api/stream`, SSE):
+  queued events replay in order and the per-event callback fires before any
+  return; `types` becomes one comma-joined `restrict` query parameter
+  (a comma inside a type is refused — it would silently widen the filter);
+  stops at `max_events` with reason `max_events`; validates `duration_seconds > 0`,
+  `max_events >= 1`, `on_event` callable, non-empty types; the client gets
+  `read_timeout` = the duration, because the plain per-request timeout would
+  kill an idle-but-healthy stream between HA's 50 s keepalives.
+- CLI wiring (v1.62) — `event stream` echoes one JSON line per event and the
+  summary carries `count` + `stopped_reason`; `--type` repeatable, `--max-events 0`
+  means unlimited, `--duration` rides along as `read_timeout`.
 
 ### `core/template.py`
 - `render()` returns the rendered text.

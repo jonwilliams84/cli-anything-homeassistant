@@ -5,7 +5,7 @@ with open("cli_anything/homeassistant/README.md") as f:
 
 setup(
     name="cli-anything-homeassistant",
-    version="1.61.2",
+    version="1.62.0",
     description="CLI harness for Home Assistant — control your smart home from the command line",
     long_description=long_description,
     long_description_content_type="text/markdown",

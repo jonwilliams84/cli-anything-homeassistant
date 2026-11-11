@@ -78,6 +78,7 @@ they go through `client.root_request()`):
 | `POST /api/services/<domain>/<svc>`   | Call a service                           |
 | `GET /api/events`                     | Event listener counts                    |
 | `POST /api/events/<event>`            | Fire an event                            |
+| `GET /api/stream`                     | **Live event bus over REST (SSE)** — `text/event-stream`, one JSON event per frame, `data: ping` keepalive every 50 s, `?restrict=a,b` filters server-side; **admin-only** |
 | `POST /api/template`                  | Render a Jinja template                  |
 | `GET /api/components`                 | Loaded components                        |
 | `GET /api/error_log`                  | Plain-text error log                     |
@@ -164,7 +165,7 @@ stderr and return a non-zero exit code.
 | `system`     | Server info (`info`/`config`/`core-state`/`error-log`/`components`) |
 | `state`      | Entity states (`list`/`get`/`set`/`delete`)                         |
 | `service`    | Services (`list`/`call`)                                            |
-| `event`      | Events (`list`/`fire`)                                              |
+| `event`      | Events (`list`/`fire`) — plus **`stream`, the REST event bus (v1.62+)**: `event stream --type state_changed --duration 10` tails `GET /api/stream` (SSE) and prints one JSON event per line; `--max-events 0` tails until `--duration` expires and HTTP-only environments can still watch live events. Use `event subscribe` (WS) when websockets are available — it is richer; use `stream` when only HTTP gets through |
 | `template`   | Render Jinja2 templates (`render`)                                  |
 | `area`       | Area registry (WS) (`list`)                                         |
 | `device`     | Device registry (WS) (`list`)                                       |

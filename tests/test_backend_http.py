@@ -617,3 +617,103 @@ class TestWsSubscribe:
         client = HomeAssistantClient(url="http://h", token="t", timeout=5)
         client.ws_subscribe("x", {}, lambda e: None, threading.Event())
         assert ws.closed
+
+
+# ═════════════════════════════════════════════════════════════════ SSE stream
+
+
+class _FakeSseResponse:
+    """A `requests.Response` shape `event_stream` can iterate."""
+
+    def __init__(self, lines, status=200):
+        self._lines = lines
+        self.status_code = status
+        self.ok = status < 400
+        self.url = "http://h/api/stream"
+        self.text = "boom"
+        self.headers = {}
+
+    def iter_lines(self, decode_unicode=True):
+        yield from self._lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _sse_client(monkeypatch, lines, status=200):
+    client = HomeAssistantClient(url="http://h", token="t", timeout=5)
+    seen = {}
+
+    def fake_get(url, params=None, stream=False, timeout=None):
+        seen["url"] = url
+        seen["params"] = params
+        seen["timeout"] = timeout
+        return _FakeSseResponse(lines, status)
+
+    monkeypatch.setattr(client.session, "get", fake_get)
+    return client, seen
+
+
+class TestEventStream:
+    def test_parses_frames_and_skips_pings(self, monkeypatch):
+        lines = [
+            "data: ping",
+            "",
+            "data: " + json.dumps({"event_type": "state_changed", "data": {"on": True}}),
+            "",
+            "data: ping",
+            "",
+        ]
+        client, _ = _sse_client(monkeypatch, lines)
+        events = list(client.event_stream("stream"))
+        assert events == [{"event_type": "state_changed", "data": {"on": True}}]
+
+    def test_non_json_frame_surfaces_raw_with_event_name(self, monkeypatch):
+        lines = ["event: special", "data: not json", "", "data: no name"]
+        client, _ = _sse_client(monkeypatch, lines)
+        events = list(client.event_stream("stream"))
+        # The frame with an explicit `event:` name keeps it; one without falls
+        # back to the path.
+        assert events == [
+            {"event": "special", "raw": "not json"},
+            {"event": "stream", "raw": "no name"},
+        ]
+
+    def test_comments_and_field_noise_ignored(self, monkeypatch):
+        lines = [": heartbeat", "id: 7", "retry: 3000", "data: {"]
+        client, _ = _sse_client(monkeypatch, lines)
+        # The bare "{" is not JSON — it cannot crash the loop, it surfaces raw.
+        assert list(client.event_stream("stream")) == [
+            {"event": "stream", "raw": "{"}
+        ]
+
+    def test_restrict_and_read_timeout_reach_the_wire(self, monkeypatch):
+        lines = ["data: ping", ""]
+        client, seen = _sse_client(monkeypatch, lines)
+        for _ in client.event_stream("stream", params={"restrict": "a,b"}, read_timeout=9.5):
+            pass
+        assert seen["url"].rstrip("/").endswith("/api/stream")
+        assert seen["params"] == {"restrict": "a,b"}
+        # The chunk read timeout is separate from the connect timeout — an
+        # idle-but-healthy stream pings only every 50 s.
+        assert seen["timeout"] == (5, 9.5)
+
+    def test_http_error_raises_with_status(self, monkeypatch):
+        client, _ = _sse_client(monkeypatch, [], status=500)
+        with pytest.raises(HomeAssistantError, match="GET stream -> 500"):
+            list(client.event_stream("stream"))
+
+    def test_connection_error_is_wrapped(self, monkeypatch):
+        import requests
+
+        client = HomeAssistantClient(url="http://h", token="t", timeout=5)
+
+        def boom(url, **kwargs):
+            raise requests.exceptions.ConnectionError("refused")
+
+        monkeypatch.setattr(client.session, "get", boom)
+        with pytest.raises(HomeAssistantError, match="Cannot reach Home Assistant"):
+            list(client.event_stream("stream"))

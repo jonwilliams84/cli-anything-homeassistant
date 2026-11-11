@@ -86,7 +86,7 @@ disable), `HASS_TIMEOUT` (seconds).
 
 | Group | Coverage |
 |---|---|
-| `state` / `service` / `event` | Live state machine, service calls, event bus fire. `service call -D key=value` JSON-decodes its values; `--raw key=value` sends the value **verbatim as a string** (what `mqtt.publish` and `notify.*` want) |
+| `state` / `service` / `event` | Live state machine, service calls, event bus fire **+ live REST event stream** (`event stream` — the SSE event bus over plain HTTP, for the no-websocket case). `service call -D key=value` JSON-decodes its values; `--raw key=value` sends the value **verbatim as a string** (what `mqtt.publish` and `notify.*` want) |
 | `template` | Render Jinja against live state (`--file` for multi-line) |
 | `history` / `logbook` | Time-series and human-readable change logs |
 | `history-ext` | **Long-history fallback** — `with-stats-fallback` stitches recorder states and long-term statistics into one chronological `{when, value, source}` list (the recorder's `purge_keep_days` window plus a statistics back-fill for everything older), `retention-estimate` measures how far back the recorder actually keeps an entity, `stats-to-samples` flattens a `recorder/statistics_during_period` response (`--stats-json` / `--from-file`) to plain rows. `--start`/`--end` accept naive ISO-8601 (treated as **UTC**), RFC 3339 with `Z`, or an explicit offset — mixed naive/aware pairs compare correctly (issue #50) |
@@ -113,6 +113,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `auth` | Users, long-lived tokens, whoami — plus **`login` (username + password → token, no existing token needed)**, `providers`, `refresh`, `revoke`, `exchange-code`, `link-user`, `login-flow start/step/abort`, `oauth-metadata` |
 | `onboarding` | **Set up a brand-new instance**: `provision` (nothing → owner account → access token in one call), `status`, `installation-type`, `create-user`, `finish-step`, `finish-integration` |
 | `event subscribe` / `state watch` | Live tails — agent-friendly until-state-X loops |
+| `event stream` | **The event bus over REST** (`GET /api/stream`, SSE) — `--type repeatable` (HA's `restrict`), `--duration` (also the read timeout for a silent bus), `--max-events` (0 = unlimited). One JSON line per event on stdout, so a script can `while read event; do …; done`. Works where only HTTP gets through: `cli-anything-homeassistant --json event stream --type state_changed --max-events 5` |
 | `entity-references` | Find every UI-managed automation/template/lovelace that mentions an entity_id |
 | `scene` | List, activate (with `--transition`), apply ad-hoc states, snapshot to a new scene, reload |
 | `weather` | List `weather.*` entities, convertible units, one-shot `forecast`, WS `forecast-subscribe` |
