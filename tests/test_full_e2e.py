@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -183,6 +184,109 @@ class TestLiveEvents:
     def test_fire_event(self, live_client):
         result = events_core.fire_event(live_client, "cli_anything_test", {"hello": "world"})
         assert isinstance(result, dict)
+
+
+class TestLiveEventStream:
+    """GET /api/stream — the event bus over REST (SSE), not websocket."""
+
+    def test_restricted_stream_receives_fired_events(self, live_client):
+        marker = "cli-stream-restrict"
+
+        result: dict = {}
+
+        def run():
+            result["stream"] = events_core.stream_events(
+                live_client, types=["cli_e2e_stream"], duration_seconds=8.0
+            )
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        time.sleep(1.0)
+        live_client.post("events/cli_e2e_stream", {"marker": marker})
+        thread.join(timeout=30)
+        assert "stream" in result, "stream did not finish in 30 s"
+        stream = result["stream"]
+        assert stream["count"] >= 1
+        assert stream["stopped_reason"] in ("max_events", "duration", "ended")
+        assert stream["restrict"] == ["cli_e2e_stream"]
+        # Only the restricted type comes through — no state_changed noise.
+        assert {e["event_type"] for e in stream["events"]} == {"cli_e2e_stream"}
+        hit = next(e for e in stream["events"] if e["data"].get("marker") == marker)
+        # REST-fired events carry the caller's context as origin.
+        assert hit["origin"] in ("LOCAL", "REMOTE")
+        assert hit["time_fired"]
+
+    def test_silent_stream_ends_gracefully(self, live_client):
+        """A quiet bus is NOT an error — the read timeout ends the stream."""
+        result = events_core.stream_events(
+            live_client, types=["cli_never_fires_this"], duration_seconds=2.0
+        )
+        assert result["count"] == 0
+        assert result["stopped_reason"] in ("ended", "duration")
+
+    def test_unrestricted_stream_over_duration(self, live_client):
+        """Without restrict every bus event comes through, ours included."""
+        result: dict = {}
+
+        def run():
+            result["stream"] = events_core.stream_events(
+                live_client, duration_seconds=6.0, max_events=50
+            )
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        time.sleep(1.0)
+        live_client.post("events/cli_e2e_any_stream", {"marker": "cli-stream-any"})
+        thread.join(timeout=30)
+        assert "stream" in result, "stream did not finish in 30 s"
+        types = {e["event_type"] for e in result["stream"]["events"]}
+        assert "cli_e2e_any_stream" in types
+
+    def test_cli_event_stream_prints_a_line_per_event(self, hass_instance):
+        """CLI level: `event stream` exits 0 and echoes the fired event."""
+        env = os.environ.copy()
+        env.update(
+            HASS_URL=hass_instance["url"],
+            HASS_TOKEN=hass_instance["token"],
+        )
+        marker = "cli-stream-cli-level"
+        done: dict = {}
+
+        def run():
+            done["proc"] = subprocess.run(
+                [
+                    *CLI_BASE,
+                    "--json",
+                    "event",
+                    "stream",
+                    "--type",
+                    "cli_e2e_cli_stream",
+                    "--duration",
+                    "6",
+                    "--max-events",
+                    "3",
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        time.sleep(1.0)
+        live_client = HomeAssistantClient(
+            url=hass_instance["url"], token=hass_instance["token"], timeout=30
+        )
+        live_client.post("events/cli_e2e_cli_stream", {"marker": marker})
+        thread.join(timeout=60)
+        assert "proc" in done, "CLI event stream did not exit within 60 s"
+        proc = done["proc"]
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert marker in proc.stdout
+        assert '"stopped_reason"' in proc.stdout
+        lines = [l for l in proc.stdout.splitlines() if l.strip().startswith("{")]
+        assert any(json.loads(l)["event_type"] == "cli_e2e_cli_stream" for l in lines)
 
 
 class TestLiveTemplate:

@@ -1338,6 +1338,50 @@ def event_fire(ctx, event_type, data, dry_run):
     emit(ctx, events_core.fire_event(make_client(ctx), event_type, payload))
 
 
+@event.command("stream")
+@click.option(
+    "--type",
+    "restrict_types",
+    multiple=True,
+    help="Restrict the stream to this event type (repeatable; omit for all events)",
+)
+@click.option(
+    "--duration",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Time budget in seconds — also the read timeout for a silent stream",
+)
+@click.option(
+    "--max-events",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Stop after this many events (0 = unlimited)",
+)
+@click.pass_context
+def event_stream_cmd(ctx, restrict_types, duration, max_events):
+    """Follow the REST event stream (GET /api/stream, SSE) and print events.
+
+    The HTTP-only twin of `event subscribe`: the same live event bus over a
+    plain GET, one JSON event per line, for environments where only HTTP
+    gets through. Exits after --max-events, after --duration seconds, or
+    when the bus stays silent for --duration seconds.
+    """
+
+    def each(event):
+        click.echo(json.dumps(event, default=str))
+
+    result = events_core.stream_events(
+        make_client(ctx),
+        types=list(restrict_types) or None,
+        duration_seconds=duration,
+        max_events=max_events if max_events and max_events > 0 else None,
+        on_event=each,
+    )
+    emit(ctx, {"count": result["count"], "stopped_reason": result["stopped_reason"]})
+
+
 # Note: a second `event subscribe` is defined further down (line ~4075). Both
 # are registered under the same Click name; the later definition wins. The
 # canonical definition lives there and now carries --filter; this stub is

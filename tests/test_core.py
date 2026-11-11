@@ -1849,6 +1849,55 @@ class TestEvents:
         with pytest.raises(ValueError):
             events_core.fire_event(fake_client, "")
 
+    def test_stream_events_replays_queued_events(self, fake_client):
+        fake_client.set_event_stream(
+            {"event_type": "state_changed", "data": {"a": 1}},
+            {"event_type": "call_service", "data": {"b": 2}},
+        )
+        seen: list[dict] = []
+        result = events_core.stream_events(fake_client, on_event=seen.append)
+        assert result["count"] == 2
+        assert result["stopped_reason"] == "ended"
+        assert result["restrict"] is None
+        assert result["events"][1] == {"event_type": "call_service", "data": {"b": 2}}
+        # The callback fires per event, in arrival order.
+        assert [e["event_type"] for e in seen] == ["state_changed", "call_service"]
+        call = fake_client.event_stream_calls[-1]
+        assert call["path"] == "stream"
+        assert call["params"] is None
+        # The read timeout ride-along: the SSE read must not use the plain
+        # per-request timeout, or an idle-but-healthy stream dies between
+        # HA's 50 s keepalives.
+        assert call["read_timeout"] == pytest.approx(10.0)
+
+    def test_stream_events_sends_restrict_for_types(self, fake_client):
+        fake_client.set_event_stream()
+        events_core.stream_events(
+            fake_client, types=["state_changed", "call_service"], duration_seconds=2
+        )
+        call = fake_client.event_stream_calls[-1]
+        assert call["params"] == {"restrict": "state_changed,call_service"}
+
+    def test_stream_events_stops_at_max_events(self, fake_client):
+        fake_client.set_event_stream(*[{"event_type": f"e{i}"} for i in range(5)])
+        result = events_core.stream_events(fake_client, max_events=3)
+        assert result["count"] == 3
+        assert result["stopped_reason"] == "max_events"
+
+    def test_stream_events_validates(self, fake_client):
+        with pytest.raises(ValueError, match="duration_seconds"):
+            events_core.stream_events(fake_client, duration_seconds=0)
+        with pytest.raises(ValueError, match="max_events"):
+            events_core.stream_events(fake_client, max_events=0)
+        with pytest.raises(ValueError, match="callable"):
+            events_core.stream_events(fake_client, on_event="nope")
+        with pytest.raises(ValueError, match="non-empty"):
+            events_core.stream_events(fake_client, types=[""])
+        # A comma inside a type would silently widen the restrict filter.
+        with pytest.raises(ValueError, match="comma"):
+            events_core.stream_events(fake_client, types=["a,b"])
+        assert fake_client.event_stream_calls == []
+
 
 # ────────────────────────────────────────────────────────── template
 
@@ -6674,3 +6723,55 @@ class TestDynaliteCli:
         r = self._invoke(runner, "dynalite", "available")
         assert r.exit_code != 0
         assert "Traceback" not in r.output
+
+
+# ────────────────────────────────────────────────────────── event stream CLI
+
+
+class TestEventStreamCli:
+    """Wiring: the real Click decorators + FakeClient (no live HA)."""
+
+    @pytest.fixture
+    def runner(self, monkeypatch, fake_client):
+        from click.testing import CliRunner
+
+        from cli_anything.homeassistant import homeassistant_cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "make_client", lambda ctx: fake_client)
+        self.cli_mod = cli_mod
+        return CliRunner()
+
+    def _invoke(self, runner, *args, json_out=True):
+        full = ["--json", *list(args)] if json_out else list(args)
+        return runner.invoke(
+            self.cli_mod.cli,
+            full,
+            obj={
+                "url": "http://x",
+                "token": "t",
+                "verify_ssl": False,
+                "timeout": 5,
+                "as_json": json_out,
+                "config_path": None,
+            },
+        )
+
+    def test_stream_json_summary(self, runner, fake_client):
+        fake_client.set_event_stream({"event_type": "firehose_test", "data": {"n": 1}})
+        r = self._invoke(runner, "event", "stream", "--max-events", "5")
+        assert r.exit_code == 0, r.output
+        assert '"event_type": "firehose_test"' in r.output  # one JSON line per event
+        # The summary lands as the pretty-printed final document.
+        assert '"count": 1' in r.output
+        assert '"stopped_reason": "ended"' in r.output
+
+    def test_stream_restrict_and_unlimited(self, runner, fake_client):
+        fake_client.set_event_stream()
+        r = self._invoke(
+            runner, "event", "stream", "--type", "state_changed",
+            "--type", "call_service", "--max-events", "0", "--duration", "3.5",
+        )
+        assert r.exit_code == 0, r.output
+        call = fake_client.event_stream_calls[-1]
+        assert call["params"] == {"restrict": "state_changed,call_service"}
+        assert call["read_timeout"] == 3.5

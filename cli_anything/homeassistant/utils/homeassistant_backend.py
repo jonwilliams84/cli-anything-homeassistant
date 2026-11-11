@@ -14,7 +14,7 @@ import os
 import threading
 import time
 from itertools import count
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -222,6 +222,77 @@ class HomeAssistantClient:
                 status=resp.status_code,
             )
         return self._decode(resp)
+
+    def event_stream(
+        self,
+        path: str = "stream",
+        params: dict | None = None,
+        read_timeout: float | None = None,
+    ) -> Iterator[Any]:
+        """Yield the events of a REST ``text/event-stream`` endpoint (SSE).
+
+        The only such endpoint in Home Assistant today is ``GET /api/stream``
+        — the event bus over REST, one ``data: {json}`` frame per event,
+        ``data: ping`` as the keepalive. Frames are yielded DECODED; the
+        ping keepalive is skipped, and a frame whose body is not JSON comes
+        through as ``{"event": <name>, "raw": <text>}`` rather than as a
+        silent drop.
+
+        GET /api/stream requires admin (``@require_admin``); a non-admin
+        token answers 401, and `_check_auth` reports it the same way it does
+        for every other admin-only endpoint.
+
+        ``read_timeout`` is the per-chunk read timeout in seconds. It is a
+        SECOND tuple member next to the connect timeout because HA pings an
+        idle stream only every 50 seconds — the plain per-request timeout
+        would kill a healthy, quiet stream between two keepalives. Leaving
+        it unset keeps the plain ``self.timeout`` behaviour.
+        """
+        effective = (self.timeout, read_timeout) if read_timeout else self.timeout
+        try:
+            resp = self.session.get(self._url(path), params=params, stream=True, timeout=effective)
+        except requests.exceptions.ConnectionError as exc:
+            raise self._connection_error(exc) from exc
+        except requests.exceptions.Timeout as exc:
+            raise HomeAssistantError(f"Request timed out after {self.timeout}s: {exc}") from exc
+        with resp:
+            self._check_auth(resp)
+            if not resp.ok:
+                raise HomeAssistantError(
+                    f"GET {path} -> {resp.status_code}: {resp.text[:500]}",
+                    status=resp.status_code,
+                )
+            current_event: str | None = None
+            try:
+                for raw in resp.iter_lines(decode_unicode=True):
+                    if not raw:
+                        current_event = None  # blank line = frame boundary
+                        continue
+                    if raw.startswith(":"):
+                        continue  # SSE comment / heartbeat
+                    field, _, value = raw.partition(":")
+                    if field == "event":
+                        current_event = value.strip()
+                        continue
+                    if field in ("id", "retry"):
+                        continue
+                    if field != "data":
+                        continue
+                    data = value.lstrip()
+                    if data == "ping":
+                        continue
+                    try:
+                        yield json.loads(data)
+                    except ValueError:
+                        yield {"event": current_event or path, "raw": data}
+            except requests.exceptions.RequestException:
+                # A read timeout on a silent bus — or the server dropping the
+                # stream mid-flight — ENDS the iteration gracefully rather
+                # than raising: silence on `/api/stream` is the normal state
+                # of an undisturbed bus (HA pings only every 50 s), and
+                # `events.stream_events` treats "ended" as a stop, not a
+                # failure. Any events already yielded remain delivered.
+                return
 
     def download(
         self,

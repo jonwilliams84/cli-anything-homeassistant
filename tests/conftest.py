@@ -76,6 +76,12 @@ class FakeClient:
         self.supervisor_responses: dict[str, Any] = {}
         self.supervisor_errors: dict[str, tuple[str, str]] = {}
         self.supervisor_calls: list[dict] = []
+        # SSE stream recorder — see `set_event_stream`. The value is the
+        # ALREADY-DECODED event list: `event_stream` is a generator over
+        # `GET /api/stream` frames, so a fake here simply replays the queued
+        # events and then ends.
+        self.event_stream_calls: list[dict] = []
+        self.queued_sse_events: list[Any] = []
 
     #: Whatever a core module derives a default client_id from. A real-looking
     #: origin, since `validate_client_id` is applied to it for real.
@@ -340,6 +346,23 @@ class FakeClient:
         three it is empty or the literal "Unknown error".
         """
         self.supervisor_errors[endpoint] = (code, message)
+
+    def set_event_stream(self, *events: Any) -> None:
+        """Queue the events the next `event_stream` call yields."""
+        self.queued_sse_events.extend(events)
+
+    def event_stream(
+        self,
+        path: str = "stream",
+        params: dict | None = None,
+        read_timeout: float | None = None,
+    ) -> Iterator[Any]:
+        self.event_stream_calls.append(
+            {"path": path, "params": params, "read_timeout": read_timeout}
+        )
+        events = list(self.queued_sse_events)
+        self.queued_sse_events.clear()
+        yield from events
 
     def ws_call(self, msg_type: str, payload: dict | None = None) -> Any:
         self.ws_calls.append({"type": msg_type, "payload": payload})

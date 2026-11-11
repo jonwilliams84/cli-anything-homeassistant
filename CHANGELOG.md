@@ -4,6 +4,44 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.62.0] — 2026-11-11
+
+### Added
+
+- **`event stream` — the event bus over REST.** `GET /api/stream` is Home
+  Assistant's Server-Sent-Events event bus: admin-only, one
+  `data: {json}` frame per event with a `data: ping` keepalive every
+  50 s, server-side filterable with `?restrict=a,b`. The CLI now has an
+  HTTP-only twin for `event subscribe`:
+  `cli-anything-homeassistant event stream --type state_changed --type
+  automation_triggered --duration 10 --max-events 5` — the same live
+  event dicts over a plain GET, one JSON event per line on stdout, for
+  environments where the websocket is proxied away or a shell script
+  just wants `while read event; do …; done` (README). The command ends
+  on whichever comes first — `--max-events` reached, the next event
+  arriving after `--duration` seconds, or `--duration` of dead silence
+  (the SSE read times out and the silence is treated as a normal end,
+  not an error, because HA pings an idle stream only every 50 s: a
+  healthy, quiet bus is silent).
+- **`client.event_stream()`** — the SSE reader in
+  `utils/homeassistant_backend.py`: streams and decodes
+  `text/event-stream` frames, skips the `ping` keepalive and SSE
+  comments, hands a non-JSON frame through as `{"event": …, "raw": …}`
+  instead of silently dropping it, and takes the read timeout as a
+  second tuple member next to the connect timeout so it can outlive the
+  50 s keepalive gap.
+- `events_core.stream_events()` validates `--type` values up front — a
+  comma inside a type would silently widen the `restrict` filter into
+  "a list" on the wire, so it refuses instead — and returns a
+  `{count, restrict, stopped_reason, events}` summary.
+
+### Documented
+
+- README + HOMEASSISTANT.md: the `/api/stream` endpoint row, the
+  `event stream` group (incl. when to prefer it over `event
+  subscribe`), and the v1.62 coverage-table row for HTTP-only live
+  events; tests/TEST.md notes the stream test matrix.
+
 ## [1.61.2] — 2026-11-04
 
 ### Fixed
