@@ -161,7 +161,7 @@ disable), `HASS_TIMEOUT` (seconds).
 | `file` | `upload` a file to HA's staging area and get the `file_id` a config flow wants |
 | `supervisor` | **The other half of a Home Assistant OS / Supervised install** (v1.52+) — add-ons, host, OS, network. `available`/`status` (versions side by side, what is stale), `info`, `component`, `stats`, `resolution`, `logs`/`boots` (journals over the HTTP proxy), `watch` (progress events), `api` (any Supervisor endpoint) + `addon list/info/start/stop/restart/rebuild/update/options/logs`. Writes are dry-run until `--apply`; `addon options` merges and validates because the POST REPLACES the whole options object |
 | `profiler` | Pass-through to the `profiler` integration's services: `start` (cProfile), `memory` (memray), `dump-log-objects --type Class`, `log-thread-frames`/`log-current-tasks`/`log-event-loop-scheduled`/`log-events`, `lru-stats`, `set-asyncio-debug`. `status` is a cheap "is the integration even loaded" probe. |
-| `zwave` | **The `zwave_js` integration's own WebSocket API** (v1.54) — what the Z-Wave configuration panel drives. `available` (a read: 'not loaded' is an answer, not an error), `nodes`, `status`, per-node `node` / `node-metadata` / `node-alerts` / `capabilities` / `config` / `config-set` (int, `0x…` hex or JSON bitmask), `refresh` / `refresh-values` / `rebuild-routes` / `begin-rebuild-routes` / `stop-rebuild-routes` / `remove-failed` / `hard-reset`, driver `log-config` / `log-config-set`, telemetry `data-collection` / `data-collection-opt`, device-database `config-updates` / `config-updates-install`, `integration-settings`, and the domain's services: `ping`, `lock-usercode` / `lock-clear-usercode` / `lock-configuration`. Node-scoped commands accept an entity id and resolve the device via the registry; an instance with no Z-Wave controller gets every command's refusal as one sentence instead of `unknown_command` |
+| `zwave` | **The `zwave_js` integration's own WebSocket API** (v1.54) — what the Z-Wave configuration panel drives. `available` (a read: 'not loaded' is an answer, not an error), `nodes`, `status`, per-node `node` / `node-metadata` / `node-alerts` / `capabilities` / `config` / `config-set` (int, `0x…` hex or JSON bitmask), `refresh` / `refresh-values` / `rebuild-routes` / `begin-rebuild-routes` / `stop-rebuild-routes` / `remove-failed` / `hard-reset`, driver `log-config` / `log-config-set`, telemetry `data-collection` / `data-collection-opt`, device-database `config-updates` / `config-updates-install`, `integration-settings`, and the domain's services: `ping`, `lock-usercode` / `lock-clear-usercode` / `lock-configuration`, and (v1.63) the full pairing surface: run-to-completion `add-node` / `remove-node` / `replace-failed-node`, `stop-inclusion` / `stop-exclusion`, the S2 callbacks a run pauses on (`s2-grant` / `s2-pin` / `s2-cancel`), SmartStart provisioning (`prov-list` / `prov-add` / `prov-remove` / `qr-parse` / `qr-dsk`), command-class `cc-refresh` / `cc-invoke` / `supports-feature`, raw `raw-config-get` / `raw-config-set` (explicit wire shape — real write, no metadata check) and `fw-capabilities` / `fw-status` / `fw-status-any` / `fw-abort`. Node-scoped commands accept an entity id and resolve the device via the registry; an instance with no Z-Wave controller gets every command's refusal as one sentence instead of `unknown_command` |
 | `matter` | **The Matter integration's WebSocket API** (v1.56) — commissioning and node operations. `available` (a read: 'not loaded' is an answer, not an error), `nodes` (device registry with `node_id`/`fabric_id`/`endpoint` extracted from HA's hex identifiers), `commission` (QR / manual code), `commission-on-network` (setup PIN, `--ip` optional), `set-wifi` / `set-thread` (the network credentials later commissioning passes on), per-node `node-diagnostics` / `ping` / `interview` / `open-commissioning-window` / `remove-fabric` (confirmation-gated). Node-scoped commands accept an entity id and resolve the device via the registry; a device that is not a Matter device is named as such instead of HA's bare `node_not_found`; an instance with no Matter controller gets one clean sentence instead of `unknown_command` |
 | `knx` | **The KNX integration's WebSocket API** (v1.57) — ETS project, group monitor, entity store. `available` (a read: 'not loaded' is an answer, not an error), `info` (xknx version, tunnel state), `group-monitor` / `group-telegrams` / `subscribe-telegrams` (live telegram feed), `project-get` / `project-process` / `project-remove` (the parsed ETS project), the entity store (`validate-entity` — the always-safe rehearsal, `create-entity` / `update-entity` / `delete-entity` / `entities` / `entity-config`) and `create-device`. One of name or device is required — refused client-side with the CLI spellings in the message |
 | `insteon` | **The Insteon integration's WebSocket API** (v1.58) — everything the `insteon_frontend` panel drives: devices (`device`, `device-add` — all-linking as a run-to-completion stream that ends on `linking_stopped`, `device-remove`, `add-x10`), the All-Link Database edit-then-push cycle (`aldb`, `aldb-add` / `aldb-change` queue, `aldb-write` commits, `aldb-load`, `aldb-reset` / `aldb-default-links` confirmation-gated, `aldb-watch(-all)` live feeds), device properties (`properties`, `property-set`, `properties-write` / `load` / `reset`), the modem connection (`config`, `modem-schema`, `modem-config-set` — connect-first, entry updated only on success), link hygiene (`broken-links`, `unknown-devices`, `override-add` / `override-remove`) and scenes (`scenes`, `scene`, `scene-save`, `scene-delete`). ALDB records and scene links are validated client-side against the upstream schema — the bad key or byte range is named before HA sees it; every command is admin-only upstream; `available` is a read with exit 0 when absent |
@@ -397,6 +397,58 @@ cli-anything-homeassistant zwave lock-configuration lock.front \
 
 # Diagnose an unreachable device: is it the mesh or the lock?
 cli-anything-homeassistant --json zwave ping sensor.front_door_battery
+```
+
+```bash
+# Pairing, S2 and SmartStart (v1.63+) — what used to live only in the UI's
+# "add device" flow, driven from a shell.
+# Pairing is RUN-TO-COMPLETION: the controller enters inclusion mode, every
+# event (inclusion started, node found, node added) streams back, and the
+# command ends at the outcome. Pairing waits for a physical button press —
+# the default timeout is 300 s.
+cli-anything-homeassistant zwave add-node --entry <ENTRY_ID>
+
+# An S2 run may PAUSE on a grant request or a DSK confirmation — answer from
+# a second terminal while `add-node` is still streaming:
+cli-anything-homeassistant zwave s2-grant --entry <ENTRY_ID> \
+    --security-class s2_authenticated --security-class s0_legacy
+cli-anything-homeassistant zwave s2-pin --entry <ENTRY_ID> --pin 12345   # the printed PIN, NOT the DSK
+cli-anything-homeassistant zwave s2-cancel --entry <ENTRY_ID>            # abort a stuck bootstrap
+
+# Exclusion (put the device into its own "excluded" mode first) and the
+# explicit cancels:
+cli-anything-homeassistant zwave remove-node --entry <ENTRY_ID>
+cli-anything-homeassistant zwave stop-inclusion --entry <ENTRY_ID>
+cli-anything-homeassistant zwave stop-exclusion --entry <ENTRY_ID>
+cli-anything-homeassistant zwave replace-failed-node dev1                # re-pair in the same slot
+
+# SmartStart: provision from a QR string and the device joins AUTOMATICALLY
+# when powered on — no button press, no add-node run.
+cli-anything-homeassistant zwave prov-add --entry <ENTRY_ID> --qr '90:00000,1'
+cli-anything-homeassistant --json zwave prov-list --entry <ENTRY_ID>
+cli-anything-homeassistant zwave prov-remove --entry <ENTRY_ID> --node-id 7
+cli-anything-homeassistant --json zwave qr-parse --entry <ENTRY_ID> --qr '90:00000,1'
+cli-anything-homeassistant --json zwave qr-dsk --entry <ENTRY_ID> --qr '90:00000,1'   # best-effort, {} when unreadable
+
+# Command classes: the targeted re-read, and invoke_cc_api — the escape
+# hatch for CC methods this CLI does not wrap.
+cli-anything-homeassistant zwave cc-refresh lock.front_door 112
+cli-anything-homeassistant --json zwave cc-invoke dev1 64 get --wait-for-result
+cli-anything-homeassistant --json zwave supports-feature --entry <ENTRY_ID> 0
+
+# RAW config parameters — for parameters the device database does not
+# describe. You must supply the wire shape: size in bytes (1-4) and format.
+# A wrong pair is a REAL write with nothing to save you; read `zwave config`
+# first and only fall back to this when the parameter is undocumented.
+cli-anything-homeassistant --json zwave raw-config-get dev1 7
+cli-anything-homeassistant zwave raw-config-set dev1 7 255 \
+    --value-size 1 --value-format unsigned-integer
+
+# Firmware state across the network.
+cli-anything-homeassistant --json zwave fw-capabilities dev1
+cli-anything-homeassistant --json zwave fw-status dev1
+cli-anything-homeassistant --json zwave fw-status-any --entry <ENTRY_ID>
+cli-anything-homeassistant zwave fw-abort dev1       # asks; an abort can leave the device on the old firmware
 ```
 
 ```bash

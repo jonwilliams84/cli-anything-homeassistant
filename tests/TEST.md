@@ -1494,3 +1494,62 @@ test_full_e2e.py   10 passed  (premise: `dynalite/get-config` really is
                               bad --set is click usage, group in root help)
 after .......................... 5281 passed, 33 skipped
 ```
+
+## v1.63.0 refine pass — the `zwave` pairing surface
+
+### Scope
+
+v1.54 closed the `zwave_js` panel's reads and config writes; the "add
+device" flow stayed UI-only. v1.63 closes that: the run-to-completion
+pairing commands (`add_node` / `remove_node` / `replace_failed_node`),
+the cancels (`stop_inclusion` / `stop_exclusion`), the S2 callbacks the
+run pauses on (`grant_security_classes`, `validate_dsk_and_enter_pin`,
+`cancel_secure_bootstrap_s2`), SmartStart provisioning
+(`provision_smart_start_node` / `unprovision_smart_start_node` /
+`get_provisioning_entries` / `parse_qr_code_string` /
+`try_parse_dsk_from_qr_code_string`), command classes
+(`refresh_node_cc_values` / `invoke_cc_api` / `supports_feature`),
+raw config parameters (`get_raw_config_parameter` /
+`set_raw_config_parameter`) and firmware state
+(`get_node_firmware_update_capabilities` /
+`is_node_firmware_update_in_progress` /
+`is_any_ota_firmware_update_in_progress` / `abort_firmware_update`).
+
+### The thing a FakeClient run alone would have missed
+
+**`add_node` is not a request/response command.** The integration acks
+immediately and then STREAMS controller events until the outcome — a
+plain `ws_call` closes the socket at the ack and cancels the pairing
+server-side; a subscription never returns. The run goes through
+`ws_run_events` with the pairing outcome event as the terminal predicate
+(`node added` / `inclusion failed` / `inclusion stopped`, mirrored for
+exclusion), and the default timeout is **300 s**, because pairing waits
+for a physical button press. An S2 pause is answered by a SECOND
+invocation while the first still streams — the two commands exist
+independently, exactly like the frontend's dialog over the run.
+
+### New tests
+
+```
+test_zwave_js.py ........... 114 cases  (TestRunPairing: stream-to-outcome,
+                                        named/strategies, smart_start
+                                        refused, qr/dsk mutual exclusion,
+                                        failure outcome, pending on a silent
+                                        run; TestPairingControls, TestS2-
+                                        Callbacks: name coercion + typos,
+                                        blank inputs; TestSmartStart-
+                                        Provisioning; TestCcCommands;
+                                        TestRawConfig: wire shapes; firmware)
+test_cli_zwave_wiring.py ...  56 cases  (every new command wired, options
+                                        parsed, s2-grant "at least one
+                                        class", prov-remove exactly-one,
+                                        fw-abort confirmation gate)
+test_full_e2e.py ...........  +5 in TestLiveZwaveAbsent (every new command
+                                        raises the "no Z-Wave controller"
+                                        explanation on the real instance;
+                                        five new CLI commands refuse
+                                        cleanly — exit 1, no traceback;
+                                        bad arguments fail client-side even
+                                        though the integration is absent)
+after .......................... 5391 passed, 33 skipped
+```

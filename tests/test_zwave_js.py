@@ -365,3 +365,334 @@ class TestServices:
     def test_lock_commands_reject_non_lock_entities(self, client):
         with pytest.raises(ValueError, match="lock.*"):
             zwave_core.clear_lock_usercode(client, "switch.fan", 1)
+
+
+# ── pairing: inclusion / exclusion runs (v1.63.0 refine pass) ───────────────
+
+
+class TestRunPairing:
+    """`add_node` / `remove_node` — the ack-then-stream-to-outcome shape."""
+
+    def test_add_node_streams_to_node_added(self, client):
+        client.set_run_events(
+            {"event": "inclusion started"},
+            {"event": "node found", "node": {"nodeId": 9}},
+            {"event": "node added", "node": {"node_id": 9, "status": 1, "ready": False}},
+        )
+        out = zwave_core.add_node(client, "e1")
+        assert out["result"] == "ok"
+        assert out["outcome"] == "node added"
+        assert "node 9 added" in out["note"]
+        call = client.run_event_calls[-1]
+        assert call["type"] == "zwave_js/add_node"
+        assert call["payload"] == {"entry_id": "e1"}
+        assert call["timeout"] == 300.0  # pairing waits for a button press
+
+    def test_add_node_default_strategy_not_sent(self, client):
+        """The schema defaults `inclusion_strategy` — sending it adds nothing."""
+        client.set_run_events({"event": "node added", "node": {}})
+        zwave_core.add_node(client, "e1")
+        assert "inclusion_strategy" not in client.run_event_calls[-1]["payload"]
+
+    def test_add_node_named_strategy(self, client):
+        client.set_run_events({"event": "node added", "node": {}})
+        zwave_core.add_node(client, "e1", strategy="security-s2")
+        assert client.run_event_calls[-1]["payload"]["inclusion_strategy"] == 4
+
+    def test_add_node_raw_strategy_id(self, client):
+        client.set_run_events({"event": "node added", "node": {}})
+        zwave_core.add_node(client, "e1", strategy=2)
+        assert client.run_event_calls[-1]["payload"]["inclusion_strategy"] == 2
+
+    def test_add_node_refuses_smart_start_strategy(self, client):
+        """HA's schema refuses SMART_START — SmartStart rides a provisioning option."""
+        with pytest.raises(ValueError, match="smart_start"):
+            zwave_core.add_node(client, "e1", strategy="smart_start")
+        assert not client.run_event_calls
+
+    def test_add_node_provisioning_options_are_mutually_exclusive(self, client):
+        with pytest.raises(ValueError, match="at most one"):
+            zwave_core.add_node(client, "e1", qr_code_string="90:…", dsk="33005-…")
+
+    def test_add_node_qr_rides_the_run(self, client):
+        """A QR option is provisioning, NOT a SmartStart strategy — the schema
+        refuses strategy 1, and `inclusion_strategy` defaults client-side."""
+        client.set_run_events({"event": "node added", "node": {}})
+        zwave_core.add_node(client, "e1", qr_code_string="90:00000,1")
+        payload = client.run_event_calls[-1]["payload"]
+        assert payload["qr_code_string"] == "90:00000,1"
+        assert "inclusion_strategy" not in payload
+
+    def test_add_node_failure_outcome(self, client):
+        client.set_run_events({"event": "inclusion started"}, {"event": "inclusion failed"})
+        out = zwave_core.add_node(client, "e1")
+        assert out["result"] == "failed"
+        assert out["outcome"] == "inclusion failed"
+
+    def test_add_node_timeout_reports_pending(self, client):
+        """No terminal event in the window = still pairing, not an error."""
+        client.set_run_events({"event": "inclusion started"})
+        out = zwave_core.add_node(client, "e1")
+        assert out["result"] == "pending"
+        assert "add-node" in out["note"] or "pairing" in out["note"]
+
+    def test_add_node_absent_integration_names_it(self, client):
+        client.set_ws_error("zwave_js/add_node", "unknown_command", "Invalid")
+        with pytest.raises(HomeAssistantError, match="no Z-Wave controller"):
+            zwave_core.add_node(client, "e1")
+
+    def test_custom_timeout_rides_the_call(self, client):
+        client.set_run_events({"event": "node added", "node": {}})
+        zwave_core.add_node(client, "e1", timeout=30)
+        assert client.run_event_calls[-1]["timeout"] == 30
+
+    def test_remove_node_streams_to_node_removed(self, client):
+        client.set_run_events(
+            {"event": "exclusion started"},
+            {"event": "node removed", "node": {"node_id": 4, "reason": "excluded"}},
+        )
+        out = zwave_core.remove_node(client, "e1")
+        assert out["result"] == "ok"
+        assert "node 4 removed" in out["note"]
+        assert client.run_event_calls[-1]["type"] == "zwave_js/remove_node"
+        assert client.run_event_calls[-1]["payload"] == {"entry_id": "e1"}
+
+    def test_remove_node_exclusion_failed(self, client):
+        client.set_run_events({"event": "exclusion failed"})
+        out = zwave_core.remove_node(client, "e1")
+        assert out["result"] == "failed"
+
+    def test_remove_node_named_strategy(self, client):
+        client.set_run_events({"event": "node removed", "node": {"node_id": 1}})
+        zwave_core.remove_node(client, "e1", strategy="default")
+        assert client.run_event_calls[-1]["payload"] == {"entry_id": "e1"}
+
+    def test_replace_failed_node_uses_device_id(self, client):
+        client.set_ws("config/entity_registry/get", {"device_id": "dev-9"})
+        client.set_run_events({"event": "node added", "node": {"node_id": 9}})
+        zwave_core.replace_failed_node(client, "lock.front")
+        call = client.run_event_calls[-1]
+        assert call["type"] == "zwave_js/replace_failed_node"
+        assert call["payload"] == {"device_id": "dev-9"}
+
+    def test_replace_failed_node_unknown_entity(self, client):
+        client.set_ws("config/entity_registry/get", {})
+        with pytest.raises(ValueError, match="not linked"):
+            zwave_core.replace_failed_node(client, "lock.ghost")
+
+
+class TestPairingControls:
+    def test_stop_inclusion(self, client):
+        client.set_ws("zwave_js/stop_inclusion", True)
+        out = zwave_core.stop_inclusion(client, "e1")
+        assert out["result"] == "ok"
+        assert client.ws_calls[-1]["payload"] == {"entry_id": "e1"}
+
+    def test_stop_exclusion(self, client):
+        client.set_ws("zwave_js/stop_exclusion", True)
+        zwave_core.stop_exclusion(client, "e1")
+        assert client.ws_calls[-1]["payload"] == {"entry_id": "e1"}
+
+    def test_cancel_secure_bootstrap_s2(self, client):
+        client.set_ws("zwave_js/cancel_secure_bootstrap_s2", None)
+        zwave_core.cancel_secure_bootstrap_s2(client, "e1")
+        assert client.ws_calls[-1]["type"] == "zwave_js/cancel_secure_bootstrap_s2"
+
+    def test_blank_entry_id_refused_everywhere(self, client):
+        for fn in (
+            zwave_core.stop_inclusion,
+            zwave_core.stop_exclusion,
+            zwave_core.cancel_secure_bootstrap_s2,
+        ):
+            with pytest.raises(ValueError, match="entry_id"):
+                fn(client, "  ")
+
+
+class TestS2Callbacks:
+    def test_grant_by_name(self, client):
+        zwave_core.grant_security_classes(client, "e1", ["s2_authenticated", "s0_legacy"])
+        payload = client.ws_calls[-1]["payload"]
+        # Names are sent as the ENUM NAMES HA's vol.Coerce(SecurityClass) likes.
+        assert payload == {"entry_id": "e1", "securityClasses": ["S2_Authenticated", "S0_Legacy"]}
+
+    def test_grant_by_id(self, client):
+        zwave_core.grant_security_classes(client, "e1", [0, 1])
+        assert client.ws_calls[-1]["payload"]["securityClasses"] == [0, 1]
+
+    def test_grant_rejects_unknown_names(self, client):
+        with pytest.raises(ValueError, match="unknown security class"):
+            zwave_core.grant_security_classes(client, "e1", ["s2_titanium"])
+
+    def test_grant_rejects_ids_out_of_range(self, client):
+        with pytest.raises(ValueError, match="0-3"):
+            zwave_core.grant_security_classes(client, "e1", [9])
+
+    def test_grant_rejects_empty(self, client):
+        with pytest.raises(ValueError, match="at least one"):
+            zwave_core.grant_security_classes(client, "e1", [])
+
+    def test_grant_client_side_auth_rides(self, client):
+        zwave_core.grant_security_classes(client, "e1", ["s2_authenticated"], client_side_auth=True)
+        assert client.ws_calls[-1]["payload"]["clientSideAuth"] is True
+
+    def test_validate_dsk_pin(self, client):
+        zwave_core.validate_dsk_and_enter_pin(client, "e1", "12345")
+        assert client.ws_calls[-1]["payload"] == {"entry_id": "e1", "pin": "12345"}
+
+    def test_validate_dsk_pin_required(self, client):
+        with pytest.raises(ValueError, match="PIN"):
+            zwave_core.validate_dsk_and_enter_pin(client, "e1", "  ")
+
+
+class TestSmartStartProvisioning:
+    def test_provision_from_qr(self, client):
+        zwave_core.provision_smart_start_node(client, "e1", qr_code_string="90:00000,1")
+        payload = client.ws_calls[-1]["payload"]
+        assert payload == {"entry_id": "e1", "qr_code_string": "90:00000,1"}
+        assert client.ws_calls[-1]["type"] == "zwave_js/provision_smart_start_node"
+
+    def test_provision_requires_a_qr(self, client):
+        with pytest.raises(ValueError, match="QR"):
+            zwave_core.provision_smart_start_node(client, "e1", qr_code_string=" ")
+
+    def test_unprovision_by_dsk(self, client):
+        zwave_core.unprovision_smart_start_node(client, "e1", dsk="33005-…")
+        assert client.ws_calls[-1]["payload"] == {"entry_id": "e1", "dsk": "33005-…"}
+
+    def test_unprovision_by_node_id(self, client):
+        zwave_core.unprovision_smart_start_node(client, "e1", node_id=7)
+        assert client.ws_calls[-1]["payload"] == {"entry_id": "e1", "node_id": 7}
+
+    def test_unprovision_requires_exactly_one(self, client):
+        with pytest.raises(ValueError, match="exactly one"):
+            zwave_core.unprovision_smart_start_node(client, "e1")
+        with pytest.raises(ValueError, match="exactly one"):
+            zwave_core.unprovision_smart_start_node(client, "e1", dsk="d", node_id=1)
+
+    def test_get_provisioning_entries(self, client):
+        client.set_ws("zwave_js/get_provisioning_entries", [{"dsk": "1-2-3"}])
+        out = zwave_core.get_provisioning_entries(client, "e1")
+        assert out == [{"dsk": "1-2-3"}]
+
+    def test_parse_qr_code_string(self, client):
+        client.set_ws("zwave_js/parse_qr_code_string", {"dsk": "…", "securityClasses": []})
+        out = zwave_core.parse_qr_code_string(client, "e1", "90:12345,1")
+        assert out["dsk"] == "…"
+        assert client.ws_calls[-1]["payload"]["qr_code_string"] == "90:12345,1"
+
+    def test_try_parse_dsk(self, client):
+        client.set_ws("zwave_js/try_parse_dsk_from_qr_code_string", {})
+        out = zwave_core.try_parse_dsk_from_qr_code_string(client, "e1", "nonsense-but-allowed")
+        assert out == {}
+
+
+# ── command classes / raw config parameters ─────────────────────────────────
+
+
+class TestCcCommands:
+    def test_refresh_cc_values(self, client):
+        client.set_ws("config/entity_registry/get", {"device_id": "dev-9"})
+        zwave_core.refresh_node_cc_values(client, "lock.front", 112)
+        assert client.ws_calls[-1]["payload"] == {"device_id": "dev-9", "command_class_id": 112}
+
+    def test_refresh_cc_values_rejects_non_int(self, client):
+        with pytest.raises(ValueError, match="integer"):
+            zwave_core.refresh_node_cc_values(client, "lock.front", "112")
+
+    def test_invoke_cc_api_minimal(self, client):
+        client.set_ws("config/entity_registry/get", {"device_id": "dev-9"})
+        zwave_core.invoke_cc_api(client, "dev-9", 112, "get")
+        payload = client.ws_calls[-1]["payload"]
+        assert payload == {"device_id": "dev-9", "command_class": 112, "method_name": "get", "parameters": []}
+
+    def test_invoke_cc_api_full(self, client):
+        zwave_core.invoke_cc_api(
+            client, "dev-9", 64, "set", parameters=[1], endpoint=2, wait_for_result=True
+        )
+        payload = client.ws_calls[-1]["payload"]
+        assert payload["parameters"] == [1]
+        assert payload["endpoint"] == 2
+        assert payload["wait_for_result"] is True
+
+    def test_invoke_cc_api_requires_a_method(self, client):
+        with pytest.raises(ValueError, match="method_name"):
+            zwave_core.invoke_cc_api(client, "dev-9", 112, "  ")
+
+    def test_invoke_cc_api_rejects_bad_parameters_json(self, client):
+        # parameters must be a LIST — HA's schema says `list`, not `dict`
+        with pytest.raises(ValueError, match="list"):
+            zwave_core.invoke_cc_api(client, "dev-9", 64, "set", parameters={"0": True})
+
+    def test_supports_feature(self, client):
+        client.set_ws("zwave_js/supports_feature", {"supported": True})
+        out = zwave_core.supports_feature(client, "e1", 0)
+        assert out == {"supported": True}
+        assert client.ws_calls[-1]["payload"] == {"entry_id": "e1", "feature": 0}
+
+    def test_supports_feature_rejects_bad_id(self, client):
+        with pytest.raises(ValueError, match="feature"):
+            zwave_core.supports_feature(client, "e1", "smartstart")
+
+
+class TestRawConfigParameter:
+    def test_get(self, client):
+        client.set_ws("zwave_js/get_raw_config_parameter", {"value": 3})
+        zwave_core.get_raw_config_parameter(client, "dev-9", 7)
+        assert client.ws_calls[-1]["payload"] == {"device_id": "dev-9", "property": 7}
+
+    def test_set_by_name(self, client):
+        zwave_core.set_raw_config_parameter(
+            client, "dev-9", 7, 255, value_size=1, value_format="unsigned-integer"
+        )
+        payload = client.ws_calls[-1]["payload"]
+        assert payload["value_size"] == 1
+        assert payload["value_format"] == "UnsignedInteger"
+
+    def test_set_by_id(self, client):
+        zwave_core.set_raw_config_parameter(client, "dev-9", 7, -1, value_size=2, value_format=0)
+        assert client.ws_calls[-1]["payload"]["value_format"] == 0
+
+    def test_set_rejects_bad_format_names(self, client):
+        with pytest.raises(ValueError, match="value_format"):
+            zwave_core.set_raw_config_parameter(client, "dev-9", 7, 1, value_size=1, value_format="hex")
+
+    def test_set_rejects_bad_size(self, client):
+        for size in (0, 5, 1.5, "1", True):
+            with pytest.raises(ValueError, match="value_size"):
+                zwave_core.set_raw_config_parameter(
+                    client, "dev-9", 7, 1, value_size=size, value_format="bitfield"
+                )
+
+    def test_set_rejects_bad_value(self, client):
+        with pytest.raises(ValueError, match="value"):
+            zwave_core.set_raw_config_parameter(
+                client, "dev-9", 7, "255", value_size=1, value_format="bitfield"
+            )
+
+
+# ── firmware ────────────────────────────────────────────────────────────────
+
+
+class TestFirmware:
+    def test_capabilities_by_entity(self, client):
+        client.set_ws("config/entity_registry/get", {"device_id": "dev-2"})
+        client.set_ws("zwave_js/get_node_firmware_update_capabilities", {"targets": [0]})
+        out = zwave_core.get_node_firmware_update_capabilities(client, "light.fan")
+        assert out == {"targets": [0]}
+        assert client.ws_calls[-1]["payload"] == {"device_id": "dev-2"}
+
+    def test_node_in_progress(self, client):
+        client.set_ws("zwave_js/is_node_firmware_update_in_progress", {"inProgress": False})
+        zwave_core.is_node_firmware_update_in_progress(client, "dev-2")
+        assert client.ws_calls[-1]["type"] == "zwave_js/is_node_firmware_update_in_progress"
+
+    def test_any_in_progress_entry_scoped(self, client):
+        client.set_ws("zwave_js/is_any_ota_firmware_update_in_progress", False)
+        out = zwave_core.is_any_ota_firmware_update_in_progress(client, "e1")
+        assert out is False
+        assert client.ws_calls[-1]["payload"] == {"entry_id": "e1"}
+
+    def test_abort(self, client):
+        client.set_ws("zwave_js/abort_firmware_update", None)
+        out = zwave_core.abort_firmware_update(client, "dev-2")
+        assert out["result"] == "ok"
