@@ -6,7 +6,89 @@ The project versions follow semver (MAJOR.MINOR.PATCH).
 
 ## [1.63.0] — 2026-11-20
 
-- Updated `readme.md`, `cli_anything/homeassistant/core/zwave_js.py`, `cli_anything/homeassistant/homeassistant_cli.py`, `tests/test_cli_zwave_wiring.py`, `tests/test_full_e2e.py`, `tests/test_zwave_js.py`. (9 files changed, 1627 insertions(+), 3 deletions(-))
+### Added
+
+- **`zwave` — the full pairing surface.** Everything in the Z-Wave
+  configuration panel's "add device" flow, driven from a shell. v1.54
+  wrapped the reads and the config write; v1.63 adds the commands the
+  flow itself is made of:
+  - **Pairing, run-to-completion.** `zwave add-node` / `remove-node` /
+    `replace-failed-node` are ACK-then-stream commands — the controller
+    stays in pairing mode emitting events until the device joins — so a
+    plain request/response read would close the socket at the ack and
+    CANCEL the pairing server-side. The harness runs them through
+    `ws_run_events` with the pairing outcome event
+    (`node added` / `node removed` / `inclusion stopped` / `inclusion
+    failed` / `exclusion stopped` …) as the terminal condition, and
+    returns `{result, outcome, events, note}` — `pending` plus a
+    "retry with a longer --timeout" note when the run ends silent,
+    because a device that was never put into pairing mode looks
+    identical to a slow one. Pairing waits for a physical button press:
+    the default timeout is 300 s, not the usual 10.
+  - **The S2 callbacks a run pauses on.** An S2 inclusion pauses mid-run
+    waiting for the grant or the DSK PIN; `add-node` keeps streaming, so
+    the answer goes in FROM A SECOND TERMINAL: `zwave s2-grant`
+    (the security classes by NAME — `s2_authenticated`, `s0_legacy`, … —
+    or the zwave-js-server ids 0–3; a typo is refused client-side),
+    `zwave s2-pin` (the device's printed 5-digit PIN, NOT the DSK) and
+    `zwave s2-cancel` (abort a stuck bootstrap with
+    `cancel_secure_bootstrap_s2`).
+  - **SmartStart provisioning.** `zwave prov-add --qr '90:00000,1'`
+    (+ `prov-list` / `prov-remove` by `--dsk` or already-included
+    `--node-id`, exactly one, `qr-parse`, `qr-dsk` — the DSK, best-effort,
+    `{}` when unreadable). A provisioned device joins AUTOMATICALLY when
+    powered on — no button press, no add-node run.
+  - **Command classes.** `zwave cc-refresh <node> 112` (the targeted
+    re-read after e.g. a lock's config change via another channel) and
+    `zwave cc-invoke dev1 64 get` (`invoke_cc_api` — the escape hatch for
+    CC methods the CLI does not wrap; `--wait-for-result` takes the
+    method's return value), plus `supports-feature` (the entry's
+    zwave-js-server capability probe).
+  - **Raw config parameters.** `zwave raw-config-get` / `raw-config-set`
+    for parameters the device database does not describe — the caller
+    SUPPLIES the wire shape (`--value-size` 1–4 bytes, `--value-format`
+    signed-integer / unsigned-integer / enumerated / bitfield) and the
+    write is a REAL write with no metadata sanity check behind it, which
+    the help says out loud.
+  - **Firmware state.** `zwave fw-capabilities` / `fw-status` /
+    `fw-status-any` (entry-wide probe: is ANY node on this controller
+    mid-OTA) and `fw-abort` (confirmation-gated: an abort can leave the
+    device on the old firmware or unresponsive).
+  - Pairing strategies (`--strategy`) accept the documented names
+    (`default`, `s2`, `legacy`, `qr`, `smart_start` — the last REFUSED by
+    `add-node`, because SmartStart pairing is entered through a
+    provisioning option, not a strategy) or a raw zwave-js-server id.
+    `--qr` / `--dsk` provisioning options ride the `add-node` run but are
+    mutually exclusive, as upstream's schema makes them. Node-scoped
+    commands keep the v1.54 contract: an entity id resolves through the
+    registry, and an instance with no Z-Wave controller gets every one of
+    the new commands' refusal as one sentence instead of
+    `unknown_command` — with client-side validation in front of the
+    absence guard, so a bad argument still fails as a `ValueError` even
+    where the integration is missing.
+
+### Documented
+
+- README: the `zwave` group row and a "Pairing, S2 and SmartStart"
+  example block. HOMEASSISTANT.md: the `zwave` SOP row extended with the
+  pairing surface. tests/TEST.md: a "v1.63.0 refine pass" section with
+  the pairing test matrix.
+
+### Tests
+
+- `tests/test_zwave_js.py` (100 cases) — the run-to-completion
+  collection (terminal events, outcome → `result`/`note` mapping,
+  `pending` on a silent run), strategy/name coercion, provisioning
+  mutual exclusion, S2 class-name validation, raw-config wire shapes,
+  firmware reads, absent-integration translation, blank entry refusals.
+- `tests/test_cli_zwave_wiring.py` (56 cases) — every new command wired,
+  options parsed and validated, the `s2-grant` "at least one class" rule,
+  `prov-remove` exactly-one-input rule, the `fw-abort` confirmation gate.
+- `tests/test_full_e2e.py` — `TestLiveZwaveAbsent` extended with the new
+  surface: every new command raises the "no Z-Wave controller"
+  explanation against a real HA, five new CLI commands refuse cleanly
+  (exit 1, no traceback), and bad arguments fail client-side even though
+  the integration is absent.
 
 ## [1.62.0] — 2026-11-11
 
