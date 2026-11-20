@@ -2659,6 +2659,79 @@ class TestLiveZwaveAbsent:
         )
         assert "zwave" in r.stdout
 
+    # ── v1.63.0 refine pass: the pairing / provisioning / CC / firmware group ──
+    #
+    # The same absence discipline, extended to the commands the pass added:
+    # every one of them must translate the bare `unknown_command` into the
+    # named "no Z-Wave controller" explanation, because the raw code says
+    # nothing about WHICH half of the invocation went wrong.
+
+    @staticmethod
+    def _new_surface_calls():
+        """One call per command the v1.63 pass added — all of them must run."""
+        return [
+            ("add_node", lambda c: zwave_js_core.add_node(c, "x", timeout=5)),
+            ("remove_node", lambda c: zwave_js_core.remove_node(c, "x", timeout=5)),
+            ("stop_inclusion", lambda c: zwave_js_core.stop_inclusion(c, "x")),
+            ("stop_exclusion", lambda c: zwave_js_core.stop_exclusion(c, "x")),
+            ("replace_failed_node", lambda c: zwave_js_core.replace_failed_node(c, "dev-1")),
+            ("grant_security_classes", lambda c: zwave_js_core.grant_security_classes(c, "x", ["s2_authenticated"])),
+            ("validate_dsk_and_enter_pin", lambda c: zwave_js_core.validate_dsk_and_enter_pin(c, "x", "12345")),
+            ("cancel_secure_bootstrap_s2", lambda c: zwave_js_core.cancel_secure_bootstrap_s2(c, "x")),
+            ("provision_smart_start_node", lambda c: zwave_js_core.provision_smart_start_node(c, "x", qr_code_string="90:1,1")),
+            ("unprovision_smart_start_node", lambda c: zwave_js_core.unprovision_smart_start_node(c, "x", dsk="d")),
+            ("get_provisioning_entries", lambda c: zwave_js_core.get_provisioning_entries(c, "x")),
+            ("parse_qr_code_string", lambda c: zwave_js_core.parse_qr_code_string(c, "x", "90:1,1")),
+            ("refresh_node_cc_values", lambda c: zwave_js_core.refresh_node_cc_values(c, "dev-1", 112)),
+            ("invoke_cc_api", lambda c: zwave_js_core.invoke_cc_api(c, "dev-1", 112, "get")),
+            ("get_raw_config_parameter", lambda c: zwave_js_core.get_raw_config_parameter(c, "dev-1", 7)),
+            ("get_node_firmware_update_capabilities", lambda c: zwave_js_core.get_node_firmware_update_capabilities(c, "dev-1")),
+            ("is_any_ota_firmware_update_in_progress", lambda c: zwave_js_core.is_any_ota_firmware_update_in_progress(c, "x")),
+            ("abort_firmware_update", lambda c: zwave_js_core.abort_firmware_update(c, "dev-1")),
+        ]
+
+    def test_every_new_command_raises_the_explanation(self, live_client):
+        for name, call in self._new_surface_calls():
+            with pytest.raises(HomeAssistantError, match="no Z-Wave controller"):
+                call(live_client)
+
+    def test_supports_feature_raises_it_too(self, live_client):
+        with pytest.raises(HomeAssistantError, match="no Z-Wave controller"):
+            zwave_js_core.supports_feature(live_client, "x", 0)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["add-node", "--entry", "x"],
+            ["prov-list", "--entry", "x"],
+            ["raw-config-get", "dev-1", "7"],
+            ["fw-status-any", "--entry", "x"],
+            ["s2-pin", "--entry", "x", "--pin", "12345"],
+        ],
+    )
+    def test_new_cli_commands_refuse_cleanly(self, hass_instance, args):
+        r = subprocess.run(
+            CLI_BASE + ["--json", "zwave", *args],
+            capture_output=True, text=True, env=self._env(hass_instance), timeout=60,
+        )
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "no Z-Wave controller" in r.stderr
+        assert "Traceback" not in r.stderr
+
+    def test_new_commands_refuse_invalid_arguments_before_the_wire(self, live_client):
+        """Client-side validation is wired IN FRONT of the absence guard: a bad
+        argument must be a ValueError even though the integration is absent."""
+        with pytest.raises(ValueError, match="at most one"):
+            zwave_js_core.add_node(live_client, "x", qr_code_string="90:1", dsk="d", timeout=1)
+        with pytest.raises(ValueError, match="smart_start"):
+            zwave_js_core.add_node(live_client, "x", strategy="smart_start", timeout=1)
+        with pytest.raises(ValueError, match="exactly one"):
+            zwave_js_core.unprovision_smart_start_node(live_client, "x")
+        with pytest.raises(ValueError, match="unknown security class"):
+            zwave_js_core.grant_security_classes(live_client, "x", ["s2_titanium"])
+        with pytest.raises(ValueError, match="PIN"):
+            zwave_js_core.validate_dsk_and_enter_pin(live_client, "x", "  ")
+
 
 class TestLiveMatterAbsent:
     """The test instance has no Matter controller, so `matter` never loads.

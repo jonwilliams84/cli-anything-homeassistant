@@ -4,6 +4,10 @@ All notable changes to `cli-anything-homeassistant` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [1.63.0] — 2026-11-20
+
+- Updated `readme.md`, `cli_anything/homeassistant/core/zwave_js.py`, `cli_anything/homeassistant/homeassistant_cli.py`, `tests/test_cli_zwave_wiring.py`, `tests/test_full_e2e.py`, `tests/test_zwave_js.py`. (9 files changed, 1627 insertions(+), 3 deletions(-))
+
 ## [1.62.0] — 2026-11-11
 
 ### Added

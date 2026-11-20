@@ -19141,6 +19141,382 @@ def zwave_lock_configuration(ctx, entity_id, operation_type, lock_timeout, auto_
     )
 
 
+# ── pairing: inclusion / exclusion (run to completion) ──────────────────────
+
+
+def _pairing_strategy(_ctx, _param, raw: str):
+    """A pairing strategy: the documented name or the raw zwave-js-server id."""
+    raw = (raw or "").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    return raw
+
+
+@zwave.command("add-node")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.option(
+    "--strategy",
+    default="default",
+    show_default=True,
+    callback=_pairing_strategy,
+    help="default | insecure | security-s0 | security-s2 (or the raw id)",
+)
+@click.option("--force-security", is_flag=True, default=None, help="Pair even at lower security")
+@click.option("--qr", "qr_code_string", default=None, help="SmartStart QR code string")
+@click.option("--dsk", default=None, help="The device-specific key (S2)")
+@click.option(
+    "--timeout",
+    type=float,
+    default=None,
+    help="Seconds to wait for the outcome (default 300: pairing waits for a button press)",
+)
+@click.pass_context
+def zwave_add_node(ctx, entry_id, strategy, force_security, qr_code_string, dsk, timeout):
+    """Start pairing a device and stream to the outcome.
+
+    Put the device into pairing mode (button press) first. An S2 run may
+    pause for a grant or DSK confirmation — answer from a second terminal
+    (`zwave s2-grant` / `zwave s2-pin`).
+    """
+    emit(
+        ctx,
+        zwave_core.add_node(
+            make_client(ctx),
+            entry_id,
+            strategy=strategy,
+            force_security=force_security,
+            qr_code_string=qr_code_string,
+            dsk=dsk,
+            timeout=timeout,
+        ),
+    )
+
+
+@zwave.command("remove-node")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.option(
+    "--strategy",
+    default="default",
+    show_default=True,
+    callback=_pairing_strategy,
+    help="Only the zwave-js-server ExclusionStrategy name/id (default)",
+)
+@click.option(
+    "--timeout", type=float, default=None, help="Seconds to wait for the outcome (default 300)"
+)
+@click.pass_context
+def zwave_remove_node(ctx, entry_id, strategy, timeout):
+    """Start excluding a device and stream to the outcome.
+
+    Put the device into its own 'excluded' mode first; the controller
+    reports which node left and why.
+    """
+    emit(
+        ctx, zwave_core.remove_node(make_client(ctx), entry_id, strategy=strategy, timeout=timeout)
+    )
+
+
+@zwave.command("stop-inclusion")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.pass_context
+def zwave_stop_inclusion(ctx, entry_id):
+    """Cancel an add-node run in progress."""
+    emit(ctx, zwave_core.stop_inclusion(make_client(ctx), entry_id))
+
+
+@zwave.command("stop-exclusion")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.pass_context
+def zwave_stop_exclusion(ctx, entry_id):
+    """Cancel a remove-node run in progress."""
+    emit(ctx, zwave_core.stop_exclusion(make_client(ctx), entry_id))
+
+
+@zwave.command("replace-failed-node")
+@click.argument("ident")
+@click.option(
+    "--strategy",
+    default="default",
+    show_default=True,
+    callback=_pairing_strategy,
+    help="default | insecure | security-s0 | security-s2 (or the raw id)",
+)
+@click.option("--force-security", is_flag=True, default=None, help="Pair even at lower security")
+@click.option("--qr", "qr_code_string", default=None, help="SmartStart QR code string")
+@click.pass_context
+def zwave_replace_failed_node(ctx, ident, strategy, force_security, qr_code_string):
+    """Re-pair a node the controller has marked failed, in the same slot."""
+    emit(
+        ctx,
+        zwave_core.replace_failed_node(
+            make_client(ctx),
+            ident,
+            strategy=strategy,
+            force_security=force_security,
+            qr_code_string=qr_code_string,
+        ),
+    )
+
+
+# ── pairing: the S2 callbacks a run pauses on ───────────────────────────────
+
+
+@zwave.command("s2-grant")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.option(
+    "--security-class",
+    "security_classes",
+    multiple=True,
+    required=True,
+    type=click.Choice(sorted(zwave_core.SECURITY_CLASSES), case_sensitive=False),
+    help="Class to grant (repeat for several)",
+)
+@click.option(
+    "--client-side-auth/--no-client-side-auth",
+    default=False,
+    show_default=True,
+    help="Ask the device to prove its key by entering the PIN here",
+)
+@click.pass_context
+def zwave_s2_grant(ctx, entry_id, security_classes, client_side_auth):
+    """Answer an add-node run's 'grant security classes' pause.
+
+    Run this in a second terminal WHILE `zwave add-node` is streaming.
+    """
+    emit(
+        ctx,
+        zwave_core.grant_security_classes(
+            make_client(ctx),
+            entry_id,
+            list(security_classes),
+            client_side_auth=client_side_auth,
+        ),
+    )
+
+
+@zwave.command("s2-pin")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.option("--pin", required=True, help="The device's printed 5-digit PIN (NOT the DSK)")
+@click.pass_context
+def zwave_s2_pin(ctx, entry_id, pin):
+    """Answer an add-node run's DSK confirmation pause with the device PIN."""
+    emit(ctx, zwave_core.validate_dsk_and_enter_pin(make_client(ctx), entry_id, pin))
+
+
+@zwave.command("s2-cancel")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.pass_context
+def zwave_s2_cancel(ctx, entry_id):
+    """Abort a stuck S2 (secure bootstrap) pairing."""
+    emit(ctx, zwave_core.cancel_secure_bootstrap_s2(make_client(ctx), entry_id))
+
+
+# ── SmartStart provisioning ─────────────────────────────────────────────────
+
+
+@zwave.command("prov-list")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.pass_context
+def zwave_prov_list(ctx, entry_id):
+    """Every SmartStart device pre-provisioned on the controller."""
+    emit(ctx, zwave_core.get_provisioning_entries(make_client(ctx), entry_id))
+
+
+@zwave.command("prov-add")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.option("--qr", "qr_code_string", required=True, help="The SmartStart QR code string")
+@click.pass_context
+def zwave_prov_add(ctx, entry_id, qr_code_string):
+    """Pre-provision a device from its QR string — it joins automatically when powered on."""
+    emit(
+        ctx,
+        zwave_core.provision_smart_start_node(
+            make_client(ctx), entry_id, qr_code_string=qr_code_string
+        ),
+    )
+
+
+@zwave.command("prov-remove")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.option("--dsk", default=None, help="The entry's DSK")
+@click.option("--node-id", type=int, default=None, help="An already-included node id")
+@click.pass_context
+def zwave_prov_remove(ctx, entry_id, dsk, node_id):
+    """Drop one provisioning entry (exactly one of --dsk / --node-id)."""
+    emit(
+        ctx,
+        zwave_core.unprovision_smart_start_node(
+            make_client(ctx), entry_id, dsk=dsk, node_id=node_id
+        ),
+    )
+
+
+@zwave.command("qr-parse")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.option("--qr", "qr_code_string", required=True, help="The SmartStart QR code string")
+@click.pass_context
+def zwave_qr_parse(ctx, entry_id, qr_code_string):
+    """Decode a QR string into its provisioned-device fields."""
+    emit(ctx, zwave_core.parse_qr_code_string(make_client(ctx), entry_id, qr_code_string))
+
+
+@zwave.command("qr-dsk")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.option("--qr", "qr_code_string", required=True, help="The SmartStart QR code string")
+@click.pass_context
+def zwave_qr_dsk(ctx, entry_id, qr_code_string):
+    """Best-effort: extract just the DSK from a QR string ({} when unreadable)."""
+    emit(
+        ctx,
+        zwave_core.try_parse_dsk_from_qr_code_string(make_client(ctx), entry_id, qr_code_string),
+    )
+
+
+# ── command classes / raw parameters ────────────────────────────────────────
+
+
+@zwave.command("cc-refresh")
+@click.argument("ident")
+@click.argument("command_class_id", type=int)
+@click.pass_context
+def zwave_cc_refresh(ctx, ident, command_class_id):
+    """Re-read every value of ONE command class on a node."""
+    emit(ctx, zwave_core.refresh_node_cc_values(make_client(ctx), ident, command_class_id))
+
+
+@zwave.command("cc-invoke")
+@click.argument("ident")
+@click.argument("command_class", type=int)
+@click.argument("method_name")
+@click.option("--endpoint", type=int, default=None, help="Target a specific endpoint")
+@click.option("--parameters", default=None, help="JSON list of positional parameters ([] default)")
+@click.option(
+    "--wait-for-result/--no-wait-for-result",
+    default=None,
+    help="Wait for the method's return value (off: fire-and-forget)",
+)
+@click.pass_context
+def zwave_cc_invoke(ctx, ident, command_class, method_name, endpoint, parameters, wait_for_result):
+    """Call a zwave-js-server command-class API method directly.
+
+    The escape hatch the panel uses for anything this CLI does not wrap,
+    e.g. `zwave cc-invoke 64 <dev> get` on a thermostat's mode CC.
+    """
+    params = []
+    if parameters:
+        try:
+            params = json.loads(parameters)
+        except (TypeError, ValueError) as exc:
+            raise click.BadParameter(f"parameters must be a JSON list, got {parameters!r}") from exc
+        if not isinstance(params, list):
+            raise click.BadParameter(f"parameters must be a JSON list, got {parameters!r}")
+    emit(
+        ctx,
+        zwave_core.invoke_cc_api(
+            make_client(ctx),
+            ident,
+            command_class,
+            method_name,
+            parameters=params,
+            endpoint=endpoint,
+            wait_for_result=wait_for_result,
+        ),
+    )
+
+
+@zwave.command("supports-feature")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.argument("feature", type=int)
+@click.pass_context
+def zwave_supports_feature(ctx, entry_id, feature):
+    """Does the controller support a feature (raw zwave-js-server ZwaveFeature id)?"""
+    emit(ctx, zwave_core.supports_feature(make_client(ctx), entry_id, feature))
+
+
+@zwave.command("raw-config-get")
+@click.argument("ident")
+@click.argument("parameter", type=int)
+@click.pass_context
+def zwave_raw_config_get(ctx, ident, parameter):
+    """One config parameter's value, without metadata (for undocumented parameters)."""
+    emit(ctx, zwave_core.get_raw_config_parameter(make_client(ctx), ident, parameter))
+
+
+@zwave.command("raw-config-set")
+@click.argument("ident")
+@click.argument("parameter", type=int)
+@click.argument("value", type=int)
+@click.option("--value-size", type=click.IntRange(1, 4), required=True, help="Width in bytes (1-4)")
+@click.option(
+    "--value-format",
+    "value_format",
+    required=True,
+    help="signed-integer | unsigned-integer | enumerated | bitfield (or the raw id)",
+)
+@click.pass_context
+def zwave_raw_config_set(ctx, ident, parameter, value, value_size, value_format):
+    """Write a config parameter with an explicit wire shape (no metadata check).
+
+    A wrong size/format is a REAL write to the device — there is nothing to
+    save you; read `zwave config` first and only fall back to this when the
+    parameter is undocumented.
+    """
+    emit(
+        ctx,
+        zwave_core.set_raw_config_parameter(
+            make_client(ctx),
+            ident,
+            parameter,
+            value,
+            value_size=value_size,
+            value_format=value_format,
+        ),
+    )
+
+
+# ── firmware ────────────────────────────────────────────────────────────────
+
+
+@zwave.command("fw-capabilities")
+@click.argument("ident")
+@click.pass_context
+def zwave_fw_capabilities(ctx, ident):
+    """A node's firmware update capabilities (target slot(s))."""
+    emit(ctx, zwave_core.get_node_firmware_update_capabilities(make_client(ctx), ident))
+
+
+@zwave.command("fw-status")
+@click.argument("ident")
+@click.pass_context
+def zwave_fw_status(ctx, ident):
+    """Is a firmware update in progress on THIS node?"""
+    emit(ctx, zwave_core.is_node_firmware_update_in_progress(make_client(ctx), ident))
+
+
+@zwave.command("fw-status-any")
+@click.option("--entry", "entry_id", required=True, help="The zwave_js config entry id")
+@click.pass_context
+def zwave_fw_status_any(ctx, entry_id):
+    """Is a firmware update in progress ANYWHERE on the network?"""
+    emit(ctx, zwave_core.is_any_ota_firmware_update_in_progress(make_client(ctx), entry_id))
+
+
+@zwave.command("fw-abort")
+@click.argument("ident")
+@click.confirmation_option(
+    prompt=(
+        "Abort the firmware transfer? An aborted update can leave the "
+        "device on the old firmware or — rarely — unresponsive."
+    )
+)
+@click.pass_context
+def zwave_fw_abort(ctx, ident):
+    """Abort a node's firmware update (destructive)."""
+    emit(ctx, zwave_core.abort_firmware_update(make_client(ctx), ident))
+
+
 # ─────────────────────────────────────────────────────────────── matter
 
 
